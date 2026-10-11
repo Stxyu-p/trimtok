@@ -1,0 +1,52 @@
+name: trimtok
+version: 0.5.0
+description: "Local stdlib-only context compressor (Phase 1 terminal filters + Phase 2 cross-turn fold + Phase 3 freshness mask): per-command budgets, error rails, file-local CCR with trimtok_retrieve."
+entry_point: __init__.py
+author: "P Choke & MIKA"
+provides_hooks:
+  - transform_terminal_output
+  - transform_tool_result
+  - post_llm_call
+provides_tools:
+  - trimtok_retrieve
+config_schema:
+  enabled:
+    type: bool
+    default: true
+    description: Master switch for all hooks (fail-open; false = passthrough).
+  phase2_enabled:
+    type: bool
+    default: true
+    description: transform_tool_result switch (cross-turn fold).
+  mask_enabled:
+    type: bool
+    default: true
+    description: post_llm_call fold-index expiry (turn freshness mask).
+  mask_keep_turns:
+    type: int
+    default: 2
+    description: Fold-index keeps content from this many recent turns.
+  toon_enabled:
+    type: bool
+    default: false
+    description: Compact tabular JSON arrays to column-header format.
+  min_chars:
+    type: int
+    default: 2048
+    description: Minimum output size before compression kicks in.
+  max_lines:
+    type: int
+    default: 120
+    description: Default line budget for terminal output.
+  ccr_max_entries:
+    type: int
+    default: 1000
+    description: Maximum cached original files in CCR store.
+  ccr_max_bytes:
+    type: int
+    default: 52428800
+    description: Maximum byte cap for CCR storage (default 50MB).
+  ccr_ttl_hours:
+    type: int
+    default: 24
+    description: Hours before cached original files expire.
