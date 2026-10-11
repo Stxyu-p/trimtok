@@ -1,6 +1,6 @@
 name: trimtok
 version: 0.5.1
-description: "Local stdlib-only context compressor: per-command budgets, balanced windowing, error rails, cross-turn fold, file-local CCR with paginated trimtok_retrieve."
+description: "Local stdlib-only context compressor: per-command budgets, balanced windowing, error rails, cross-turn fold, command/tool exclusions, file-local CCR with paginated trimtok_retrieve."
 entry_point: __init__.py
 author: "P Choke & MIKA"
 provides_hooks:
@@ -40,6 +40,14 @@ config_schema:
     type: int
     default: 2048
     description: Minimum output size before compression kicks in.
+  exclude_commands:
+    type: list
+    default: []
+    description: Normalized command prefixes that bypass terminal-output compression.
+  exclude_tools:
+    type: list
+    default: []
+    description: Exact Hermes tool names that bypass tool-result compression.
   max_lines:
     type: int
     default: 120

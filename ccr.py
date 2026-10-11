@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import tempfile
 import time
 from pathlib import Path
 
@@ -34,6 +35,7 @@ def put(
 ) -> str:
     """Store original, return 12-char digest. Never raises ('' on failure)."""
     global _PUT_COUNT
+    temp_path: Path | None = None
     try:
         base = Path(dir) if dir else default_dir()
         base.mkdir(parents=True, exist_ok=True)
@@ -41,17 +43,27 @@ def put(
         digest = hashlib.sha256(data).hexdigest()[:12]
         path = base / (digest + ".txt")
         if not path.exists():
-            # exclusive create: concurrent same-content writers, one wins
-            fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            try:
-                os.write(fd, data)
-            finally:
-                os.close(fd)
+            # Publish only after the complete payload has reached a temp file.
+            with tempfile.NamedTemporaryFile(
+                mode="wb", dir=base, prefix=f".{digest}.", suffix=".tmp", delete=False
+            ) as f:
+                temp_path = Path(f.name)
+                f.write(data)
+                f.flush()
+            # Concurrent writers for the same digest contain identical bytes;
+            # atomic replacement prevents readers from observing a partial file.
+            os.replace(temp_path, path)
+            temp_path = None
         _PUT_COUNT += 1
         if _PUT_COUNT % 16 == 0:
             _evict(base, max_entries, max_bytes, ttl_hours)
         return digest
     except Exception:
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
         return ""
 
 
@@ -102,14 +114,24 @@ def purge(*, dir: Path | None = None, before_seconds: float = 0) -> int:
         return 0
 
 
-def stats(*, dir: Path | None = None) -> dict:
+def stats(*, dir: Path | None = None, ttl_hours: int = 24) -> dict:
     """Return count and total bytes of cached originals."""
     try:
         base = Path(dir) if dir else default_dir()
         if not base.exists():
             return {"entries": 0, "bytes": 0}
-        files = list(base.glob("*.txt"))
-        total = sum(p.stat().st_size for p in files)
+        cutoff = time.time() - max(0, ttl_hours) * 3600
+        files: list[os.stat_result] = []
+        for path in base.glob("*.txt"):
+            try:
+                stat = path.stat()
+                if stat.st_mtime < cutoff:
+                    path.unlink(missing_ok=True)
+                else:
+                    files.append(stat)
+            except Exception:
+                pass
+        total = sum(stat.st_size for stat in files)
         return {"entries": len(files), "bytes": total}
     except Exception:
         return {"entries": 0, "bytes": 0}

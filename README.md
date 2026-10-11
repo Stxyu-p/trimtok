@@ -18,7 +18,7 @@
 
 Large language model agents consume significant token bandwidth processing voluminous command line logs, repeated file outputs, and redundant tool responses.
 
-`trimtok` is a lightweight, zero-dependency plugin for Hermes Agent designed to reduce context token consumption without information loss. Operating purely in the local Python standard library, it applies deterministic reduction pipelines to terminal streams and tool outputs with sub-millisecond execution times.
+`trimtok` is a lightweight, zero-dependency plugin for Hermes Agent designed to reduce context token consumption. Compression may omit or replace parts of an output; the exact original can be retrieved from CCR only while its entry remains available (subject to TTL and cache eviction). The local, deterministic pipeline uses only the Python standard library.
 
 ```
    Raw Output (Terminal / Tool)
@@ -56,7 +56,7 @@ Measured on standard production environments (Intel/AMD x86_64 and Windows/Linux
 | :--- | :--- | :--- | :--- | :--- |
 | **`compress_terminal`** (4.4 KB log) | `< 5.0 ms` | **1.30 ms** | 40% – 85% | Python Stdlib |
 | **`compress_tool_result`** (JSON / search) | `< 2.0 ms` | **0.08 ms** | 30% – 70% | Python Stdlib |
-| **`ccr_put`** (Storage write) | `< 3.0 ms` | **0.58 ms** | Lossless cache | Python Stdlib |
+| **`ccr_put`** (Storage write) | `< 3.0 ms` | **0.58 ms** | Stores original payload for TTL window | Python Stdlib |
 | **`ccr_get`** (O(1) Direct fetch) | `< 2.0 ms` | **0.38 ms** | Exact original | Python Stdlib |
 
 ---
@@ -89,7 +89,7 @@ If an agent requires the exact uncompressed payload, it calls the registered too
   }
 }
 ```
-The original content is retrieved and restored with line numbers or filtered without blowing up the context budget.
+The original content is retrieved and restored with line numbers or filtered without blowing up the context budget. Regex filtering uses a bounded subset: patterns are limited to 256 characters, groups and multiple repetition operators are rejected, input is limited to 1 MB, and output to 1,000 matches / 100 KB.
 
 ---
 
@@ -102,10 +102,12 @@ Settings are declared under `plugins.entries.trimtok.settings` in Hermes `config
 | `enabled` | `bool` | `true` | Master switch for all hooks. Fail-open on `false`. |
 | `phase2_enabled` | `bool` | `true` | Enables cross-turn tool result folding and path reductions. |
 | `min_chars` | `int` | `2048` | Threshold size in characters before compression triggers. |
+| `exclude_commands` | `list` | `[]` | Normalized, case-insensitive command prefixes that bypass terminal compression. Example: `git status` also excludes `git status --short`. |
+| `exclude_tools` | `list` | `[]` | Exact, case-insensitive Hermes tool names that bypass tool-result compression. |
 | `max_lines` | `int` | `120` | Terminal line windowing limit. |
 | `mask_enabled` | `bool` | `true` | Enables turn-clock expiry for fold index freshness. |
 | `mask_keep_turns`| `int` | `2` | Number of recent turns retained in the active fold index. |
-| `audit_enabled`  | `bool` | `true` | Record compression savings to audit.jsonl log. |
+| `audit_enabled`  | `bool` | `true` | Record compression savings to a rotating audit log (1 MB plus one backup). |
 | `ccr_max_entries`| `int` | `1000` | Maximum cached original entries before LRU eviction. |
 | `ccr_max_bytes`  | `int` | `52428800` | Total cache byte budget (default: 50 MB). |
 | `ccr_ttl_hours`  | `int` | `24` | Time-to-live for cached originals. |
@@ -116,7 +118,7 @@ Settings are declared under `plugins.entries.trimtok.settings` in Hermes `config
 
 In interactive Hermes sessions:
 
-- `/trimtok status` or `/trimtok stats` — Display total character savings and active cache entry count.
+- `/trimtok status` or `/trimtok stats` — Display recent character savings and active cache entry count. Expired CCR files are cleaned during status checks.
 - `/trimtok purge` — Evict all cached CCR files.
 - `/trimtok retrieve <hash>` — Print cached original text for a given hash.
 
@@ -144,6 +146,14 @@ Verify test suites and microsecond benchmarks locally:
 python tests/test_core.py
 python tests/test_dedup.py
 python tests/test_benchmark.py
+```
+
+An optional integration test loads the plugin through Hermes' runtime in an isolated temporary home, then checks compression and exact retrieval. It skips when `HERMES_AGENT_PATH` is not set. `TRIMTOK_PLUGIN_PATH` can point it at a different plugin copy; otherwise it tests this checkout. Run it with the Python environment used by Hermes:
+
+```powershell
+$env:HERMES_AGENT_PATH = "$env:LOCALAPPDATA\hermes\hermes-agent"
+$env:TRIMTOK_PLUGIN_PATH = "$env:LOCALAPPDATA\hermes\plugins\trimtok" # optional: test installed copy
+& "$env:LOCALAPPDATA\hermes\hermes-agent\venv\Scripts\python.exe" tests/test_hermes_runtime.py
 ```
 
 ---

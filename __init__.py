@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -25,6 +27,13 @@ except ImportError:  # direct unit-test import
     )
 
 logger = logging.getLogger(__name__)
+
+_MAX_GREP_PATTERN_CHARS = 256
+_MAX_GREP_INPUT_CHARS = 1_000_000
+_MAX_GREP_MATCHES = 1000
+_MAX_GREP_OUTPUT_CHARS = 100_000
+_MAX_AUDIT_BYTES = 1_048_576
+_AUDIT_LOCK = threading.Lock()
 
 RETRIEVE_SCHEMA = {
     "name": "trimtok_retrieve",
@@ -50,7 +59,10 @@ RETRIEVE_SCHEMA = {
             },
             "grep": {
                 "type": "string",
-                "description": "Optional case-insensitive regex pattern to filter lines.",
+                "description": (
+                    "Optional case-insensitive safe regex (no groups or multiple repetitions); "
+                    "limited to 256 pattern characters, 1 MB input, 1000 matches, and 100 KB output."
+                ),
             },
         },
         "required": ["hash"],
@@ -69,8 +81,18 @@ def _audit(entry: dict, ctx: Any = None) -> None:
         path = _audit_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         line = json.dumps(entry, ensure_ascii=False) + "\n"
-        with path.open("a", encoding="utf-8") as f:
-            f.write(line)
+        if len(line.encode("utf-8")) > _MAX_AUDIT_BYTES:
+            line = json.dumps({"event": "audit_entry_oversize"}) + "\n"
+        with _AUDIT_LOCK:
+            backup = path.with_name(path.name + ".1")
+            if backup.exists() and backup.stat().st_size > _MAX_AUDIT_BYTES:
+                backup.unlink(missing_ok=True)
+            if path.exists() and path.stat().st_size > _MAX_AUDIT_BYTES:
+                path.write_text(json.dumps({"event": "audit_history_truncated"}) + "\n", encoding="utf-8")
+            if path.exists() and path.stat().st_size + len(line.encode("utf-8")) > _MAX_AUDIT_BYTES:
+                os.replace(path, backup)
+            with path.open("a", encoding="utf-8") as f:
+                f.write(line)
     except Exception:
         pass
 
@@ -84,6 +106,77 @@ def _int_cfg(ctx: Any, key: str, default: int, low: int, high: int) -> int:
         return default
 
 
+def _list_cfg(ctx: Any, key: str) -> list[str]:
+    try:
+        value = ctx.get_config(key, [])
+        if isinstance(value, list):
+            return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+    except Exception:
+        pass
+    return []
+
+
+def _excluded_command(command: Any, ctx: Any) -> bool:
+    normalized = " ".join(str(command or "").split()).casefold()
+    if not normalized:
+        return False
+    for excluded in _list_cfg(ctx, "exclude_commands"):
+        prefix = " ".join(excluded.split()).casefold()
+        if normalized == prefix or normalized.startswith(prefix + " "):
+            return True
+    return False
+
+
+def _excluded_tool(tool_name: Any, ctx: Any) -> bool:
+    normalized = str(tool_name or "").strip().casefold()
+    return bool(normalized) and any(
+        normalized == excluded.casefold() for excluded in _list_cfg(ctx, "exclude_tools")
+    )
+
+
+def _compile_grep(source: str) -> re.Pattern[str]:
+    """Compile a bounded regex subset without grouped/nested repetition."""
+    if len(source) > _MAX_GREP_PATTERN_CHARS:
+        raise ValueError(f"pattern exceeds {_MAX_GREP_PATTERN_CHARS} characters")
+
+    repeats = 0
+    in_class = False
+    escaped = False
+    last_was_repeat = False
+    for char in source:
+        if escaped:
+            if char.isdigit():
+                raise ValueError("backreferences are not supported in grep patterns")
+            escaped = False
+            last_was_repeat = False
+            continue
+        if char == "\\":
+            escaped = True
+            last_was_repeat = False
+            continue
+        if in_class:
+            if char == "]":
+                in_class = False
+            continue
+        if char == "[":
+            in_class = True
+            last_was_repeat = False
+            continue
+        if char in "(){}":
+            raise ValueError("groups and counted repetition are not supported in grep patterns")
+        if char in "*+?":
+            if char == "?" and last_was_repeat:  # lazy suffix, not a second repeat
+                last_was_repeat = False
+                continue
+            repeats += 1
+            if repeats > 1:
+                raise ValueError("only one repetition operator is supported in grep patterns")
+            last_was_repeat = True
+        else:
+            last_was_repeat = False
+    return re.compile(source, re.IGNORECASE)
+
+
 def _on_transform(
     command: Any = None,
     output: Any = None,
@@ -95,6 +188,8 @@ def _on_transform(
     if not _bool_cfg(ctx, "enabled", True):
         return None
     if not isinstance(output, str):
+        return None
+    if _excluded_command(command, ctx):
         return None
     min_chars = _int_cfg(ctx, "min_chars", 2048, 0, 10_000_000)
     new_output, stats = compress_terminal(
@@ -155,6 +250,8 @@ def _on_tool_result(
     if not _bool_cfg(ctx, "phase2_enabled", True):
         return None
     if not isinstance(result, str):
+        return None
+    if _excluded_tool(tool_name, ctx):
         return None
     sid = str(session_id or task_id or "default")
     turn = str(turn_id or "")
@@ -231,21 +328,42 @@ def _handle_retrieve(args: dict, **kw: Any) -> str:
     if content is None:
         return _err("Not found or expired (TTL passed). Re-run the original command instead.")
 
-    lines = content.splitlines()
-    total_lines = len(lines)
     grep = str((args or {}).get("grep") or "").strip()
     if grep:
         try:
-            pattern = re.compile(grep, re.IGNORECASE)
-            matched = [f"{i + 1}|{ln}" for i, ln in enumerate(lines) if pattern.search(ln)]
+            if len(content) > _MAX_GREP_INPUT_CHARS:
+                return _err(
+                    f"Content exceeds the {_MAX_GREP_INPUT_CHARS}-character grep limit; retrieve a smaller slice."
+                )
+            pattern = _compile_grep(grep)
+            lines = content.splitlines()
+            total_lines = len(lines)
+            matched: list[str] = []
+            output_chars = 0
+            matches_count = 0
+            truncated = False
+            for i, line in enumerate(lines):
+                if not pattern.search(line):
+                    continue
+                matches_count += 1
+                rendered = f"{i + 1}|{line}"
+                extra = len(rendered) + (1 if matched else 0)
+                if len(matched) >= _MAX_GREP_MATCHES or output_chars + extra > _MAX_GREP_OUTPUT_CHARS:
+                    truncated = True
+                    continue
+                matched.append(rendered)
+                output_chars += extra
             return _ok({
                 "matches": "\n".join(matched) if matched else "(no matches found)",
-                "matches_count": len(matched),
+                "matches_count": matches_count,
                 "total_lines": total_lines,
+                "truncated": truncated,
             })
         except Exception as e:
             return _err(f"Invalid grep pattern: {e}")
 
+    lines = content.splitlines()
+    total_lines = len(lines)
     offset = (args or {}).get("offset")
     limit = (args or {}).get("limit")
     if offset is not None or limit is not None:
@@ -284,11 +402,18 @@ def _handle_ts_command(raw_args: str) -> str:
     if arg in ("", "status"):
         try:
             path = _audit_path()
-            lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+            backup = path.with_name(path.name + ".1")
+            lines = []
+            with _AUDIT_LOCK:
+                for audit_file in (backup, path):
+                    if audit_file.exists():
+                        lines.extend(audit_file.read_text(encoding="utf-8").splitlines())
             saved = sum((json.loads(ln).get("saved_chars") or 0) for ln in lines if ln.strip().startswith("{"))
-            c_stat = ccr_stats()
+            ctx = getattr(_handle_ts_command, "_ctx", None)
+            ttl_hours = _int_cfg(ctx, "ccr_ttl_hours", 24, 1, 24 * 30) if ctx is not None else 24
+            c_stat = ccr_stats(ttl_hours=ttl_hours)
             return (
-                f"trimtok v{VERSION}: {len(lines)} transforms logged, ~{saved:,} chars saved.\n"
+                f"trimtok v{VERSION}: {len(lines)} transforms logged (recent window), ~{saved:,} chars saved.\n"
                 f"CCR Cache: {c_stat.get('entries', 0)} files (~{c_stat.get('bytes', 0) // 1024} KB)."
             )
         except Exception:
@@ -317,6 +442,7 @@ def register(ctx: Any) -> None:
     _on_tool_result._ctx = ctx  # type: ignore[attr-defined]
     _on_post_llm._ctx = ctx  # type: ignore[attr-defined]
     _handle_retrieve._ctx = ctx  # type: ignore[attr-defined]
+    _handle_ts_command._ctx = ctx  # type: ignore[attr-defined]
     ctx.register_hook("transform_terminal_output", _on_transform)
     ctx.register_hook("transform_tool_result", _on_tool_result)
     ctx.register_hook("post_llm_call", _on_post_llm)

@@ -135,6 +135,13 @@ t1, _ = toon_encode([{"a": 1}, {"b": 2}])
 check("toon-nonuniform", t1 == "")
 t2, _ = toon_encode([{"a": {"x": 1}}])
 check("toon-nested-no", t2 == "")
+typed, _ = toon_encode([
+    {"value": None}, {"value": ""}, {"value": "true"},
+    {"value": True}, {"value": 1},
+])
+check("toon-preserves-scalar-types", len(set(typed.splitlines()[1:])) == 5)
+ambiguous, _ = toon_encode([{"a,b": 1}, {"a,b": 2}, {"a,b": 3}])
+check("toon-rejects-ambiguous-field", ambiguous == "")
 
 # 12. per-command budgets
 import sys as _sys
