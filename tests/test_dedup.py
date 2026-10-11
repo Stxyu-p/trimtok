@@ -193,4 +193,5 @@ mapped2 = mask_old_turns("mask2", "new3", keep_turns=2, store=store)
 check("mask-idempotent", mapped2 == {})
 
 print(f"\n{check.failed} failures")
-sys.exit(1 if check.failed else 0)
+if __name__ == "__main__":
+    sys.exit(1 if check.failed else 0)

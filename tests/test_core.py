@@ -87,4 +87,5 @@ _ms = sorted(compress_terminal("tail", blob)[1].get("ms", 1e9) for _ in range(3)
 check("perf-p99", _ms < 100)
 
 print(f"\n{check.failed} failures")
-sys.exit(1 if check.failed else 0)
+if __name__ == "__main__":
+    sys.exit(1 if check.failed else 0)
