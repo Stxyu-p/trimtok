@@ -112,6 +112,8 @@ def _on_transform(
         max_bytes=_int_cfg(ctx, "ccr_max_bytes", 50 * 1024 * 1024, 1024, 1_000_000_000),
         ttl_hours=_int_cfg(ctx, "ccr_ttl_hours", 24, 1, 24 * 30),
     )
+    if not stored:
+        return None
     if stored and stored != digest:
         new_output = new_output.replace(f"retrieve:{digest}", f"retrieve:{stored}", 1)
         digest = stored
@@ -172,6 +174,8 @@ def _on_tool_result(
         max_bytes=_int_cfg(ctx, "ccr_max_bytes", 50 * 1024 * 1024, 1024, 1_000_000_000),
         ttl_hours=_int_cfg(ctx, "ccr_ttl_hours", 24, 1, 24 * 30),
     )
+    if not stored:
+        return None
     if stored and stored != digest:
         new_result = new_result.replace(f"retrieve:{digest}", f"retrieve:{stored}", 1)
         digest = stored
@@ -221,7 +225,9 @@ def _handle_retrieve(args: dict, **kw: Any) -> str:
     digest = "".join(c for c in digest if c in "0123456789abcdef")[:16]
     if not digest:
         return _err("hash is required (from a '[tt:... retrieve:<hash>]' marker)")
-    content = ccr_get(digest)
+    ctx = getattr(_handle_retrieve, "_ctx", None)
+    ttl_hours = _int_cfg(ctx, "ccr_ttl_hours", 24, 1, 24 * 30) if ctx is not None else 24
+    content = ccr_get(digest, ttl_hours=ttl_hours)
     if content is None:
         return _err("Not found or expired (TTL passed). Re-run the original command instead.")
 
@@ -310,6 +316,7 @@ def register(ctx: Any) -> None:
     _on_transform._ctx = ctx  # type: ignore[attr-defined]
     _on_tool_result._ctx = ctx  # type: ignore[attr-defined]
     _on_post_llm._ctx = ctx  # type: ignore[attr-defined]
+    _handle_retrieve._ctx = ctx  # type: ignore[attr-defined]
     ctx.register_hook("transform_terminal_output", _on_transform)
     ctx.register_hook("transform_tool_result", _on_tool_result)
     ctx.register_hook("post_llm_call", _on_post_llm)

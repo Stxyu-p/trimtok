@@ -55,7 +55,12 @@ def put(
         return ""
 
 
-def get(digest: str, *, dir: Path | None = None) -> str | None:
+def get(
+    digest: str,
+    *,
+    dir: Path | None = None,
+    ttl_hours: int = 24,
+) -> str | None:
     """Fetch original by digest prefix (unique prefix ok). None if missing/expired."""
     try:
         base = Path(dir) if dir else default_dir()
@@ -65,12 +70,17 @@ def get(digest: str, *, dir: Path | None = None) -> str | None:
         # Fast path: exact digest file exists directly (bypasses glob)
         direct = base / (clean + ".txt")
         if direct.is_file():
-            return direct.read_text(encoding="utf-8", errors="replace")
-        # Prefix lookup fallback
-        matches = sorted(base.glob(clean + "*.txt"))
-        if len(matches) != 1:
+            match = direct
+        else:
+            # Prefix lookup fallback
+            matches = sorted(base.glob(clean + "*.txt"))
+            if len(matches) != 1:
+                return None
+            match = matches[0]
+        if time.time() - match.stat().st_mtime > max(0, ttl_hours) * 3600:
+            match.unlink(missing_ok=True)
             return None
-        return matches[0].read_text(encoding="utf-8", errors="replace")
+        return match.read_text(encoding="utf-8", errors="replace")
     except Exception:
         return None
 

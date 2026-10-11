@@ -391,6 +391,10 @@ def toon_encode(rows: list[dict], *, max_rows: int = 0) -> tuple[str, bool]:
             for v in r.values():
                 if not isinstance(v, (str, int, float, bool)) and v is not None:
                     return "", False
+        # Field names form the unquoted header; reject names that would make
+        # its delimiters ambiguous rather than emitting a corrupt table.
+        if any(any(c in k for c in ',{}[]"\r\n') for k in fields):
+            return "", False
         total = len(rows)
         capped = False
         if max_rows and total > max_rows:
@@ -403,12 +407,12 @@ def toon_encode(rows: list[dict], *, max_rows: int = 0) -> tuple[str, bool]:
 
         def _cell(v: object) -> str:
             if v is None:
-                return ""
+                return "null"
             if isinstance(v, bool):
                 return "true" if v else "false"
+            if isinstance(v, str):
+                return '"' + v.replace('"', '""') + '"'
             s = str(v)
-            if any(c in s for c in (",", '"', "\n", "[")):
-                return '"' + s.replace('"', '""') + '"'
             return s
 
         lines = [f"[{total}]{{{','.join(fields)}}}:"] if not capped else [
