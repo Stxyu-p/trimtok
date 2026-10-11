@@ -26,6 +26,10 @@ config_schema:
     type: int
     default: 2
     description: Fold-index keeps content from this many recent turns.
+  audit_enabled:
+    type: bool
+    default: true
+    description: Record compression savings to audit.jsonl log.
   toon_enabled:
     type: bool
     default: false

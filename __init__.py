@@ -49,7 +49,9 @@ def _audit_path() -> Path:
     return default_dir() / "audit.jsonl"
 
 
-def _audit(entry: dict) -> None:
+def _audit(entry: dict, ctx: Any = None) -> None:
+    if ctx is not None and not _bool_cfg(ctx, "audit_enabled", True):
+        return
     try:
         path = _audit_path()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -110,7 +112,7 @@ def _on_transform(
         "gate": "ok",
         "hash": digest,
         "ms": round(float(stats.get("ms", 0.0)), 2),
-    })
+    }, ctx=ctx)
     return new_output
 
 
@@ -170,7 +172,7 @@ def _on_tool_result(
         "gate": "ok",
         "hash": digest,
         "ms": round(float(stats.get("ms", 0.0)), 2),
-    })
+    }, ctx=ctx)
     return new_result
 
 
@@ -195,7 +197,7 @@ def _on_post_llm(
             keep_turns=_int_cfg(ctx, "mask_keep_turns", 2, 0, 32),
         )
         if expired:
-            _audit({"tool": "mask", "expired_turns": expired, "gate": "ok", "ms": 0.0})
+            _audit({"tool": "mask", "expired_turns": expired, "gate": "ok", "ms": 0.0}, ctx=ctx)
     except Exception:
         pass
     return None

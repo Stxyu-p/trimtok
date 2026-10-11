@@ -15,6 +15,8 @@ _PUT_COUNT = 0
 
 
 def default_dir() -> Path:
+    if os.environ.get("HERMES_HOME"):
+        return Path(os.environ["HERMES_HOME"]) / "plugin-data" / "trimtok"
     try:
         from hermes_constants import get_hermes_home  # type: ignore
         return get_hermes_home() / "plugin-data" / "trimtok"
