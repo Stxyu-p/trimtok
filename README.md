@@ -128,7 +128,7 @@ In interactive Hermes sessions:
 Clone or copy the repository into your Hermes plugins directory:
 
 ```bash
-git clone https://github.com/PChoke/trimtok.git "$LOCALAPPDATA/hermes/plugins/trimtok"
+git clone https://github.com/Stxyu-p/trimtok.git "$LOCALAPPDATA/hermes/plugins/trimtok"
 ```
 *(On POSIX systems, target `~/.hermes/plugins/trimtok`)*
 
