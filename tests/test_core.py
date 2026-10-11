@@ -60,12 +60,32 @@ check("ansi-stripped", "\x1b[" not in out5)
 # 8. CCR roundtrip + TTL/evict basics
 with tempfile.TemporaryDirectory() as td:
     from pathlib import Path
+    import json
     d = Path(td)
-    h = ccr_put("hello original " * 200, dir=d)
+    sample_text = "line 1 alpha\nline 2 needle here\nline 3 beta\nline 4 needle again\nline 5 gamma\n"
+    h = ccr_put(sample_text * 50, dir=d)
     check("ccr-put", len(h) == 12)
-    check("ccr-get", (ccr_get(h, dir=d) or "").startswith("hello original"))
+    check("ccr-get", (ccr_get(h, dir=d) or "").startswith("line 1 alpha"))
     check("ccr-missing", ccr_get("deadbeef1234", dir=d) is None)
     check("ccr-bad-hash", ccr_get("!!!", dir=d) is None)
+
+    # 8b. retrieve tool with pagination and grep
+    from __init__ import _handle_retrieve
+    # monkeypatch default_dir for test
+    import ccr
+    orig_dir = ccr.default_dir
+    ccr.default_dir = lambda: d
+    try:
+        res_full = json.loads(_handle_retrieve({"hash": h}))
+        check("retrieve-full", "original_content" in res_full and res_full["total_lines"] > 10)
+
+        res_slice = json.loads(_handle_retrieve({"hash": h, "offset": 2, "limit": 2}))
+        check("retrieve-slice", "2|line 2 needle here" in res_slice["lines"] and res_slice["returned_lines"] == 2)
+
+        res_grep = json.loads(_handle_retrieve({"hash": h, "grep": "needle"}))
+        check("retrieve-grep", res_grep["matches_count"] == 100 and "needle here" in res_grep["matches"])
+    finally:
+        ccr.default_dir = orig_dir
 
 # 9. detect kinds
 check("detect-diff", detect_kind("diff --git a/b\n@@ -1 +1 @@\n-x\n+y\n" * 30) == "diff")

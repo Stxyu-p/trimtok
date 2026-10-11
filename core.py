@@ -147,24 +147,39 @@ def _window(
     flagged: list[tuple[str, bool]],
     budget: int,
 ) -> tuple[list[str], int]:
-    """HEAD/TAIL window with forced error lines. Returns (lines, dropped)."""
+    """Balanced HEAD/TAIL window with forced error lines. Returns (lines, dropped)."""
     lines = [ln for ln, _ in flagged]
-    if len(lines) <= budget:
+    n = len(lines)
+    if n <= budget:
         return lines, 0
     forced_set = {i for i, (_, imp) in enumerate(flagged) if imp}
-    head = [i for i in range(min(_HEAD_KEEP, len(lines))) if i not in forced_set]
-    tail = [i for i in range(max(0, len(lines) - _TAIL_KEEP), len(lines)) if i not in forced_set]
-    keep = sorted(forced_set | set(head) | set(tail))
-    # fill middle if budget allows
-    for i in range(len(lines)):
-        if len(keep) >= budget:
-            break
-        if i not in forced_set and i not in keep:
-            keep.append(i)
-    keep = sorted(keep)
-    if len(keep) < _MIN_KEEP:
-        keep = sorted(set(keep) | set(range(min(_MIN_KEEP, len(lines)))))
-    # emit with omission markers
+
+    # Balanced head and tail: summaries and failure stats live at tail
+    head_count = max(_HEAD_KEEP, min(budget // 4, 30))
+    tail_count = max(_TAIL_KEEP, min(budget // 3, 40))
+
+    head_indices = set(range(min(head_count, n)))
+    tail_indices = set(range(max(0, n - tail_count), n))
+
+    keep_set = forced_set | head_indices | tail_indices
+    if len(keep_set) > budget:
+        essential = forced_set | {0, max(0, n - 1)}
+        if len(essential) <= budget:
+            sorted_all = sorted(keep_set)
+            keep_set = set(sorted_all[:budget]) | essential
+        else:
+            keep_set = set(sorted(forced_set)[:budget]) | {0, max(0, n - 1)}
+    else:
+        rem = budget - len(keep_set)
+        if rem > 0:
+            for i in range(n):
+                if i not in keep_set:
+                    keep_set.add(i)
+                    rem -= 1
+                    if rem == 0:
+                        break
+
+    keep = sorted(keep_set)
     out: list[str] = []
     dropped = 0
     prev = -1

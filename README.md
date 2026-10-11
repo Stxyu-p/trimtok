@@ -77,16 +77,19 @@ Measured on standard production environments (Intel/AMD x86_64 and Windows/Linux
 
 ### 3. Content-Addressed Retrieval (CCR) Safety Rail
 Every compressed or folded output is stored by its 12-character SHA-256 digest in the local CCR cache (`~/.hermes/plugin-data/trimtok/ccr/`).
-If an agent requires the exact uncompressed payload, it calls the registered tool:
+If an agent requires the exact uncompressed payload, it calls the registered tool with optional line pagination or regex filtering:
 ```json
 {
   "name": "trimtok_retrieve",
   "arguments": {
-    "hash": "57511e252ada"
+    "hash": "57511e252ada",
+    "offset": 1,
+    "limit": 50,
+    "grep": "error|fail"
   }
 }
 ```
-The original content is retrieved and restored instantly.
+The original content is retrieved and restored with line numbers or filtered without blowing up the context budget.
 
 ---
 
@@ -102,6 +105,7 @@ Settings are declared under `plugins.entries.trimtok.settings` in Hermes `config
 | `max_lines` | `int` | `120` | Terminal line windowing limit. |
 | `mask_enabled` | `bool` | `true` | Enables turn-clock expiry for fold index freshness. |
 | `mask_keep_turns`| `int` | `2` | Number of recent turns retained in the active fold index. |
+| `audit_enabled`  | `bool` | `true` | Record compression savings to audit.jsonl log. |
 | `ccr_max_entries`| `int` | `1000` | Maximum cached original entries before LRU eviction. |
 | `ccr_max_bytes`  | `int` | `52428800` | Total cache byte budget (default: 50 MB). |
 | `ccr_ttl_hours`  | `int` | `24` | Time-to-live for cached originals. |

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -28,16 +29,28 @@ logger = logging.getLogger(__name__)
 RETRIEVE_SCHEMA = {
     "name": "trimtok_retrieve",
     "description": (
-        "Retrieve the full uncompressed original content of a previously folded or windowed "
-        "tool result by its content hash. Use this when you need specific details from "
-        "a result marked with '[tt:terminal ... retrieve:<hash>]' or '[tt:tool ... retrieve:<hash>]'."
+        "Retrieve the uncompressed original content of a previously folded or windowed "
+        "tool result by its content hash. Supports optional line pagination (offset/limit) "
+        "and grep regex filtering to inspect specific details without flooding context."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "hash": {
                 "type": "string",
-                "description": "The 12-character content hash shown in the [tt:... retrieve:<hash>] marker.",
+                "description": "The content hash shown in the [tt:... retrieve:<hash>] marker.",
+            },
+            "offset": {
+                "type": "integer",
+                "description": "Optional 1-indexed line number to start reading from.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Optional maximum number of lines to return.",
+            },
+            "grep": {
+                "type": "string",
+                "description": "Optional case-insensitive regex pattern to filter lines.",
             },
         },
         "required": ["hash"],
@@ -211,7 +224,37 @@ def _handle_retrieve(args: dict, **kw: Any) -> str:
     content = ccr_get(digest)
     if content is None:
         return _err("Not found or expired (TTL passed). Re-run the original command instead.")
-    return _ok({"original_content": content, "original_chars": len(content)})
+
+    lines = content.splitlines()
+    total_lines = len(lines)
+    grep = str((args or {}).get("grep") or "").strip()
+    if grep:
+        try:
+            pattern = re.compile(grep, re.IGNORECASE)
+            matched = [f"{i + 1}|{ln}" for i, ln in enumerate(lines) if pattern.search(ln)]
+            return _ok({
+                "matches": "\n".join(matched) if matched else "(no matches found)",
+                "matches_count": len(matched),
+                "total_lines": total_lines,
+            })
+        except Exception as e:
+            return _err(f"Invalid grep pattern: {e}")
+
+    offset = (args or {}).get("offset")
+    limit = (args or {}).get("limit")
+    if offset is not None or limit is not None:
+        start = max(0, int(offset or 1) - 1)
+        cnt = int(limit) if limit is not None else 1000
+        end = min(total_lines, start + max(1, cnt))
+        sliced = [f"{i + 1}|{lines[i]}" for i in range(start, end)]
+        return _ok({
+            "lines": "\n".join(sliced),
+            "offset": start + 1,
+            "total_lines": total_lines,
+            "returned_lines": len(sliced),
+        })
+
+    return _ok({"original_content": content, "original_chars": len(content), "total_lines": total_lines})
 
 
 def _err(message: str) -> str:
