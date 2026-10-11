@@ -8,7 +8,7 @@
   <a href="#benchmarks"><img src="https://img.shields.io/badge/Latency-Sub_1.5ms-brightgreen?style=flat-square" alt="Latency" /></a>
   <a href="#architecture"><img src="https://img.shields.io/badge/Dependencies-Stdlib_Only-success?style=flat-square" alt="Zero Dependencies" /></a>
   <a href="#safety-rail-ccr"><img src="https://img.shields.io/badge/Safety-Fail_Open-blue?style=flat-square" alt="Fail-open" /></a>
-  <a href="#installation"><img src="https://img.shields.io/badge/Hermes_Agent-Plugin-10b981?style=flat-square" alt="Hermes Plugin" /></a>
+  <a href="#installation"><img src="https://img.shields.io/badge/Ecosystem-Hermes_Agent-blueviolet?style=flat-square" alt="Hermes Agent" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-slate?style=flat-square" alt="License" /></a>
 </p>
 
