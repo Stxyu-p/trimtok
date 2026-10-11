@@ -12,7 +12,7 @@ import re
 import time
 from functools import lru_cache
 
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 
 # Sentinel: compressed output carries [tt:<kind> ...] so subsequent hooks can
 # skip it (idempotency). Marker/legend live at HEAD because core truncates tail.

@@ -1,12 +1,14 @@
 name: trimtok
-version: 0.5.0
-description: "Local stdlib-only context compressor (Phase 1 terminal filters + Phase 2 cross-turn fold + Phase 3 freshness mask): per-command budgets, error rails, file-local CCR with trimtok_retrieve."
+version: 0.5.1
+description: "Local stdlib-only context compressor: per-command budgets, balanced windowing, error rails, cross-turn fold, file-local CCR with paginated trimtok_retrieve."
 entry_point: __init__.py
 author: "P Choke & MIKA"
 provides_hooks:
   - transform_terminal_output
   - transform_tool_result
   - post_llm_call
+  - on_session_start
+  - on_session_end
 provides_tools:
   - trimtok_retrieve
 config_schema:

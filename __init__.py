@@ -298,6 +298,14 @@ def _handle_ts_command(raw_args: str) -> str:
     return "Usage: /trimtok [status|stats|purge|retrieve <hash>]"
 
 
+def _on_session_end(session_id: Any = None, **kw: Any) -> None:
+    clear_session(str(session_id or ""))
+
+
+def _on_session_start(session_id: Any = None, **kw: Any) -> None:
+    clear_session(str(session_id or ""))
+
+
 def register(ctx: Any) -> None:
     _on_transform._ctx = ctx  # type: ignore[attr-defined]
     _on_tool_result._ctx = ctx  # type: ignore[attr-defined]
@@ -305,6 +313,8 @@ def register(ctx: Any) -> None:
     ctx.register_hook("transform_terminal_output", _on_transform)
     ctx.register_hook("transform_tool_result", _on_tool_result)
     ctx.register_hook("post_llm_call", _on_post_llm)
+    ctx.register_hook("on_session_start", _on_session_start)
+    ctx.register_hook("on_session_end", _on_session_end)
     ctx.register_tool(
         name="trimtok_retrieve",
         toolset="trimtok",

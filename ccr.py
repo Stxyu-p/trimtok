@@ -85,22 +85,22 @@ def purge(*, dir: Path | None = None, before_seconds: float = 0) -> int:
         purged = 0
         for p in base.glob("*.txt"):
             if before_seconds <= 0 or (now - p.stat().st_mtime) > before_seconds:
-                with _quiet_unlink(p):
-                    purged += 1
+                p.unlink(missing_ok=True)
+                purged += 1
         return purged
     except Exception:
         return 0
 
 
 def stats(*, dir: Path | None = None) -> dict:
-    """Return count and total bytes of cached CCR files."""
+    """Return count and total bytes of cached originals."""
     try:
         base = Path(dir) if dir else default_dir()
         if not base.exists():
             return {"entries": 0, "bytes": 0}
         files = list(base.glob("*.txt"))
-        total_bytes = sum(f.stat().st_size for f in files)
-        return {"entries": len(files), "bytes": total_bytes}
+        total = sum(p.stat().st_size for p in files)
+        return {"entries": len(files), "bytes": total}
     except Exception:
         return {"entries": 0, "bytes": 0}
 
@@ -108,40 +108,26 @@ def stats(*, dir: Path | None = None) -> dict:
 def _evict(base: Path, max_entries: int, max_bytes: int, ttl_hours: int) -> None:
     try:
         now = time.time()
-        files = [(p, p.stat()) for p in base.glob("*.txt")]
-        # TTL eviction first
-        for p, st in files:
-            if now - st.st_mtime > ttl_hours * 3600:
-                with _quiet_unlink(p):
-                    pass
-        files = [(p, p.stat()) for p in base.glob("*.txt")]
-        files.sort(key=lambda t: t[1].st_mtime)  # oldest first
-        # entry cap
+        cutoff = now - (ttl_hours * 3600)
+        files: list[tuple[Path, os.stat_result]] = []
+        for p in base.glob("*.txt"):
+            try:
+                st = p.stat()
+                if st.st_mtime < cutoff:
+                    p.unlink(missing_ok=True)
+                else:
+                    files.append((p, st))
+            except Exception:
+                pass
+        # oldest first
+        files.sort(key=lambda t: t[1].st_mtime)
         while len(files) > max_entries:
             p, _ = files.pop(0)
-            with _quiet_unlink(p):
-                pass
-        # byte cap
+            p.unlink(missing_ok=True)
         total = sum(st.st_size for _, st in files)
         while files and total > max_bytes:
             p, st = files.pop(0)
-            with _quiet_unlink(p):
-                pass
+            p.unlink(missing_ok=True)
             total -= st.st_size
     except Exception:
         pass
-
-
-class _quiet_unlink:
-    def __init__(self, path: Path):
-        self.path = path
-
-    def __enter__(self) -> None:
-        return None
-
-    def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> bool:
-        try:
-            self.path.unlink(missing_ok=True)
-        except Exception:
-            pass
-        return True
