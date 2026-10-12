@@ -1,6 +1,6 @@
 """trimtok CCR: content-addressed retrieval cache. One file per sha256 slice.
 
-Concurrency-safe: key = content hash, writes are exclusive-create.
+Concurrency-safe: key = content hash, writes publish atomically.
 Eviction: LRU by mtime when over entry/byte caps. Never raises.
 """
 
@@ -89,7 +89,8 @@ def get(
             if len(matches) != 1:
                 return None
             match = matches[0]
-        if time.time() - match.stat().st_mtime > max(0, ttl_hours) * 3600:
+        cutoff = time.time() - max(0, ttl_hours) * 3600
+        if _is_expired(match.stat(), cutoff):
             match.unlink(missing_ok=True)
             return None
         return match.read_text(encoding="utf-8", errors="replace")
@@ -121,17 +122,8 @@ def stats(*, dir: Path | None = None, ttl_hours: int = 24) -> dict:
         if not base.exists():
             return {"entries": 0, "bytes": 0}
         cutoff = time.time() - max(0, ttl_hours) * 3600
-        files: list[os.stat_result] = []
-        for path in base.glob("*.txt"):
-            try:
-                stat = path.stat()
-                if stat.st_mtime < cutoff:
-                    path.unlink(missing_ok=True)
-                else:
-                    files.append(stat)
-            except Exception:
-                pass
-        total = sum(stat.st_size for stat in files)
+        files = _live_files(base, cutoff)
+        total = sum(stat.st_size for _, stat in files)
         return {"entries": len(files), "bytes": total}
     except Exception:
         return {"entries": 0, "bytes": 0}
@@ -141,16 +133,7 @@ def _evict(base: Path, max_entries: int, max_bytes: int, ttl_hours: int) -> None
     try:
         now = time.time()
         cutoff = now - (ttl_hours * 3600)
-        files: list[tuple[Path, os.stat_result]] = []
-        for p in base.glob("*.txt"):
-            try:
-                st = p.stat()
-                if st.st_mtime < cutoff:
-                    p.unlink(missing_ok=True)
-                else:
-                    files.append((p, st))
-            except Exception:
-                pass
+        files = _live_files(base, cutoff)
         # oldest first
         files.sort(key=lambda t: t[1].st_mtime)
         while len(files) > max_entries:
@@ -163,3 +146,22 @@ def _evict(base: Path, max_entries: int, max_bytes: int, ttl_hours: int) -> None
             total -= st.st_size
     except Exception:
         pass
+
+
+def _is_expired(stat: os.stat_result, cutoff: float) -> bool:
+    return stat.st_mtime < cutoff
+
+
+def _live_files(base: Path, cutoff: float) -> list[tuple[Path, os.stat_result]]:
+    """Return non-expired cache entries while deleting expired ones."""
+    files: list[tuple[Path, os.stat_result]] = []
+    for path in base.glob("*.txt"):
+        try:
+            stat = path.stat()
+            if _is_expired(stat, cutoff):
+                path.unlink(missing_ok=True)
+            else:
+                files.append((path, stat))
+        except Exception:
+            pass
+    return files

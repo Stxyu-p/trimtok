@@ -34,14 +34,6 @@ _TS_LONG_RE = re.compile(
 _SEEN: dict[str, dict] = {}
 
 
-def _corpus(session_id: str) -> list[tuple[str, str]]:
-    return _seen(session_id)["spans"]
-
-
-def _repeat_seen(session_id: str) -> set[str]:
-    return _seen(session_id)["raw"]
-
-
 def _seen(session_id: str) -> dict:
     key = session_id or "default"
     entry = _SEEN.get(key)
@@ -136,11 +128,6 @@ def normalize_volatile(text: str) -> tuple[str, int]:
     return new, len(text) - len(new)
 
 
-def _index_lines(span_lines: list[str], corpus: list[tuple[str, str]]) -> None:
-    for h, _ in corpus:
-        pass  # hashes compared directly; kept simple, corpus is small
-
-
 def fold_spans(
     text: str,
     session_id: str = "",
@@ -157,8 +144,8 @@ def fold_spans(
     pointers embed it, so every pointer resolves. Defaults to first-seen
     (unit-test path only — production always passes the current digest).
     """
-    corpus = _corpus(session_id)
     seen = _seen(session_id)
+    corpus = seen["spans"]
     # query folds at two levels: (1) raw lines against the index, (2) inner
     # lines of JSON string fields (a minified envelope is one giant line, so
     # the raw split alone has nothing to match indexed content). Level 2 is
@@ -480,7 +467,8 @@ def compress_tool_result(
         # and fool the agent into thinking the tool is broken.
         # (Checked on raw input: an exact re-run means the agent wants it full.)
         _rh = hashlib.sha256(result.encode("utf-8", "replace")).hexdigest()[:12]
-        if _rh in _repeat_seen(session_id or "default"):
+        raw_hashes = _seen(session_id or "default")["raw"]
+        if _rh in raw_hashes:
             return result, {"gate": "passthrough_repeat", "ms": 0.0}
         text, h_saved = hygiene(result)
         text, v_saved = normalize_volatile(text)
@@ -519,13 +507,13 @@ def compress_tool_result(
                 pass
         # token-gate
         if len(folded) >= len(result):
-            _repeat_seen(session_id or "default").add(_rh)
+            raw_hashes.add(_rh)
             return result, {
                 "gate": "reverted_gate", "before_chars": len(result),
                 "ms": (time.perf_counter() - t0) * 1000,
             }
         digest = _rh
-        _repeat_seen(session_id or "default").add(_rh)
+        raw_hashes.add(_rh)
         head = f"[tt:tool kind=result saved={len(result) - len(folded)} retrieve:{digest}]"
         new_result = head + "\n" + folded
         if len(new_result) >= len(result):

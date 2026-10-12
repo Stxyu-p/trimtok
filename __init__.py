@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import re
 import threading
-import time
 from pathlib import Path
 from typing import Any
 
@@ -15,18 +13,14 @@ try:
     from .core import VERSION, compress_terminal
     from .ccr import default_dir, get as ccr_get, purge as ccr_purge, put as ccr_put, stats as ccr_stats
     from .dedup import (
-        clear_session, compress_tool_result, fold_spans, mask_old_turns,
-        note_turn, remember,
+        clear_session, compress_tool_result, note_turn,
     )
 except ImportError:  # direct unit-test import
     from core import VERSION, compress_terminal
     from ccr import default_dir, get as ccr_get, purge as ccr_purge, put as ccr_put, stats as ccr_stats
     from dedup import (
-        clear_session, compress_tool_result, fold_spans, mask_old_turns,
-        note_turn, remember,
+        clear_session, compress_tool_result, note_turn,
     )
-
-logger = logging.getLogger(__name__)
 
 _MAX_GREP_PATTERN_CHARS = 256
 _MAX_GREP_INPUT_CHARS = 1_000_000
@@ -97,23 +91,31 @@ def _audit(entry: dict, ctx: Any = None) -> None:
         pass
 
 
-def _int_cfg(ctx: Any, key: str, default: int, low: int, high: int) -> int:
+def _config_value(ctx: Any, key: str, default: Any) -> Any:
     try:
-        v = ctx.get_config(key, default)
-        n = int(v)
-        return max(low, min(high, n))
+        return ctx.get_config(key, default)
     except Exception:
         return default
 
 
-def _list_cfg(ctx: Any, key: str) -> list[str]:
+def _int_cfg(ctx: Any, key: str, default: int, low: int, high: int) -> int:
     try:
-        value = ctx.get_config(key, [])
-        if isinstance(value, list):
-            return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+        value = int(_config_value(ctx, key, default))
     except Exception:
-        pass
-    return []
+        return default
+    return max(low, min(high, value))
+
+
+def _bool_cfg(ctx: Any, key: str, default: bool) -> bool:
+    value = _config_value(ctx, key, default)
+    return value if isinstance(value, bool) else default
+
+
+def _list_cfg(ctx: Any, key: str) -> list[str]:
+    value = _config_value(ctx, key, [])
+    if not isinstance(value, list):
+        return []
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
 
 
 def _excluded_command(command: Any, ctx: Any) -> bool:
@@ -132,6 +134,22 @@ def _excluded_tool(tool_name: Any, ctx: Any) -> bool:
     return bool(normalized) and any(
         normalized == excluded.casefold() for excluded in _list_cfg(ctx, "exclude_tools")
     )
+
+
+def _store_original(
+    original: str, compressed: str, digest: str, ctx: Any
+) -> tuple[str, str] | None:
+    stored = ccr_put(
+        original,
+        max_entries=_int_cfg(ctx, "ccr_max_entries", 1000, 10, 100000),
+        max_bytes=_int_cfg(ctx, "ccr_max_bytes", 50 * 1024 * 1024, 1024, 1_000_000_000),
+        ttl_hours=_int_cfg(ctx, "ccr_ttl_hours", 24, 1, 24 * 30),
+    )
+    if not stored:
+        return None
+    if stored != digest:
+        compressed = compressed.replace(f"retrieve:{digest}", f"retrieve:{stored}", 1)
+    return compressed, stored
 
 
 def _compile_grep(source: str) -> re.Pattern[str]:
@@ -200,18 +218,10 @@ def _on_transform(
     )
     if stats.get("gate") != "ok":
         return None
-    digest = stats.get("digest", "")
-    stored = ccr_put(
-        output,
-        max_entries=_int_cfg(ctx, "ccr_max_entries", 1000, 10, 100000),
-        max_bytes=_int_cfg(ctx, "ccr_max_bytes", 50 * 1024 * 1024, 1024, 1_000_000_000),
-        ttl_hours=_int_cfg(ctx, "ccr_ttl_hours", 24, 1, 24 * 30),
-    )
-    if not stored:
+    stored_output = _store_original(output, new_output, str(stats.get("digest", "")), ctx)
+    if stored_output is None:
         return None
-    if stored and stored != digest:
-        new_output = new_output.replace(f"retrieve:{digest}", f"retrieve:{stored}", 1)
-        digest = stored
+    new_output, digest = stored_output
     _audit({
         "tool": "terminal",
         "command": str(command or "")[:120],
@@ -224,14 +234,6 @@ def _on_transform(
         "ms": round(float(stats.get("ms", 0.0)), 2),
     }, ctx=ctx)
     return new_output
-
-
-def _bool_cfg(ctx: Any, key: str, default: bool) -> bool:
-    try:
-        v = ctx.get_config(key, default)
-        return v if isinstance(v, bool) else default
-    except Exception:
-        return default
 
 
 def _on_tool_result(
@@ -264,18 +266,10 @@ def _on_tool_result(
     )
     if stats.get("gate") != "ok":
         return None
-    digest = stats.get("digest", "")
-    stored = ccr_put(
-        result,
-        max_entries=_int_cfg(ctx, "ccr_max_entries", 1000, 10, 100000),
-        max_bytes=_int_cfg(ctx, "ccr_max_bytes", 50 * 1024 * 1024, 1024, 1_000_000_000),
-        ttl_hours=_int_cfg(ctx, "ccr_ttl_hours", 24, 1, 24 * 30),
-    )
-    if not stored:
+    stored_result = _store_original(result, new_result, str(stats.get("digest", "")), ctx)
+    if stored_result is None:
         return None
-    if stored and stored != digest:
-        new_result = new_result.replace(f"retrieve:{digest}", f"retrieve:{stored}", 1)
-        digest = stored
+    new_result, digest = stored_result
     note_turn(result, digest, session_id=sid, turn_id=turn)
     _audit({
         "tool": str(tool_name or "tool"),
@@ -429,11 +423,7 @@ def _handle_ts_command(raw_args: str) -> str:
     return "Usage: /trimtok [status|stats|purge|retrieve <hash>]"
 
 
-def _on_session_end(session_id: Any = None, **kw: Any) -> None:
-    clear_session(str(session_id or ""))
-
-
-def _on_session_start(session_id: Any = None, **kw: Any) -> None:
+def _on_session_reset(session_id: Any = None, **kw: Any) -> None:
     clear_session(str(session_id or ""))
 
 
@@ -446,8 +436,8 @@ def register(ctx: Any) -> None:
     ctx.register_hook("transform_terminal_output", _on_transform)
     ctx.register_hook("transform_tool_result", _on_tool_result)
     ctx.register_hook("post_llm_call", _on_post_llm)
-    ctx.register_hook("on_session_start", _on_session_start)
-    ctx.register_hook("on_session_end", _on_session_end)
+    ctx.register_hook("on_session_start", _on_session_reset)
+    ctx.register_hook("on_session_end", _on_session_reset)
     ctx.register_tool(
         name="trimtok_retrieve",
         toolset="trimtok",

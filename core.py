@@ -103,15 +103,7 @@ def detect_kind(text: str) -> str:
 
 def _classify(lines: list[str]) -> list[tuple[str, bool]]:
     """Single pass importance flags: classify once, reuse across stages."""
-    out: list[tuple[str, bool]] = []
-    for ln in lines:
-        if ln.startswith(_KEEP_PREFIX):
-            out.append((ln, True))
-        elif _looks_suspicious(ln.lower()) and _ERROR_RE.search(ln):
-            out.append((ln, True))
-        else:
-            out.append((ln, False))
-    return out
+    return [(line, is_important(line)) for line in lines]
 
 
 def _fold_repeats(
