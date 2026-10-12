@@ -10,7 +10,12 @@ import hashlib
 import re
 import time
 
-SENTINEL_RE = re.compile(r"\[tt:[a-z]+\b")
+try:
+    from .marker import SENTINEL_RE, headtail_head, is_exempt, masked, seen_line, seen_lines, shingle_head, tool_head
+    from .marker import LEGEND_TOON as _TOON_LEGEND
+except ImportError:  # direct unit-test import
+    from marker import SENTINEL_RE, headtail_head, is_exempt, masked, seen_line, seen_lines, shingle_head, tool_head
+    from marker import LEGEND_TOON as _TOON_LEGEND
 _KEEP_PREFIX = "TRIMTOK_KEEP:"
 _MIN_SPAN_LINES = 5
 _MIN_SPAN_CHARS = 200
@@ -28,6 +33,11 @@ _SESS_RE = re.compile(r"\b20\d{6}_\d{6}_[0-9a-f]{4,}\b")
 _TS_LONG_RE = re.compile(
     r"\b\d{4}[-/]\d{2}[-/]\d{2}[T ]\d{2}:\d{2}(:\d{2})?\b"
 )
+# W7: short HH:MM:SS without a date ("10:00:05 INFO ..."). Seconds required
+# and digit/colon boundaries on both sides, so "file.py:12:30" style
+# line:col references never match (preceded by ":"). HH:MM alone is too
+# risky (versions, ratios) and stays verbatim.
+_TS_SHORT_RE = re.compile(r"(?<![\d:])\d{1,2}:\d{2}:\d{2}(?![\d:])")
 
 # session_id -> {"spans": [(hash, text)], "span_chars": int,
 #                  "lines": {line: span_hash},
@@ -124,7 +134,7 @@ def mask_summary(text: str, digest: str, saved_chars: int) -> str:
                 break
     except Exception:
         pass
-    head = f"[tt:masked chars={saved_chars} retrieve:{digest}]"
+    head = masked(saved_chars, digest)
     return head + (f"\nStarts with: {first}" if first else "")
 
 
@@ -163,6 +173,8 @@ def normalize_volatile(text: str) -> tuple[str, int]:
         new = _SESS_RE.sub("<SESS>", new)
     if "-" in new or "/" in new:
         new = _TS_LONG_RE.sub("<TS>", new)
+    if ":" in new:
+        new = _TS_SHORT_RE.sub("<TS>", new)
     return new, len(text) - len(new)
 
 
@@ -213,8 +225,9 @@ def fold_spans(
             and len(line) >= _MIN_LINE_CHARS
             and not line.startswith("[tt:")
             and not line.startswith(_KEEP_PREFIX)
+            and not is_exempt(line)
         ):
-            ptr = f"[tt:seen line retrieve:{owner or line_owner[line]}]"
+            ptr = seen_line(owner or line_owner[line])
             out.append(ptr)
             folded_chars += len(line) - len(ptr)
             i += 1
@@ -233,7 +246,7 @@ def fold_spans(
         if best:
             m, _, _h = best
             seg = "\n".join(lines[i:i + m])
-            ptr = f"[tt:seen lines={m} retrieve:{owner or _h}]"
+            ptr = seen_lines(m, owner or _h)
             out.append(ptr)
             folded_chars += len(seg) - len(ptr)
             i += m
@@ -244,7 +257,164 @@ def fold_spans(
             out.append(folded_line)
             folded_chars += extra
             i += 1
+    # level 3 (shingle near-dedup): survivors that match no verbatim run get
+    # a second chance against prior corpus lines at Jaccard>=0.8. Runs after
+    # the verbatim loop so exact hits keep the cheaper [tt:seen] pointers.
+    # Gated on folded_chars == 0: the pass costs ~2ms on a 60-line query
+    # (measured 2026-10-12: cross-turn median 0.54ms -> 2.83ms), so it only
+    # runs when verbatim found nothing — same second-chance pattern as
+    # intra/headtail. Partial verbatim hits keep their pointers as-is.
+    if folded_chars == 0 and out:
+        corpus_long = [ln for ln in line_owner if len(ln.split()) >= _SHINGLE_MIN_WORDS]
+        if corpus_long:
+            out, sh_saved = _fold_shingles(out, corpus_long, owner)
+            folded_chars += sh_saved
     return "\n".join(out), new_spans, folded_chars
+
+
+def _fold_intra_repeats(text: str) -> tuple[str, int]:
+    """Fold adjacent duplicate line runs inside one first-seen document.
+
+    W4: terminal folds repeats within its own output; the tool path only
+    folded against the prior corpus, so a repetitive first-seen doc reverted
+    at the token-gate. Keep the first line of each run verbatim, fold the
+    rest as ``[repeated Nx]`` (same marker shape as the terminal path).
+    Only runs of 3+ fold; short/important-shaped lines never fold.
+    """
+    lines = text.split("\n")
+    if len(lines) < 4:
+        return text, 0
+    out: list[str] = []
+    saved = 0
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i]
+        key = line.strip()
+        if (
+            not key
+            or len(key) < _MIN_LINE_CHARS
+            or line.startswith("[tt:")
+            or line.startswith(_KEEP_PREFIX)
+        ):
+            out.append(line)
+            i += 1
+            continue
+        j = i + 1
+        while j < n and lines[j].strip() == key:
+            j += 1
+        run = j - i
+        if run >= 3:
+            out.append(line)
+            marker = f"[repeated {run - 1}x]"
+            out.append(marker)
+            saved += sum(len(lines[k]) for k in range(i + 1, j)) - len(marker)
+        else:
+            out.extend(lines[i:j])
+        i = j
+    if not saved:
+        return text, 0
+    return "\n".join(out), saved
+
+
+_HT_MIN_CHARS = 100_000  # only large docs earn a stub; small unique stays full
+_HT_HEAD_LINES = 30
+_HT_TAIL_LINES = 30
+
+
+def _fold_headtail(text: str) -> tuple[str, int]:
+    """HEAD_TAIL stub for large non-repetitive docs (research lossless-compact).
+
+    When nothing folded (no cross-turn hit, no intra repeats), a large unique
+    doc reverts to 0%. Instead keep head+tail verbatim and stub the middle —
+    same shape as the terminal window, recoverable via CCR. Small docs still
+    revert (keep-earliest); marker lines never stub.
+    """
+    if len(text) < _HT_MIN_CHARS or "[tt:" in text[:2000]:
+        return text, 0
+    lines = text.split("\n")
+    if len(lines) <= _HT_HEAD_LINES + _HT_TAIL_LINES + 10:
+        return text, 0
+    head = lines[:_HT_HEAD_LINES]
+    tail = lines[-_HT_TAIL_LINES:]
+    omitted = len(lines) - len(head) - len(tail)
+    stub = f"[... {omitted} lines in CCR ...]"
+    new_text = "\n".join(head + [stub] + tail)
+    saved = len(text) - len(new_text)
+    if saved <= 0:
+        return text, 0
+    return new_text, saved
+
+
+def _shingles(line: str) -> frozenset:
+    """3-word shingle fingerprint (claw-compactor semantic_dedup shape)."""
+    words = line.strip().split()
+    if len(words) < 4:
+        return frozenset()
+    return frozenset(tuple(words[i:i + 3]) for i in range(len(words) - 2))
+
+
+def _jaccard(a: frozenset, b: frozenset) -> float:
+    if not a or not b:
+        return 0.0
+    inter = len(a & b)
+    if not inter:
+        return 0.0
+    return inter / len(a | b)
+
+
+_SHINGLE_MIN_JACCARD = 0.8
+_SHINGLE_MIN_WORDS = 6
+
+
+def _fold_shingles(
+    lines: list[str],
+    corpus_lines: list[str],
+    owner: str | None,
+) -> tuple[list[str], int]:
+    """Fold near-duplicate lines (Jaccard>=0.8) against prior corpus lines.
+
+    Verbatim matching misses lines that share a template but differ in slots
+    (counters, timestamps, ids). Keep the first corpus occurrence verbatim;
+    later near-dups collapse into one [tt:shingle] pointer per line.
+    Only lines LONGER than pointer+sample fold (short lines pass through);
+    markers and KEEP lines never fold.
+    """
+    if not corpus_lines:
+        return lines, 0
+    prints: list[dict] = []
+    for cl in corpus_lines:
+        if len(cl.split()) >= _SHINGLE_MIN_WORDS and not cl.startswith("[tt:"):
+            prints.append((cl, _shingles(cl)))
+    if not prints:
+        return lines, 0
+    min_len = len(shingle_head(1, "0" * 12))
+    out: list[str] = []
+    saved = 0
+    for line in lines:
+        if (
+            len(line) <= min_len
+            or line.startswith("[tt:")
+            or line.startswith(_KEEP_PREFIX)
+            or is_exempt(line)
+        ):
+            out.append(line)
+            continue
+        fp = _shingles(line)
+        hit = False
+        for cl, cfp in prints:
+            if cl == line:
+                continue  # verbatim hits belong to the verbatim path
+            if _jaccard(fp, cfp) >= _SHINGLE_MIN_JACCARD:
+                # bare pointer: the template is verbatim in the corpus
+                # (keep-first), so no sample is needed to stay readable
+                out.append(shingle_head(1, owner or ""))
+                saved += max(0, len(line) - len(out[-1]))
+                hit = True
+                break
+        if not hit:
+            out.append(line)
+    return out, saved
 
 
 def _fold_inner(
@@ -276,7 +446,7 @@ def _fold_inner(
                     and len(ln) >= _MIN_LINE_CHARS
                     and not ln.startswith("[tt:")
                 ):
-                    ptr = f"[tt:seen line retrieve:{owner or line_owner[ln]}]"
+                    ptr = seen_line(owner or line_owner[ln])
                     saved += len(ln) - len(ptr)
                     parts[idx] = ptr
                     kept += 1
@@ -291,6 +461,48 @@ def _fold_inner(
         return _json.dumps(new_data, separators=(",", ":"), ensure_ascii=False), saved
     except Exception:
         return line, 0
+
+
+def _index_json_inners(seen: dict, text: str, key: str) -> None:
+    """Index lines inside JSON string fields, tolerating a trailing tail.
+
+    W-D10: ``remember()`` skipped inner indexing whenever ``json.loads(text)``
+    failed — e.g. a JSON envelope followed by a ``\\n`` + tail. The envelope's
+    inner lines then never folded against later queries. Try the whole doc,
+    then the longest leading-JSON prefix (raw_decode), then each long line.
+    """
+    import json as _json
+
+    def _walk(o: object) -> None:
+        if isinstance(o, dict):
+            for v in o.values():
+                _walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                _walk(v)
+        elif isinstance(o, str):
+            for ln in o.split("\n"):
+                _index_long_line(seen, ln, key)
+
+    if text.lstrip()[:1] in "{[":
+        try:
+            _walk(_json.loads(text))
+            return
+        except Exception:
+            pass
+        try:
+            obj, _ = _json.JSONDecoder().raw_decode(text.strip())
+            _walk(obj)
+            return
+        except Exception:
+            pass
+    for ln in text.split("\n"):
+        s = ln.strip()
+        if len(s) > 200 and s[:1] in "{[":
+            try:
+                _walk(_json.loads(s))
+            except Exception:
+                continue
 
 
 def remember(text: str, session_id: str = "", owner: str | None = None) -> str:
@@ -326,26 +538,8 @@ def remember(text: str, session_id: str = "", owner: str | None = None) -> str:
         _index_long_line(seen, ln, key)
     # JSON string fields: index their inner lines too (envelope differs,
     # content repeats — e.g. SKILL.md loaded twice, once minified once not).
-    # Any string field (no 500-char floor): a minified envelope has ONE giant
-    # line, so its inner content lines would otherwise never get indexed.
-    if text.lstrip()[:1] in "{[":
-        try:
-            import json as _json
-
-            def _walk(o: object) -> None:
-                if isinstance(o, dict):
-                    for v in o.values():
-                        _walk(v)
-                elif isinstance(o, list):
-                    for v in o:
-                        _walk(v)
-                elif isinstance(o, str):
-                    for ln in o.split("\n"):
-                        _index_long_line(seen, ln, key)
-
-            _walk(_json.loads(text))
-        except Exception:
-            pass
+    # Tolerates a trailing non-JSON tail via _index_json_inners (W-D10).
+    _index_json_inners(seen, text, key)
     return key
 
 
@@ -392,10 +586,6 @@ def mask_old_turns(
     return out
 
 
-_TOON_LEGEND = (
-    "[tt:legend] Table below is TOON: header [N]{f1,f2} lists fields, "
-    "each following line is one object, values in header order."
-)
 _TOON_MIN_ROWS = 3
 
 
@@ -408,14 +598,12 @@ def toon_encode(rows: list[dict], *, max_rows: int = 0) -> tuple[str, bool]:
     try:
         if not rows or not all(isinstance(r, dict) for r in rows):
             return "", False
-        fields: list[str] = []
-        for r in rows:
-            for k in r:
-                if k not in fields:
-                    fields.append(k)
-        # uniform check: every row has exactly the field set
-        if any(set(r.keys()) != set(fields) for r in rows):
+        # uniform check: every row has exactly the field set IN THE SAME ORDER
+        # (squeez toon.rs strict shape: key order mismatch = reject)
+        first_keys = list(rows[0].keys())
+        if any(list(r.keys()) != first_keys for r in rows):
             return "", False
+        fields = first_keys
         # flat scalars only (no nested dict/list — keep it dumb and safe)
         for r in rows:
             for v in r.values():
@@ -464,8 +652,26 @@ def minify_json(text: str) -> tuple[str, int]:
         stripped = text.strip()
         if not stripped or stripped[0] not in "{[":
             return text, 0
-        data = _json.loads(stripped)
-        mini = _json.dumps(data, separators=(",", ":"), ensure_ascii=False)
+        try:
+            data = _json.loads(stripped)
+            tail = ""
+        except Exception:
+            # W-D10: JSON envelope + trailing non-JSON tail — minify the
+            # leading JSON prefix via raw_decode, keep the tail verbatim.
+            try:
+                data, idx = _json.JSONDecoder().raw_decode(stripped)
+            except Exception:
+                return text, 0
+            tail = stripped[idx:]
+            if len(tail) > 4096 or not tail.strip():
+                return text, 0
+            # Never partial-minify when the tail itself looks like more
+            # JSON: '{"a": 1} trailing garbage {"a": 1} ...' stays untouched
+            # (existing minify-partial-no). Only a plain non-JSON tail
+            # (log lines, padding) allows prefix minify.
+            if "{" in tail or "[" in tail:
+                return text, 0
+        mini = _json.dumps(data, separators=(",", ":"), ensure_ascii=False) + tail
         if len(mini) < len(text):
             return mini, len(text) - len(mini)
         return text, 0
@@ -525,6 +731,27 @@ def compress_tool_result(
         # Every pointer embeds _rh (== _raw_digest below): the hook stores the
         # raw original under it, so all pointers resolve via trimtok_retrieve.
         folded, _, f_saved = fold_spans(text, session_id, owner=_rh)
+        i_saved = 0
+        if f_saved == 0:
+            # W4: intra-document repeat fold on FIRST-SEEN docs. fold_spans
+            # only folds against the prior corpus, so a repetitive doc with
+            # nothing before it reverts (1MB repeat blob: 0%). Fold adjacent
+            # normalized-duplicate line runs inside this doc itself — first
+            # line of each run stays verbatim (keep-earliest holds
+            # within-document; CCR stores the raw original).
+            folded, i_saved = _fold_intra_repeats(folded)
+        ht_saved = 0
+        ht_head = ht_tail = ht_omitted = 0
+        if f_saved == 0 and i_saved == 0:
+            # HEAD_TAIL: large unique doc — nothing folded. Keep head+tail
+            # verbatim, stub the middle (terminal-window shape, CCR recovers).
+            stubbed, ht_saved = _fold_headtail(folded)
+            if ht_saved > 0:
+                folded = stubbed
+                ht_lines = folded.split("\n")
+                ht_head = min(_HT_HEAD_LINES, len(ht_lines))
+                ht_tail = min(_HT_TAIL_LINES, max(0, len(ht_lines) - ht_head - 1))
+                ht_omitted = max(0, len(text.split("\n")) - ht_head - ht_tail)
         # remember the NORMALIZED text (fold queries normalized lines) but
         # under the RAW digest: pointers embed it and CCR stores the raw
         # original under it, so every pointer resolves via trimtok_retrieve.
@@ -557,7 +784,10 @@ def compress_tool_result(
             }
         digest = _rh
         raw_hashes.add(_rh)
-        head = f"[tt:tool kind=result saved={len(result) - len(folded)} retrieve:{digest}]"
+        if ht_saved > 0:
+            head = headtail_head(ht_head, ht_tail, ht_omitted, digest)
+        else:
+            head = tool_head(len(result) - len(folded), digest)
         new_result = head + "\n" + folded
         if len(new_result) >= len(result):
             return result, {"gate": "reverted_gate", "before_chars": len(result),
@@ -569,7 +799,8 @@ def compress_tool_result(
             "hygiene_saved": h_saved, "volatile_saved": v_saved,
             "minify_saved": m_saved, "toon_saved": t_saved,
             "toon_used": toon_used,
-            "fold_saved": f_saved,
+            "fold_saved": f_saved, "intra_saved": i_saved,
+            "headtail_saved": ht_saved,
             "ms": (time.perf_counter() - t0) * 1000,
         }
     except Exception:

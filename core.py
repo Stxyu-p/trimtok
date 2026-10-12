@@ -12,24 +12,34 @@ import re
 import time
 from functools import lru_cache
 
-VERSION = "0.5.1"
+VERSION = "0.6.0"
 
-# Sentinel: compressed output carries [tt:<kind> ...] so subsequent hooks can
-# skip it (idempotency). Marker/legend live at HEAD because core truncates tail.
-SENTINEL_RE = re.compile(r"\[tt:[a-z]+\b")
+try:
+    from .marker import LEGEND_FOLD as LEGEND
+    from .marker import SENTINEL_RE, is_exempt, terminal_head
+except ImportError:  # direct unit-test import
+    from marker import LEGEND_FOLD as LEGEND
+    from marker import SENTINEL_RE, is_exempt, terminal_head
 
 # Single compiled patterns, module-level, no per-call re.compile
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][AB0]")
 _ERROR_RE = re.compile(
-    r"(?i)\b(error|exception|traceback|failed|failure|panic|fatal|critical|"
-    r"warn(?:ing)?|denied|refused|timeout|segfault|assertion)\b"
+    r"(?i)(?<![A-Za-z0-9_])"
+    r"(error(?:s)?|exception|traceback|fail(?:ed|ure)?|panic|fatal|critical|"
+    r"warn(?:ing)?|denied|refused|timeout|seg(?:fault|mentation\s+fault)|"
+    r"assert(?:ion)?(?:error|ion| failed)?|oom|epipe|"
+    r"exit\s+code\s+[1-9]|out\s+of\s+memory|"
+    r"ข้อผิดพลาด|ผิดพลาด|ล้มเหลว|ขัดข้อง)"
+    r"(?![A-Za-z0-9_])"
     r"|^\s*(File |  at |Caused by:)"
 )
 
 # Fast pre-filter: single-pass substring scan
 _ERROR_HINTS = (
     "error", "exception", "traceback", "fail", "panic", "fatal", "critical",
-    "warn", "denied", "refused", "timeout", "segfault", "assert",
+    "warn", "denied", "refused", "timeout", "segfault", "segment", "fault",
+    "assert", "oom", "epipe", "exit code", "out of memory", "memory",
+    "ผิดพลาด", "ล้มเหลว", "ขัดข้อง", "ข้อผิดพลาด",
     "file ", "  at ", "caused by:",
 )
 
@@ -56,8 +66,6 @@ _HEAD_KEEP = 2
 _TAIL_KEEP = 2
 _MIN_KEEP = 3
 
-LEGEND = "[tt:legend] Lines folded as [repeated Nx]. Full original in CCR, use trimtok_retrieve."
-
 
 def strip_ansi(text: str) -> str:
     """Fast ANSI escape code stripper with immediate early-exit check."""
@@ -71,6 +79,67 @@ def _normalize_line(line: str) -> str:
     line = _TS_PREFIX_RE.sub("", line)
     line = _PID_PREFIX_RE.sub("", line)
     return line.strip()
+
+
+# Drain-style template slots (squeez log_template.rs shape): numbers, UUIDs,
+# short times become {} so scattered same-template lines group together.
+_SLOT_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    r"|\b\d{1,2}:\d{2}:\d{2}\b|\b\d+\b",
+    re.I,
+)
+
+
+@lru_cache(maxsize=8192)
+def _template_key(line: str) -> str:
+    """Template key with volatile slots normalized; '' = not groupable."""
+    norm = _normalize_line(line)
+    if len(norm) < 20:
+        return ""
+    key = _SLOT_RE.sub("{}", norm)
+    if len(key) < 20:
+        return ""
+    return key
+
+
+def _fold_templates(
+    flagged: list[tuple[str, bool]],
+) -> tuple[list[tuple[str, bool]], int, int]:
+    """Fold scattered same-template runs. Returns (flagged, hidden, groups).
+
+    Adjacent-repeat folding cannot fire when template lines interleave with
+    other content, so group by template key instead of position. First
+    occurrence stays verbatim (keep-earliest), rest collapse into one
+    [template ×N] marker. Important lines never group. Groups of <3 pass
+    through (same threshold as adjacent runs).
+    """
+    groups: dict[str, list[int]] = {}
+    for idx, (line, important) in enumerate(flagged):
+        if important or is_exempt(line):
+            continue
+        key = _template_key(line)
+        if key:
+            groups.setdefault(key, []).append(idx)
+    big = {k: v for k, v in groups.items() if len(v) >= 3}
+    if not big:
+        return flagged, 0, 0
+    first_of = {}
+    for key, members in big.items():
+        first_of[members[0]] = (key, len(members))
+    in_big = set()
+    for members in big.values():
+        in_big.update(members[1:])
+    out: list[tuple[str, bool]] = []
+    hidden = 0
+    for idx, (line, important) in enumerate(flagged):
+        if idx in in_big:
+            hidden += 1
+            continue
+        out.append((line, important))
+        if idx in first_of:
+            _, count = first_of[idx]
+            out.append((f"[template ×{count - 1}]", False))
+    return out, hidden, len(big)
 
 
 def is_important(line: str) -> bool:
@@ -116,8 +185,8 @@ def _fold_repeats(
     n = len(flagged)
     while i < n:
         line, important = flagged[i]
-        if important:
-            out.append((line, True))
+        if important or is_exempt(line):
+            out.append((line, important))
             i += 1
             continue
         norm = _normalize_line(line)
@@ -200,9 +269,17 @@ _CMD_BUDGETS: tuple[tuple[str, int], ...] = (
 
 
 def _budget_for(command: str, kind: str, default: int) -> int:
+    # ponytail: word-boundary verb match; substring matched "cat diffutils.txt"->diff, "false"->ls.
+    # Two-word verbs first so "git log" hits its own entry before bare "log".
     cmd = (command or "").lower()
+    tokens = re.split(r"[^a-z0-9]+", cmd)
+    words = {t for t in tokens if t}
     for verb, budget in _CMD_BUDGETS:
-        if verb in cmd:
+        parts = verb.split()
+        if len(parts) == 2 and parts[0] in words and parts[1] in words:
+            return budget
+    for verb, budget in _CMD_BUDGETS:
+        if " " not in verb and verb in words:
             return budget
     if kind in ("diff", "log"):
         return 200
@@ -240,13 +317,17 @@ def compress_terminal(
         flagged_all = _classify(lines)
         # fold repeats first, reducing lines before regex noise filter
         folded, hidden = _fold_repeats(flagged_all)
+        # Drain templates second (scattered same-shape lines adjacent folding
+        # cannot see); groups <3 pass through, important lines never group
+        folded, t_hidden, _t_groups = _fold_templates(folded)
+        hidden += t_hidden
         kept = [
             (ln, imp) for ln, imp in folded
             if imp or (not _PROGRESS_RE.match(ln) and not _NOISE_LINE_RE.match(ln))
         ]
         windowed, dropped = _window(kept, budget)
         digest = hashlib.sha256(output.encode("utf-8", "replace")).hexdigest()[:12]
-        head = [f"[tt:terminal kind={kind} hidden={hidden + dropped} retrieve:{digest}]", LEGEND]
+        head = [terminal_head(kind, hidden + dropped, digest), LEGEND]
         new_output = "\n".join(head + windowed)
         # token-gate: never inflate
         if len(new_output) >= len(output):
@@ -255,11 +336,26 @@ def compress_terminal(
                 "before_chars": len(output), "after_chars": len(output),
                 "saved_chars": 0, "ms": (time.perf_counter() - t0) * 1000,
             }
-        # quality-gate v1: every error-matching input line class must survive
+        # quality-gate v2: every error-matching input line class must survive,
+        # unless forced lines overflow the budget (W1). In overflow, survival
+        # is impossible — reverting to 0% hides the savings while showing the
+        # same truncated view anyway. Accept the windowed output as partial:
+        # gap markers + head hidden count already report the omission, and the
+        # full original stays in CCR. Stats carry partial=True + omitted count.
         in_err = {ln.strip()[:160] for ln, imp in flagged_all if imp}
         out_txt = "\n".join(windowed)
         missing = [e for e in in_err if e and e not in out_txt and not e.startswith(_KEEP_PREFIX)]
         if missing:
+            forced_total = sum(1 for _, imp in flagged_all if imp)
+            if forced_total > budget:
+                return new_output, {
+                    "gate": "ok", "kind": kind, "digest": digest,
+                    "before_chars": len(output), "after_chars": len(new_output),
+                    "saved_chars": len(output) - len(new_output),
+                    "hidden_lines": hidden, "dropped_lines": dropped,
+                    "partial": True, "omitted_errors": len(missing),
+                    "ms": (time.perf_counter() - t0) * 1000,
+                }
             return output, {
                 "gate": "reverted_quality", "kind": kind,
                 "before_chars": len(output), "after_chars": len(output),

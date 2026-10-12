@@ -1,6 +1,6 @@
 name: trimtok
-version: 0.5.1
-description: "Local stdlib-only context compressor: per-command budgets, balanced windowing, error rails, cross-turn fold, command/tool exclusions, file-local CCR with paginated trimtok_retrieve."
+version: 0.6.0
+description: "Local stdlib-only context compressor: per-command budgets, balanced windowing, error rails, Drain templates, shingle near-dedup, HEAD_TAIL stubs, cross-turn fold, command/tool exclusions, file-local CCR with paginated trimtok_retrieve."
 entry_point: __init__.py
 author: "P Choke & MIKA"
 provides_hooks:
@@ -32,6 +32,10 @@ config_schema:
     type: bool
     default: true
     description: Record compression savings to audit.jsonl log.
+  usage_enabled:
+    type: bool
+    default: true
+    description: Record every hook invocation (all gates + retrieves) to usage.jsonl for long-horizon use-case data.
   toon_enabled:
     type: bool
     default: false

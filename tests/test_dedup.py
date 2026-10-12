@@ -40,6 +40,18 @@ t2, s2 = normalize_volatile(
 check("volatile-uuid", "<UUID>" in t2 and "123e4567" not in t2)
 check("volatile-sess", "<SESS>" in t2 and "20260917_214935" not in t2)
 check("volatile-ts", "<TS>" in t2)
+# W7: short HH:MM:SS normalizes; HH:MM / file:line:col stay verbatim
+_t7, _ = normalize_volatile("10:00:05 INFO worker done")
+check("volatile-short-ts", _t7 == "<TS> INFO worker done")
+check("volatile-colon-noop", normalize_volatile("file.py:12:30 ref")[0] == "file.py:12:30 ref")
+check("volatile-hhmm-noop", normalize_volatile("ratio 16:9 video")[0] == "ratio 16:9 video")
+# W7: near-dup timestamps fold cross-turn (was reverted_gate 0%)
+clear_session("ts-near-dup")
+_a = "\n".join(f"10:00:{i % 60:02d} INFO worker done task {i} with payload data padding abcdef" for i in range(60)) + "\n" + "A" * 2200
+_b = "\n".join(f"10:01:{i % 60:02d} INFO worker done task {i} with payload data padding abcdef" for i in range(60)) + "\n" + "B" * 2200
+_, _sa = compress_tool_result("search_files", _a, session_id="ts-near-dup")
+_ob, _sb = compress_tool_result("search_files", _b, session_id="ts-near-dup")
+check("volatile-near-dup-folds", _sb["gate"] == "ok" and "[tt:seen" in _ob)
 
 # 2b. no-op normalization stays lossless on large ordinary output
 ordinary = ("INFO build status line 123 process completed\n" * 22000)[:1_000_000]
@@ -104,6 +116,37 @@ uniq = "\n".join(f"totally-unique-{i}-qwerty-{i*7}" for i in range(120)) + "\n" 
 o8, s8 = compress_tool_result("search_files", uniq, session_id=SID + "3")
 check("never-inflate", len(o8) <= len(uniq))
 
+# 7b. W4: first-seen repetitive doc folds within itself (was reverted 0%)
+clear_session(SID + "-intra")
+_rep = ("log line payload data for performance testing 12345\n" * 3000)[:150_000]
+_o9, _s9 = compress_tool_result("search_files", _rep, session_id=SID + "-intra")
+check("intra-first-seen", _s9["gate"] == "ok" and _s9.get("intra_saved", 0) > 0)
+check("intra-marker", "[repeated " in _o9)
+# ...but runs of 2 never fold, and unique docs still revert
+clear_session(SID + "-intra2")
+_two = ("same long payload line abcdefgh content here\n" * 2 + "diff line here\n") * 50 + "z" * 2100
+_o10, _s10 = compress_tool_result("search_files", _two, session_id=SID + "-intra2")
+check("intra-run2-no", _o10.count("[repeated ") == 0)
+
+# 7c. W3 CLOSED by design: first-seen UNIQUE doc stays full (keep-earliest),
+# EXCEPT large ones (>=100KB) which emit a HEAD_TAIL stub (research §lossless-compact).
+clear_session(SID + "-firstseen")
+_fs = "\n".join(f"first-seen-unique-{i}-qwerty-{i * 13}-zz-{i * i % 100019}" for i in range(120)) + "\n" + "v" * 2100
+_o11, _s11 = compress_tool_result("search_files", _fs, session_id=SID + "-firstseen")
+check("firstseen-unique-full", _s11["gate"] == "reverted_gate" and _o11 == _fs)
+
+# 7d. HEAD_TAIL: large unique doc (192KB) emits stub, not full revert.
+import random as _rnd
+_rnd.seed(7)
+_words = ["alpha", "beta", "gamma", "delta", "config", "status", "result", "payload", "query", "index", "cache", "token"]
+_ht = [" ".join(_rnd.sample(_words, 6)) + f" marker{i:05d} tailtext here" for i in range(3000)]
+_ht_big = "\n".join(_ht) + "\n" + "q" * 500
+clear_session(SID + "-headtail")
+_oht, _sht = compress_tool_result("search_files", _ht_big, session_id=SID + "-headtail")
+check("headtail-fires", _sht["gate"] == "ok" and "[tt:headtail " in _oht)
+check("headtail-ends", _ht[0] in _oht and _ht[-1] in _oht)
+check("headtail-saves", _sht.get("saved_chars", 0) > 100_000)
+
 # 8. determinism: same corpus state -> same fold shape. (Repeat inputs are
 # passthrough by design — rule 2 — so compare equal-state runs, not re-runs.)
 clear_session(SID + "4")
@@ -113,6 +156,29 @@ clear_session(SID + "4")
 _, _ = compress_tool_result("search_files", r1, session_id=SID + "4")
 a2, _ = compress_tool_result("search_files", code2, session_id=SID + "4")
 check("deterministic-shape", a1 == a2)
+
+# 8b. Shingle near-dedup: same template, trailing slot varies per line.
+# (Jaccard>=0.8 at line level; keep-first template stays in corpus.)
+clear_session(SID + "-shingle")
+_sh_base = ["worker node alpha finished job payload-xyz-abcdefgh with extended context detail field result status code-%02d" % i for i in range(40)]
+_sh_a = "\n".join(_sh_base) + "\n" + "A" * 2100
+_sh_b_lines = ["worker node alpha finished job payload-xyz-abcdefgh with extended context detail field result status code-%02d" % (i + 40) for i in range(40)]
+_sh_b = "\n".join(_sh_b_lines) + "\n" + "B" * 2100
+_, _sh_s1 = compress_tool_result("search_files", _sh_a, session_id=SID + "-shingle")
+_o_sh, _sh_s2 = compress_tool_result("search_files", _sh_b, session_id=SID + "-shingle")
+check("shingle-fires", _sh_s2["gate"] == "ok" and "[tt:shingle " in _o_sh)
+# bare pointers: template stays verbatim in the seed corpus (keep-first),
+# pointers resolve via CCR — same contract as [tt:seen]
+from dedup import _seen as _sh_seen
+check("shingle-keep-first", any("payload-xyz" in t for _, t in _sh_seen(SID + "-shingle")["spans"]))
+# ...but short lines never fold even at Jaccard 1.0-adjacent (pointer longer)
+clear_session(SID + "-shingle2")
+_sh_s = ["stable content line %d with shared wording here" % i for i in range(40)]
+_sh_sa = "\n".join(_sh_s) + "\n" + "A" * 2100
+_sh_sb = "\n".join(_sh_s) + "\n" + "B" * 2100
+_, _ = compress_tool_result("search_files", _sh_sa, session_id=SID + "-shingle2")
+_o_c, _s_c = compress_tool_result("search_files", _sh_sb, session_id=SID + "-shingle2")
+check("shingle-short-no", "[tt:shingle " not in _o_c)
 
 # 9. perf on 65KB
 blob = ("2026-10-11 INFO tick\n" * 3000) + "ERROR final fail\n" + "z" * 2000
@@ -133,6 +199,21 @@ m2, ms2 = minify_json("not json at all " * 200)
 check("minify-nonjson", m2 == "not json at all " * 200 and ms2 == 0)
 m3, ms3 = minify_json('{"a": 1} trailing garbage ' * 100)
 check("minify-partial-no", ms3 == 0)  # whole-doc only, never partial
+# W-D10: JSON envelope + plain tail minifies the prefix, keeps tail verbatim
+_env_tail = _json.dumps({"a": [1, 2], "pad": "p" * 900}, indent=2) + "\n" + "z" * 2100
+_mt, _mts = minify_json(_env_tail)
+check("minify-tail-prefix", _mts > 0 and _mt.endswith("z" * 2100))
+# ...but a JSON-looking tail stays untouched (partial-no preserved)
+_mg, _mgs = minify_json('{"a": 1}\n{"b": 2}\n' + "z" * 2100)
+check("minify-json-tail-no", _mgs == 0)
+# W-D10: inner lines index despite the trailing tail -> later query folds
+clear_session("env-tail")
+_inner = "\n".join(f"documentation line {i} explaining usage in detail here" for i in range(80))
+_e1 = _json.dumps({"content": _inner, "meta": {"id": 1}}, indent=2) + "\n" + "p" * 2100
+_e2 = _json.dumps({"content": _inner, "meta": {"id": 2}}, indent=2) + "\n" + "q" * 2100
+_, _es1 = compress_tool_result("search_files", _e1, session_id="env-tail")
+_o2, _es2 = compress_tool_result("search_files", _e2, session_id="env-tail")
+check("env-tail-folds", _es2["gate"] == "ok" and "[tt:seen" in _o2)
 
 # 11. TOON uniform (off by default, on with flag)
 import json as _jj
@@ -163,6 +244,24 @@ check("toon-preserves-scalar-types", len(set(typed.splitlines()[1:])) == 5)
 ambiguous, _ = toon_encode([{"a,b": 1}, {"a,b": 2}, {"a,b": 3}])
 check("toon-rejects-ambiguous-field", ambiguous == "")
 
+# 11b. Guardrails: exemption list + TOON strict key-order.
+from dedup import is_exempt as _is_exempt, toon_encode as _te2
+check("exempt-port", _is_exempt("listen on port 8080 ready"))
+check("exempt-count", _is_exempt("total 3000 errors completed"))
+check("exempt-hash", _is_exempt("commit abc1234def5678 done"))
+check("exempt-keep", _is_exempt("TRIMTOK_KEEP: secret"))
+check("exempt-no", not _is_exempt("worker heartbeat ok payload here"))
+# 500-token minimum-size gate == min_chars 2048 default (2048/4 = 512 tokens)
+from dedup import compress_tool_result as _ctr2
+clear_session("min-gate")
+_small500 = "x" * 2000
+assert len(_small500) // 4 < 512
+_o500, _s500 = _ctr2("search_files", _small500, session_id="min-gate")
+check("min-gate-500tok", _s500["gate"] == "passthrough_small")
+# TOON strict: key order must match exactly (squeez toon.rs shape)
+_t_ord, _ = _te2([{"a": 1, "b": 2}, {"b": 3, "a": 4}])
+check("toon-strict-order", _t_ord == "")
+
 # 12. per-command budgets
 import sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -171,6 +270,11 @@ check("budget-ls", _budget_for("ls -la", "text", 120) == 60)
 check("budget-grep", _budget_for("rg foo", "search", 120) == 80)
 check("budget-diff", _budget_for("whatever", "diff", 120) == 200)
 check("budget-default", _budget_for("cat file", "text", 120) == 120)
+# W9: substring must not match ("cat diffutils.txt" is not diff, "false" is not ls)
+check("budget-no-substring", _budget_for("cat diffutils.txt", "text", 120) == 120)
+check("budget-word-boundary", _budget_for("false", "text", 120) == 120)
+check("budget-contest", _budget_for("contest run", "text", 120) == 120)
+check("budget-git-log-first", _budget_for("git log --oneline", "text", 120) == 60)
 
 # 13. pointer resolvability: every emitted pointer resolves to a stored raw
 import re as _re

@@ -6,6 +6,7 @@ import json
 import os
 import re
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,7 @@ _MAX_GREP_INPUT_CHARS = 1_000_000
 _MAX_GREP_MATCHES = 1000
 _MAX_GREP_OUTPUT_CHARS = 100_000
 _MAX_AUDIT_BYTES = 1_048_576
+_MAX_USAGE_BYTES = 1_048_576
 _AUDIT_LOCK = threading.Lock()
 
 RETRIEVE_SCHEMA = {
@@ -66,6 +68,119 @@ RETRIEVE_SCHEMA = {
 
 def _audit_path() -> Path:
     return default_dir() / "audit.jsonl"
+
+
+def _usage_path() -> Path:
+    return default_dir() / "usage.jsonl"
+
+
+def _usage(entry: dict, ctx: Any = None) -> None:
+    if ctx is not None and not _bool_cfg(ctx, "usage_enabled", True):
+        return
+    try:
+        path = _usage_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(entry, ensure_ascii=False) + "\n"
+        if len(line.encode("utf-8")) > _MAX_USAGE_BYTES:
+            line = json.dumps({"event": "usage_entry_oversize"}) + "\n"
+        with _AUDIT_LOCK:
+            backup = path.with_name(path.name + ".1")
+            if backup.exists() and backup.stat().st_size > _MAX_USAGE_BYTES:
+                backup.unlink(missing_ok=True)
+            if path.exists() and path.stat().st_size > _MAX_USAGE_BYTES:
+                path.write_text(json.dumps({"event": "usage_history_truncated"}) + "\n", encoding="utf-8")
+            if path.exists() and path.stat().st_size + len(line.encode("utf-8")) > _MAX_USAGE_BYTES:
+                os.replace(path, backup)
+            with path.open("a", encoding="utf-8") as f:
+                f.write(line)
+    except Exception:
+        pass
+
+
+def _terminal_shape(stats: dict) -> str:
+    """Cheap fold-reason label from flags the fold already computed."""
+    if str(stats.get("kind") or "") == "json":
+        return "json"
+    if stats.get("partial") or stats.get("omitted_errors"):
+        return "err-dense"
+    if (stats.get("hidden_lines") or 0) > 0:
+        return "repeat"
+    if (stats.get("dropped_lines") or 0) > 0:
+        return "unique"
+    return "mixed"
+
+
+def _tool_shape(stats: dict) -> str:
+    """Cheap fold-reason label from flags the fold already computed."""
+    # NOTE: shingle savings ride inside fold_saved (level 3 lives inside
+    # fold_spans), so near-dups label as "repeat" — same family, honest.
+    if (stats.get("fold_saved") or 0) > 0 or (stats.get("intra_saved") or 0) > 0:
+        return "repeat"
+    if (stats.get("headtail_saved") or 0) > 0:
+        return "unique-large"
+    if (stats.get("minify_saved") or 0) > 0 or (stats.get("toon_saved") or 0) > 0:
+        return "json"
+    if stats.get("gate") == "reverted_gate":
+        return "unique"
+    return "mixed"
+
+
+def _usage_terminal(command: Any, output: Any, stats: dict, ctx: Any) -> None:
+    try:
+        out = output if isinstance(output, str) else ""
+        _usage({
+            "ts": int(time.time()),
+            "hook": "terminal",
+            "cmd": str(command or "")[:120],
+            "kind": stats.get("kind"),
+            "gate": stats.get("gate"),
+            "before": len(out),
+            "after": int(stats.get("after_chars") or 0),
+            "saved": int(stats.get("saved_chars") or 0),
+            "partial": bool(stats.get("partial", False)),
+            "omitted": int(stats.get("omitted_errors") or 0),
+            "ms": round(float(stats.get("ms", 0.0)), 2),
+            "hash": str(stats.get("digest") or ""),
+            "shape": _terminal_shape(stats),
+        }, ctx=ctx)
+    except Exception:
+        pass
+
+
+def _usage_tool(tool_name: Any, result: Any, stats: dict, ctx: Any) -> None:
+    try:
+        res = result if isinstance(result, str) else ""
+        _usage({
+            "ts": int(time.time()),
+            "hook": "tool",
+            "tool": str(tool_name or "tool"),
+            "gate": stats.get("gate"),
+            "before": len(res),
+            "after": int(stats.get("after_chars") or 0),
+            "saved": int(stats.get("saved_chars") or 0),
+            "ms": round(float(stats.get("ms", 0.0)), 2),
+            "hash": str(stats.get("digest") or ""),
+            "shape": _tool_shape(stats),
+            "minify": int(stats.get("minify_saved") or 0),
+            "fold": int(stats.get("fold_saved") or 0),
+            "intra": int(stats.get("intra_saved") or 0),
+        }, ctx=ctx)
+    except Exception:
+        pass
+
+
+def _usage_retrieve(args: dict, *, hit: bool, ctx: Any = None, **extra: Any) -> None:
+    try:
+        entry: dict = {
+            "ts": int(time.time()),
+            "hook": "retrieve",
+            "hash": str((args or {}).get("hash") or "")[:16],
+            "hit": bool(hit),
+        }
+        entry.update({k: v for k, v in extra.items() if v is not None})
+        _usage(entry, ctx=ctx)
+    except Exception:
+        pass
 
 
 def _audit(entry: dict, ctx: Any = None) -> None:
@@ -195,6 +310,36 @@ def _compile_grep(source: str) -> re.Pattern[str]:
     return re.compile(source, re.IGNORECASE)
 
 
+def _finalize(
+    raw: str,
+    compressed: str,
+    stats: dict,
+    ctx: Any,
+    audit_base: dict,
+) -> str | None:
+    """Shared hook tail: gate check + CCR store + ok-audit (arch C3).
+
+    Both hooks ran this identical sequence — gate != ok => passthrough,
+    store failure => passthrough (fail-open), success => audit ok.
+    """
+    if stats.get("gate") != "ok":
+        return None
+    stored = _store_original(raw, compressed, str(stats.get("digest", "")), ctx)
+    if stored is None:
+        return None
+    new_text, digest = stored
+    _audit({
+        **audit_base,
+        "before_chars": stats.get("before_chars"),
+        "after_chars": stats.get("after_chars"),
+        "saved_chars": stats.get("saved_chars"),
+        "gate": "ok",
+        "hash": digest,
+        "ms": round(float(stats.get("ms", 0.0)), 2),
+    }, ctx=ctx)
+    return new_text
+
+
 def _on_transform(
     command: Any = None,
     output: Any = None,
@@ -216,24 +361,12 @@ def _on_transform(
         min_chars=min_chars,
         max_lines=_int_cfg(ctx, "max_lines", 120, 10, 10000),
     )
-    if stats.get("gate") != "ok":
-        return None
-    stored_output = _store_original(output, new_output, str(stats.get("digest", "")), ctx)
-    if stored_output is None:
-        return None
-    new_output, digest = stored_output
-    _audit({
+    _usage_terminal(command, output, stats, ctx)
+    return _finalize(output, new_output, stats, ctx, {
         "tool": "terminal",
         "command": str(command or "")[:120],
         "kind": stats.get("kind"),
-        "before_chars": stats.get("before_chars"),
-        "after_chars": stats.get("after_chars"),
-        "saved_chars": stats.get("saved_chars"),
-        "gate": "ok",
-        "hash": digest,
-        "ms": round(float(stats.get("ms", 0.0)), 2),
-    }, ctx=ctx)
-    return new_output
+    })
 
 
 def _on_tool_result(
@@ -264,24 +397,14 @@ def _on_tool_result(
         min_chars=_int_cfg(ctx, "min_chars", 2048, 0, 10_000_000),
         toon_enabled=_bool_cfg(ctx, "toon_enabled", False),
     )
-    if stats.get("gate") != "ok":
-        return None
-    stored_result = _store_original(result, new_result, str(stats.get("digest", "")), ctx)
-    if stored_result is None:
-        return None
-    new_result, digest = stored_result
-    note_turn(result, digest, session_id=sid, turn_id=turn)
-    _audit({
+    _usage_tool(tool_name, result, stats, ctx)
+    out = _finalize(result, new_result, stats, ctx, {
         "tool": str(tool_name or "tool"),
         "kind": "tool_result",
-        "before_chars": stats.get("before_chars"),
-        "after_chars": stats.get("after_chars"),
-        "saved_chars": stats.get("saved_chars"),
-        "gate": "ok",
-        "hash": digest,
-        "ms": round(float(stats.get("ms", 0.0)), 2),
-    }, ctx=ctx)
-    return new_result
+    })
+    if out is not None:
+        note_turn(result, str(stats.get("digest", "")), session_id=sid, turn_id=turn)
+    return out
 
 
 def _on_post_llm(
@@ -320,6 +443,7 @@ def _handle_retrieve(args: dict, **kw: Any) -> str:
     ttl_hours = _int_cfg(ctx, "ccr_ttl_hours", 24, 1, 24 * 30) if ctx is not None else 24
     content = ccr_get(digest, ttl_hours=ttl_hours)
     if content is None:
+        _usage_retrieve(args, hit=False, ctx=ctx)
         return _err("Not found or expired (TTL passed). Re-run the original command instead.")
 
     grep = str((args or {}).get("grep") or "").strip()
@@ -347,6 +471,8 @@ def _handle_retrieve(args: dict, **kw: Any) -> str:
                     continue
                 matched.append(rendered)
                 output_chars += extra
+            _usage_retrieve(args, hit=True, ctx=ctx, mode="grep",
+                            matches=matches_count, truncated=truncated)
             return _ok({
                 "matches": "\n".join(matched) if matched else "(no matches found)",
                 "matches_count": matches_count,
@@ -365,6 +491,8 @@ def _handle_retrieve(args: dict, **kw: Any) -> str:
         cnt = int(limit) if limit is not None else 1000
         end = min(total_lines, start + max(1, cnt))
         sliced = [f"{i + 1}|{lines[i]}" for i in range(start, end)]
+        _usage_retrieve(args, hit=True, ctx=ctx, mode="slice",
+                        offset=start + 1, returned=len(sliced), total=total_lines)
         return _ok({
             "lines": "\n".join(sliced),
             "offset": start + 1,
@@ -372,6 +500,7 @@ def _handle_retrieve(args: dict, **kw: Any) -> str:
             "returned_lines": len(sliced),
         })
 
+    _usage_retrieve(args, hit=True, ctx=ctx, mode="full", chars=len(content))
     return _ok({"original_content": content, "original_chars": len(content), "total_lines": total_lines})
 
 
@@ -389,6 +518,52 @@ def _ok(data: dict) -> str:
         return tool_result(data)
     except Exception:
         return json.dumps(data, ensure_ascii=False)
+
+
+def _usage_summary() -> str:
+    """Aggregate usage.jsonl into a one-screen use-case summary. Never raises."""
+    try:
+        path = _usage_path()
+        backup = path.with_name(path.name + ".1")
+        rows = []
+        with _AUDIT_LOCK:
+            for f in (backup, path):
+                if f.exists():
+                    for ln in f.read_text(encoding="utf-8").splitlines():
+                        s = ln.strip()
+                        if s.startswith("{"):
+                            try:
+                                rows.append(json.loads(s))
+                            except Exception:
+                                pass
+        if not rows:
+            return f"trimtok v{VERSION}: no usage logged yet."
+        n_ok = sum(1 for r in rows if r.get("gate") == "ok")
+        saved = sum(int(r.get("saved") or 0) for r in rows if r.get("hook") in ("terminal", "tool"))
+        gates: dict = {}
+        shapes: dict = {}
+        cmds: dict = {}
+        for r in rows:
+            if r.get("hook") in ("terminal", "tool"):
+                g = str(r.get("gate") or "?")
+                gates[g] = gates.get(g, 0) + 1
+                sh = str(r.get("shape") or "?")
+                shapes[sh] = shapes.get(sh, 0) + 1
+                c = str(r.get("cmd") or r.get("tool") or "?")[:40]
+                cmds[c] = [cmds.get(c, [0, 0])[0] + 1, cmds.get(c, [0, 0])[1] + int(r.get("saved") or 0)]
+        retr = [r for r in rows if r.get("hook") == "retrieve"]
+        hits = sum(1 for r in retr if r.get("hit"))
+        top_g = sorted(gates.items(), key=lambda kv: -kv[1])[:5]
+        top_s = sorted(shapes.items(), key=lambda kv: -kv[1])[:5]
+        top_c = sorted(cmds.items(), key=lambda kv: -kv[1][1])[:5]
+        out = [f"trimtok v{VERSION} usage: {len(rows)} events, {n_ok} folds, ~{saved:,} chars saved."]
+        out.append("gates: " + ", ".join(f"{k}={v}" for k, v in top_g))
+        out.append("shapes: " + ", ".join(f"{k}={v}" for k, v in top_s))
+        out.append("top-saved: " + "; ".join(f"{k} (~{v[1]:,}c)" for k, v in top_c))
+        out.append(f"retrieve: {hits}/{len(retr)} hits" if retr else "retrieve: none yet")
+        return "\n".join(out)
+    except Exception:
+        return f"trimtok v{VERSION}: usage unavailable."
 
 
 def _handle_ts_command(raw_args: str) -> str:
@@ -414,13 +589,15 @@ def _handle_ts_command(raw_args: str) -> str:
             return f"trimtok v{VERSION}: status unavailable."
     if arg == "stats":
         return _handle_ts_command("status")
+    if arg == "usage":
+        return _usage_summary()
     if arg == "purge":
         purged = ccr_purge()
         return f"trimtok v{VERSION}: purged {purged} cached original files."
     if arg.startswith("retrieve"):
         h = arg.partition(" ")[2].strip()
         return _handle_retrieve({"hash": h})
-    return "Usage: /trimtok [status|stats|purge|retrieve <hash>]"
+    return "Usage: /trimtok [status|stats|usage|purge|retrieve <hash>]"
 
 
 def _on_session_reset(session_id: Any = None, **kw: Any) -> None:

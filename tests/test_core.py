@@ -7,7 +7,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core import LEGEND, SENTINEL_RE, compress_terminal, detect_kind, strip_ansi
+from core import LEGEND, SENTINEL_RE, compress_terminal, detect_kind, is_important, strip_ansi
 from ccr import get as ccr_get, put as ccr_put, stats as ccr_stats
 
 
@@ -45,6 +45,12 @@ check("never-inflate", st2["gate"] in ("ok", "reverted_gate") and len(out2) <= l
 # 5. idempotency: already-compressed passes through (gate name may vary by size)
 out3, st3 = compress_terminal("pytest", out)
 check("idempotent", out3 == out and st3["gate"].startswith("passthrough"))
+# W10: bare "[tt:word" mentions in legit logs must NOT trip the sentinel gate
+_fp = ("x" * 1900) + "\n[tt:note this is just log text\n" + ("data line payload here\n" * 200)
+_fp_out, _fp_st = compress_terminal("cat", _fp)
+check("sentinel-no-false-positive", _fp_st["gate"] != "passthrough_sentinel")
+check("sentinel-real-marker", bool(SENTINEL_RE.search("[tt:seen lines=60 retrieve:abc123def456]")))
+check("sentinel-bare-mention", not SENTINEL_RE.search("[tt:note this is just log"))
 
 # 6. TRIMTOK_KEEP: lines survive windowing
 many = [f"line {i} filler text here" for i in range(400)]
@@ -233,6 +239,70 @@ with tempfile.TemporaryDirectory() as td:
             plugin._audit({"saved_chars": 3})
         check("audit-trims-oversized-existing-log", legacy_path.stat().st_size <= 120)
 
+# Usage log: every gate incl. non-ok, both hook shapes, retrieve hits, rotation.
+with tempfile.TemporaryDirectory() as td:
+    from pathlib import Path as _P
+    from unittest.mock import patch as _patch
+    usage_path = _P(td) / "usage.jsonl"
+    with _patch.object(plugin, "_usage_path", return_value=usage_path), \
+         _patch.object(ccr, "default_dir", return_value=_P(td)):
+        class _UCtx:
+            @staticmethod
+            def get_config(key, default):
+                return default
+        plugin._on_transform._ctx = _UCtx()
+        plugin._on_tool_result._ctx = _UCtx()
+        plugin._handle_retrieve._ctx = _UCtx()
+        big_ok = "\n".join(["2026-10-11 20:00:01 INFO heartbeat ok"] * 50) + "\n" + "x" * 1500
+        out_ok = plugin._on_transform(command="pytest", output=big_ok)
+        tiny = "a\nb\n"
+        out_tiny = plugin._on_transform(command="ls", output=tiny)
+        payload = json.dumps({"items": [{"id": i, "name": "x" * 40} for i in range(100)]}, indent=2)
+        out_tool = plugin._on_tool_result(tool_name="search_files", result=payload)
+        def _all_rows():
+            out = []
+            for f in (usage_path.with_name(usage_path.name + ".1"), usage_path):
+                if f.exists():
+                    out.extend(json.loads(ln) for ln in f.read_text(encoding="utf-8").splitlines() if ln.strip().startswith("{"))
+            return out
+        rows = _all_rows()
+        check("usage-logs-all-gates", {r.get("gate") for r in rows} >= {"ok", "passthrough_small"})
+        check("usage-terminal-shape", any(r.get("hook") == "terminal" and r.get("shape") in ("repeat", "mixed") for r in rows))
+        hook_tool = [r for r in rows if r.get("hook") == "tool"]
+        check("usage-tool-shape", len(hook_tool) >= 1 and all(r.get("shape") for r in hook_tool))
+        check("usage-no-content", all("heartbeat ok payload" not in json.dumps(r) and len(r.get("cmd", "") or r.get("tool", "")) <= 120 for r in rows))
+        # retrieve hit + miss both logged
+        import re as _re
+        m = _re.search(r"retrieve:([0-9a-f]{12})", out_ok or "")
+        if m:
+            plugin._handle_retrieve({"hash": m.group(1)})
+        plugin._handle_retrieve({"hash": "deadbeef1234"})
+        rows2 = _all_rows()
+        retr = [r for r in rows2 if r.get("hook") == "retrieve"]
+        check("usage-retrieve-hit-miss", {r.get("hit") for r in retr} >= {True, False})
+        summ = plugin._handle_ts_command("usage")
+        check("usage-summary", "usage:" in summ and "retrieve:" in summ)
+        # opt-out switch
+        class _UOff:
+            @staticmethod
+            def get_config(key, default):
+                return False if key == "usage_enabled" else default
+        before = len(_all_rows())
+        plugin._usage({"gate": "ok"}, ctx=_UOff())
+        after = len(_all_rows())
+        check("usage-opt-out", before == after)
+# rotation under a small cap (single backup generation, same as audit)
+with tempfile.TemporaryDirectory() as td:
+    from pathlib import Path as _P2
+    from unittest.mock import patch as _patch2
+    usage_path2 = _P2(td) / "usage.jsonl"
+    with _patch2.object(plugin, "_usage_path", return_value=usage_path2), \
+         _patch2.object(plugin, "_MAX_USAGE_BYTES", 400, create=True):
+        for _ in range(30):
+            plugin._usage({"gate": "ok", "hook": "tool", "pad": "y" * 100})
+        uback = usage_path2.with_name(usage_path2.name + ".1")
+        check("usage-rotates-with-cap", usage_path2.stat().st_size <= 400 and uback.exists())
+
 # 10. determinism: same input -> same bytes
 a1, _ = compress_terminal("pytest", big)
 a2, _ = compress_terminal("pytest", big)
@@ -246,6 +316,48 @@ blob = ("2026-10-11 INFO tick\n" * 3000) + "ERROR final fail\n" + "z" * 2000
 compress_terminal("tail", blob)  # warmup
 _ms = sorted(compress_terminal("tail", blob)[1].get("ms", 1e9) for _ in range(3))[1]
 check("perf-p99", _ms < 100)
+
+# 12. error rails: real failure shapes (W14) + Thai rails (W2)
+_rail_hit = [
+    "ERROR boom", "errors: 3", "AssertionError: x != y", "Assertion failed: x",
+    "Segmentation fault (core dumped)", "segfault", "exit code 1",
+    "EPIPE broken pipe", "OOM killed", "out of memory",
+    "ข้อผิดพลาด: การเชื่อมต่อล้มเหลว", "ผลลัพธ์ผิดพลาด",
+    "ระบบล้มเหลว", "โปรแกรมขัดข้อง",
+]
+_rail_miss = [
+    "errores happened", "failed_login attempt", "tracebacks?",
+    "exit code 0", "INFO all good",
+]
+check("rails-hit", all(is_important(ln) for ln in _rail_hit))
+check("rails-miss", not any(is_important(ln) for ln in _rail_miss))
+# Thai error mid-document is kept by rail, not just by tail position
+_thai_mid = [f"บรรทัดที่ {i} ระบบทำงานปกติ" for i in range(600)]
+_thai_mid.insert(300, "ข้อผิดพลาด: ดิสก์เต็ม ล้มเหลว")
+_thai_out, _thai_st = compress_terminal("tail app.log", "\n".join(_thai_mid) + "\n" + "ก" * 1500)
+check("rails-thai-mid-kept", "ข้อผิดพลาด" in _thai_out and _thai_st["gate"] == "ok")
+
+# 13. W1: error-overflow emits partial (not 0%); normal errors stay complete
+_err3k = "\n".join(f"ERROR {i}: connection failed timeout task {i}" for i in range(3000))
+_o3k, _s3k = compress_terminal("pytest", _err3k)
+check("overflow-partial", _s3k["gate"] == "ok" and _s3k.get("partial") is True)
+check("overflow-saves", _s3k.get("saved_chars", 0) > 100_000)
+check("overflow-head-counts", "hidden=2799" in _o3k.split("\n")[0])
+# non-overflow path keeps every error with no partial flag
+_ok2, _sok2 = compress_terminal("pytest", big)
+check("no-overflow-complete", _sok2["gate"] == "ok" and not _sok2.get("partial", False))
+
+# 14. Drain template fold: scattered same-template lines (non-adjacent).
+# Timestamps/PIDs vary so adjacent-repeat folding cannot fire; templates must.
+_drain_lines = []
+for _i in range(60):
+    _drain_lines.append(f"2026-10-11 20:00:{_i % 60:02d} INFO worker-{_i % 3} done task payload-xyz")
+    _drain_lines.append(f"DEBUG detail filler line number {_i} with padding content here")
+_drain_big = "\n".join(_drain_lines) + "\n" + "x" * 1500
+_drain_out, _drain_st = compress_terminal("tail app.log", _drain_big)
+check("drain-template-fires", "[template " in _drain_out and _drain_st["gate"] == "ok")
+check("drain-template-sample", "payload-xyz" in _drain_out)
+check("drain-template-count", "×" in _drain_out)
 
 print(f"\n{check.failed} failures")
 if __name__ == "__main__":

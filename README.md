@@ -1,7 +1,7 @@
 <h1 align="center">trimtok</h1>
 
 <p align="center">
-  <strong>Local stdlib-only context compressor and token optimizer for Hermes Agent.</strong>
+  <strong>Local stdlib-only context compressor for Hermes Agent. 88.6% fewer chars on heavy outputs. Every byte recoverable.</strong>
 </p>
 
 <p align="center">
@@ -14,33 +14,21 @@
 
 ---
 
-## Overview
+## What it does
 
-Large language model agents consume significant token bandwidth processing voluminous command line logs, repeated file outputs, and redundant tool responses.
+Terminal output and tool results pass through folding stages before reaching the model. Repetitive logs collapse to `[repeated Nx]`, scattered same-shape lines to `[template ×N]`, near-duplicates to `[tt:shingle]`, cross-turn repeats to `[tt:seen]` pointers, uniform JSON arrays to TOON tables. Large unique dumps keep head + tail with a stub. The full original is always stored in a local content-addressed cache and retrievable via `trimtok_retrieve`.
 
-`trimtok` is a lightweight, zero-dependency plugin for Hermes Agent designed to reduce context token consumption. Compression may omit or replace parts of an output; the exact original can be retrieved from CCR only while its entry remains available (subject to TTL and cache eviction). The local, deterministic pipeline uses only the Python standard library.
+| Case | Before → After | Cut |
+| :--- | :--- | ---: |
+| 1 MB repeated tool output | 1,000,000 → 167 | 100.0% |
+| 5k-line heartbeat log | 234,999 → 210 | 99.9% |
+| 3k-line error log | 141,779 → 9,200 | 93.5% |
+| 4.8k-line traceback | 94,656 → 11,216 | 88.2% |
+| JSON envelope + tail | 7,337 → 5,224 | 28.8% |
+| Realistic 5-turn session | 105,839 → 74,110 | 30.0% |
+| **All 26 stress cases** | **3,059,792 → 347,587** | **88.6%** |
 
-```
-   Raw Output (Terminal / Tool)
-               │
-               ▼
-   ┌─────────────────────────────────────────────────────────┐
-   │  trimtok Stage 1: Fast Heuristics & Terminal Reduction   │
-   │  • ANSI Stripping       • Error Rail Sentinel Guard     │
-   │  • Loop Dedup Collapse  • Head/Tail Adaptive Window     │
-   ├─────────────────────────────────────────────────────────┤
-   │  trimtok Stage 2: Cross-Turn Output Deduplication       │
-   │  • Normalized Index     • Span Folding [tt:... ptr]     │
-   │  • Path Reductions      • Safe JSON Minification        │
-   ├─────────────────────────────────────────────────────────┤
-   │  Content-Addressed Retrieval (CCR) Safety Rail          │
-   │  • Hash: sha256[:12]    • Cache: ~/.hermes/.../ccr/     │
-   │  • Fast O(1) Local Disk • Recovery: trimtok_retrieve    │
-   └─────────────────────────────────────────────────────────┘
-               │
-               ▼
-   Clean, Compact Context to Model
-```
+Median overhead ~1 ms per path (terminal 0.9 ms, tool fold 1.1 ms, CCR read 0.3 ms). Measured with `python tests/test_benchmark.py` and `python tests/stress_heavy.py`; full tables in `tests/MEASURE_0.6.0.md`.
 
 <p align="center">
   <img src="docs/architecture-dark.svg" alt="trimtok Architecture" width="100%">
@@ -50,9 +38,7 @@ Large language model agents consume significant token bandwidth processing volum
 
 ## Benchmarks
 
-The benchmark suite uses synthetic inputs as a local regression signal, not as a production latency
-guarantee. Run it with python tests/test_benchmark.py. Each path has five warm-ups and 50 timed
-samples. The suite reports median and nearest-rank p95; the regression gate applies to the median.
+Median overhead ~1 ms per path; regression budgets below. Run with `python tests/test_benchmark.py` (5 warm-ups, 50 samples, median gate, p95 reported).
 
 | Measurement path | Scenario | Median regression budget |
 | :--- | :--- | :--- |
@@ -71,23 +57,13 @@ across distinct files.
 
 ---
 
-## Core Capabilities
+## Core capabilities
 
-### 1. Terminal Stream Reduction (`transform_terminal_output`)
-- **ANSI Escape Code Purge**: Strips terminal colors and cursor codes in a single pass.
-- **Repeat Collapse**: Collapses repetitive status bars, build progress bars, and polling lines (`48 duplicate lines collapsed`).
-- **Error Rail Protection**: Preserves lines matching stack traces, exceptions, panics, assertion errors, and failure indicators verbatim.
-- **Adaptive Head & Tail Windowing**: Maintains the initial invocation state and the terminal conclusion while collapsing uninformative interior loops.
+**Terminal reduction** (`transform_terminal_output`) — ANSI purge, adjacent-repeat fold, Drain template fold (`×N` + verbatim sample), error rails (EN + Thai, verbatim), quality gate with `partial` overflow mode, per-command line budgets, never-inflate revert.
 
-### 2. Cross-Turn Deduplication (`transform_tool_result`)
-- **Normalized Fingerprinting**: Indexes large outputs across agent conversational turns.
-- **Path-Prefix Collapse**: Compresses verbose repetitive file directory paths in search results.
-- **Span Folding**: Substitutes redundant multi-line payloads seen in previous turns with compact pointer markers `[tt:tool kind=result saved=N retrieve:<hash>]`.
-- **JSON Minifier**: Strips non-semantic whitespace on structured responses without schema distortion.
+**Tool-result folding** (`transform_tool_result`) — hygiene, volatile normalization (UUID/session/timestamp), lossless JSON minify (whole-doc or leading-prefix), cross-turn span fold, intra-document repeat fold, shingle near-dedup (Jaccard ≥ 0.8), HEAD_TAIL stubs for large unique docs (≥100 KB), exemption list (ports/hashes/counts never fold), strict TOON for uniform arrays (opt-in).
 
-### 3. Content-Addressed Retrieval (CCR) Safety Rail
-Every compressed or folded output is stored by its 12-character SHA-256 digest in the local CCR cache (`~/.hermes/plugin-data/trimtok/ccr/`).
-If an agent requires the exact uncompressed payload, it calls the registered tool with optional line pagination or regex filtering:
+**Retrieval safety rail (CCR)** — every folded output stored by 12-char SHA-256 digest (`~/.hermes/plugin-data/trimtok/`), TTL + LRU eviction, exact roundtrip:
 ```json
 {
   "name": "trimtok_retrieve",
@@ -99,75 +75,69 @@ If an agent requires the exact uncompressed payload, it calls the registered too
   }
 }
 ```
-The original content is retrieved and restored with line numbers or filtered without blowing up the context budget. Regex filtering uses a bounded subset: patterns are limited to 256 characters, groups and multiple repetition operators are rejected, input is limited to 1 MB, and output to 1,000 matches / 100 KB.
+The original content is retrieved with line numbers or filtered without blowing up the context budget (patterns ≤256 chars, no groups, input ≤1 MB, output ≤1,000 matches / 100 KB).
+
+**Usage telemetry** (`usage.jsonl` + `/trimtok usage`) — every hook invocation logged (all gates, fold shapes, retrieve hits), bounded 1 MB rotation, opt-out via `usage_enabled`.
 
 ---
 
 ## Configuration
 
-Settings are declared under `plugins.entries.trimtok.settings` in Hermes `config.yaml`:
+Settings under `plugins.entries.trimtok.settings` in Hermes `config.yaml`:
 
 | Parameter | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `enabled` | `bool` | `true` | Master switch for all hooks. Fail-open on `false`. |
 | `phase2_enabled` | `bool` | `true` | Enables cross-turn tool result folding and path reductions. |
-| `min_chars` | `int` | `2048` | Threshold size in characters before compression triggers. |
-| `exclude_commands` | `list` | `[]` | Normalized, case-insensitive command prefixes that bypass terminal compression. Example: `git status` also excludes `git status --short`. |
-| `exclude_tools` | `list` | `[]` | Exact, case-insensitive Hermes tool names that bypass tool-result compression. |
+| `min_chars` | `int` | `2048` | Size threshold before compression (~512 tokens). |
+| `exclude_commands` | `list` | `[]` | Command prefixes that bypass terminal compression. |
+| `exclude_tools` | `list` | `[]` | Hermes tool names that bypass tool-result compression. |
 | `max_lines` | `int` | `120` | Terminal line windowing limit. |
 | `mask_enabled` | `bool` | `true` | Enables turn-clock expiry for fold index freshness. |
-| `mask_keep_turns`| `int` | `2` | Number of recent turns retained in the active fold index. |
-| `audit_enabled`  | `bool` | `true` | Record compression savings to a rotating audit log (1 MB plus one backup). |
-| `ccr_max_entries`| `int` | `1000` | Maximum cached original entries before LRU eviction. |
-| `ccr_max_bytes`  | `int` | `52428800` | Total cache byte budget (default: 50 MB). |
-| `ccr_ttl_hours`  | `int` | `24` | Time-to-live for cached originals. |
+| `mask_keep_turns`| `int` | `2` | Recent turns retained in the fold index. |
+| `audit_enabled`  | `bool` | `true` | Savings log (1 MB rotation). |
+| `usage_enabled`  | `bool` | `true` | Usage log (1 MB rotation). |
+| `ccr_max_entries`| `int` | `1000` | Cache entry cap (LRU). |
+| `ccr_max_bytes`  | `int` | `52428800` | Cache byte budget (50 MB). |
+| `ccr_ttl_hours`  | `int` | `24` | Original retention. |
 
-The in-memory fold index is bounded per session to 200 spans, 2 Mi characters of retained source
-text, and 20,000 unique long-line keys. An individual result larger than the text budget is still
-returned normally, but is not retained as a fold candidate. Exact-repeat hashes remain for the
-session lifetime and are cleared by the session-end hook.
+Fold index bounded per session: 200 spans, 2 MiB source, 20,000 line keys.
 
 ---
 
-## Slash Commands
+## Slash commands
 
-In interactive Hermes sessions:
-
-- `/trimtok status` or `/trimtok stats` — Display recent character savings and active cache entry count. Expired CCR files are cleaned during status checks.
-- `/trimtok purge` — Evict all cached CCR files.
-- `/trimtok retrieve <hash>` — Print cached original text for a given hash.
+- `/trimtok status` — savings + cache entries (cleans expired).
+- `/trimtok usage` — gate/shape breakdown, top-saving commands, retrieve hit rate.
+- `/trimtok purge` — evict all cached originals.
+- `/trimtok retrieve <hash>` — print a cached original.
 
 ---
 
 ## Installation
 
-### 1. Deploy Plugin Directory
-Clone or copy the repository into your Hermes plugins directory:
-
 ```bash
 git clone https://github.com/Stxyu-p/trimtok.git "$LOCALAPPDATA/hermes/plugins/trimtok"
 ```
-*(On POSIX systems, target `~/.hermes/plugins/trimtok`)*
 
-### 2. Enable in Hermes
-Enable the plugin through the Hermes CLI:
+*(POSIX: `~/.hermes/plugins/trimtok`)*
+
 ```bash
 hermes plugins enable trimtok
 ```
 
-### 3. Run Tests
-Verify test suites and microsecond benchmarks locally:
+Verify:
+
 ```bash
 python tests/test_core.py
 python tests/test_dedup.py
 python tests/test_benchmark.py
 ```
 
-An optional integration test loads the plugin through Hermes' runtime in an isolated temporary home, then checks compression and exact retrieval. It skips when `HERMES_AGENT_PATH` is not set. `TRIMTOK_PLUGIN_PATH` can point it at a different plugin copy; otherwise it tests this checkout. Run it with the Python environment used by Hermes:
+Hermes-runtime integration (isolated temp home, needs `HERMES_AGENT_PATH`):
 
 ```powershell
 $env:HERMES_AGENT_PATH = "$env:LOCALAPPDATA\hermes\hermes-agent"
-$env:TRIMTOK_PLUGIN_PATH = "$env:LOCALAPPDATA\hermes\plugins\trimtok" # optional: test installed copy
 & "$env:LOCALAPPDATA\hermes\hermes-agent\venv\Scripts\python.exe" tests/test_hermes_runtime.py
 ```
 
