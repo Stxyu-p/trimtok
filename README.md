@@ -50,14 +50,24 @@ Large language model agents consume significant token bandwidth processing volum
 
 ## Benchmarks
 
-Measured on standard production environments (Intel/AMD x86_64 and Windows/Linux runtimes) across 100 consecutive executions:
+The benchmark suite uses synthetic inputs as a local regression signal, not as a production latency
+guarantee. Run it with python tests/test_benchmark.py. Each path has five warm-ups and 50 timed
+samples. The suite reports median and nearest-rank p95; the regression gate applies to the median.
 
-| Component | Target Budget | Measured Latency | Reduction Ratio | Dependencies |
-| :--- | :--- | :--- | :--- | :--- |
-| **`compress_terminal`** (4.4 KB log) | `< 5.0 ms` | **1.30 ms** | 40% – 85% | Python Stdlib |
-| **`compress_tool_result`** (JSON / search) | `< 2.0 ms` | **0.08 ms** | 30% – 70% | Python Stdlib |
-| **`ccr_put`** (Storage write) | `< 3.0 ms` | **0.58 ms** | Stores original payload for TTL window | Python Stdlib |
-| **`ccr_get`** (O(1) Direct fetch) | `< 2.0 ms` | **0.38 ms** | Exact original | Python Stdlib |
+| Measurement path | Scenario | Median regression budget |
+| :--- | :--- | :--- |
+| compress_terminal | Same 4.4 KB repeated build log | < 10 ms |
+| Tool result: first-seen | Pretty JSON in a fresh session for every sample | < 10 ms |
+| Tool result: exact repeat | Repeated payload reaches the repeat passthrough path | < 10 ms |
+| Tool result: cross-turn fold | A new result folds against a prior result in the same session | < 10 ms |
+| Tool result: no gain | Unique ~9.5 KB input returns unchanged | < 10 ms |
+| CCR put | Unique payload per sample | < 5 ms |
+| CCR get | Same stored payload read repeatedly (warm local-file path) | < 5 ms |
+
+For stateful tool-result cases, session setup and prior-turn indexing happen outside the timed
+interval. The p95 is reported to expose tail latency, but is not currently a pass/fail threshold.
+CCR get intentionally measures repeated reads of one stored entry; it does not represent cold reads
+across distinct files.
 
 ---
 
@@ -111,6 +121,11 @@ Settings are declared under `plugins.entries.trimtok.settings` in Hermes `config
 | `ccr_max_entries`| `int` | `1000` | Maximum cached original entries before LRU eviction. |
 | `ccr_max_bytes`  | `int` | `52428800` | Total cache byte budget (default: 50 MB). |
 | `ccr_ttl_hours`  | `int` | `24` | Time-to-live for cached originals. |
+
+The in-memory fold index is bounded per session to 200 spans, 2 Mi characters of retained source
+text, and 20,000 unique long-line keys. An individual result larger than the text budget is still
+returned normally, but is not retained as a fold candidate. Exact-repeat hashes remain for the
+session lifetime and are cleared by the session-end hook.
 
 ---
 

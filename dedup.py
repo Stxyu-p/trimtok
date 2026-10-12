@@ -15,7 +15,9 @@ _KEEP_PREFIX = "TRIMTOK_KEEP:"
 _MIN_SPAN_LINES = 5
 _MIN_SPAN_CHARS = 200
 _MIN_LINE_CHARS = 40  # single repeated lines at/above this fold individually
-_MAX_SPANS = 200  # per-session corpus cap (ponytail: global cap, LRU by insert)
+_MAX_SPANS = 200  # per-session corpus count cap (FIFO by insertion)
+_MAX_SPAN_CHARS = 2 * 1024 * 1024  # retained source characters per session
+_MAX_INDEXED_LINES = 20_000  # bound duplicate-line lookup keys per session
 
 _WS_TRAIL_RE = re.compile(r"[ \t]+(?=\n|$)")
 _BLANK_RUN_RE = re.compile(r"\n{3,}")
@@ -27,7 +29,8 @@ _TS_LONG_RE = re.compile(
     r"\b\d{4}[-/]\d{2}[-/]\d{2}[T ]\d{2}:\d{2}(:\d{2})?\b"
 )
 
-# session_id -> {"spans": [(hash, text)], "lines": {line: span_hash},
+# session_id -> {"spans": [(hash, text)], "span_chars": int,
+#                  "lines": {line: span_hash},
 #                  "raw": set(raw_hashes for repeat detection),
 #                  "turns": {turn_id: {"hashes": [raw digests in order],
 #                                      "masked": bool}}}
@@ -38,8 +41,12 @@ def _seen(session_id: str) -> dict:
     key = session_id or "default"
     entry = _SEEN.get(key)
     if entry is None:
-        entry = {"spans": [], "lines": {}, "raw": set(), "turns": {}}
+        entry = {
+            "spans": [], "span_chars": 0, "lines": {}, "raw": set(), "turns": {}
+        }
         _SEEN[key] = entry
+    if "span_chars" not in entry:
+        entry["span_chars"] = sum(len(text) for _, text in entry["spans"])
     if "turns" not in entry:
         entry["turns"] = {}
     return entry
@@ -89,10 +96,18 @@ def expire_old_turns(
             del turns[tid]
         if not doomed:
             return len(old_ids)
-        seen["spans"] = [(h, t) for h, t in seen["spans"] if h not in doomed]
-        for ln, owner in list(seen["lines"].items()):
+        kept_spans = []
+        removed_chars = 0
+        for span_hash, span_text in seen["spans"]:
+            if span_hash in doomed:
+                removed_chars += len(span_text)
+            else:
+                kept_spans.append((span_hash, span_text))
+        seen["spans"] = kept_spans
+        seen["span_chars"] = max(0, seen["span_chars"] - removed_chars)
+        for line, owner in list(seen["lines"].items()):
             if owner in doomed:
-                del seen["lines"][ln]
+                del seen["lines"][line]
         return len(old_ids)
     except Exception:
         return 0
@@ -113,18 +128,41 @@ def mask_summary(text: str, digest: str, saved_chars: int) -> str:
     return head + (f"\nStarts with: {first}" if first else "")
 
 
+def _drop_indexed_lines(seen: dict, owner: str) -> None:
+    """Remove duplicate-line keys owned by an evicted span."""
+    for line, line_owner in list(seen["lines"].items()):
+        if line_owner == owner:
+            del seen["lines"][line]
+
+
+def _index_long_line(seen: dict, line: str, owner: str) -> None:
+    """Add a unique long line while the per-session lookup budget allows."""
+    if len(line) < _MIN_LINE_CHARS or line.startswith("[tt:"):
+        return
+    lines = seen["lines"]
+    if len(lines) < _MAX_INDEXED_LINES:
+        lines.setdefault(line, owner)
+
+
 def hygiene(text: str) -> tuple[str, int]:
     """Trailing-ws strip + blank-run collapse. Returns (text, saved)."""
-    new = _WS_TRAIL_RE.sub("", text)
-    new = _BLANK_RUN_RE.sub("\n\n", new)
+    new = text
+    if text.endswith((" ", "\t")) or " \n" in text or "\t\n" in text:
+        new = _WS_TRAIL_RE.sub("", new)
+    if "\n\n\n" in new:
+        new = _BLANK_RUN_RE.sub("\n\n", new)
     return new, len(text) - len(new)
 
 
 def normalize_volatile(text: str) -> tuple[str, int]:
     """UUID/session-id/timestamp -> stable placeholders (cache-friendly)."""
-    new = _UUID_RE.sub("<UUID>", text)
-    new = _SESS_RE.sub("<SESS>", new)
-    new = _TS_LONG_RE.sub("<TS>", new)
+    new = text
+    if "-" in new:
+        new = _UUID_RE.sub("<UUID>", new)
+    if "20" in new and "_" in new:
+        new = _SESS_RE.sub("<SESS>", new)
+    if "-" in new or "/" in new:
+        new = _TS_LONG_RE.sub("<TS>", new)
     return new, len(text) - len(new)
 
 
@@ -256,7 +294,10 @@ def _fold_inner(
 
 
 def remember(text: str, session_id: str = "", owner: str | None = None) -> str:
-    """Index result + its big inner content for future folding. Returns hash.
+    """Index content for future folding within bounded per-session budgets.
+
+    Returns hash. Results larger than the corpus budget are not retained; the
+    raw payload remains available through the caller's normal storage path.
 
     owner: raw-content digest of the owning block. Line/span pointers embed
     this hash, and the hook stores the raw original in CCR under it — so
@@ -265,21 +306,24 @@ def remember(text: str, session_id: str = "", owner: str | None = None) -> str:
     """
     seen = _seen(session_id)
     corpus = seen["spans"]
-    h = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]
-    key = owner or h
+    key = owner or hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]
     if any(eh == key for eh, _ in corpus):
         return key
-    if len(corpus) >= _MAX_SPANS:
-        old_h, _ = corpus.pop(0)  # ponytail: LRU by insert order, good enough
-        for ln, ln_owner in list(seen["lines"].items()):
-            if ln_owner == old_h:
-                del seen["lines"][ln]
+    if len(text) > _MAX_SPAN_CHARS:
+        return key
+    while corpus and (
+        len(corpus) >= _MAX_SPANS
+        or seen["span_chars"] + len(text) > _MAX_SPAN_CHARS
+    ):
+        old_hash, old_text = corpus.pop(0)
+        seen["span_chars"] = max(0, seen["span_chars"] - len(old_text))
+        _drop_indexed_lines(seen, old_hash)
     corpus.append((key, text))
+    seen["span_chars"] += len(text)
     # index every long verbatim line (incl. lines inside JSON string fields)
     # so later results fold against earlier ones; first occurrence stays verbatim
     for ln in text.split("\n"):
-        if len(ln) >= _MIN_LINE_CHARS and not ln.startswith("[tt:"):
-            seen["lines"].setdefault(ln, key)
+        _index_long_line(seen, ln, key)
     # JSON string fields: index their inner lines too (envelope differs,
     # content repeats — e.g. SKILL.md loaded twice, once minified once not).
     # Any string field (no 500-char floor): a minified envelope has ONE giant
@@ -297,8 +341,7 @@ def remember(text: str, session_id: str = "", owner: str | None = None) -> str:
                         _walk(v)
                 elif isinstance(o, str):
                     for ln in o.split("\n"):
-                        if len(ln) >= _MIN_LINE_CHARS and not ln.startswith("[tt:"):
-                            seen["lines"].setdefault(ln, key)
+                        _index_long_line(seen, ln, key)
 
             _walk(_json.loads(text))
         except Exception:

@@ -1,12 +1,15 @@
-"""trimtok microsecond latency benchmark & performance regression test.
+"""Synthetic latency regression checks with stateful paths measured separately.
 
-Stdlib only. Tests execution latency against the sub-millisecond budget.
-Run: python -m pytest tests/test_benchmark.py or python tests/test_benchmark.py
+Stdlib only. Run: python -m pytest tests/test_benchmark.py or
+python tests/test_benchmark.py
 """
 
 from __future__ import annotations
 
+import json
+import math
 import os
+import statistics
 import sys
 import time
 
@@ -14,68 +17,259 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core import compress_terminal
 from ccr import get as ccr_get, put as ccr_put
-from dedup import clear_session, compress_tool_result
+from dedup import (
+    clear_session,
+    compress_tool_result,
+    expire_old_turns,
+    note_turn,
+)
+
+
+RUNS = 50
+WARMUP_RUNS = 5
+LATENCY_BUDGET_MS = 10.0
+
+
+def _timed_call(operation):
+    started = time.perf_counter_ns()
+    result = operation()
+    return (time.perf_counter_ns() - started) / 1_000_000, result
+
+
+def _summarize(name: str, samples: list[float], budget_ms: float) -> None:
+    ordered = sorted(samples)
+    median_ms = statistics.median(ordered)
+    p95_ms = ordered[math.ceil(0.95 * len(ordered)) - 1]
+    print(
+        f"\n[BENCHMARK] {name}: median={median_ms:.3f} ms, "
+        f"p95={p95_ms:.3f} ms (n={len(ordered)})"
+    )
+    # Median is the regression gate; p95 is reported to expose tail latency
+    # without making this synthetic check overly sensitive to scheduler noise.
+    assert median_ms < budget_ms, (
+        f"{name} median exceeded {budget_ms:.1f} ms: {median_ms:.3f} ms"
+    )
+
+
+def _measure_case(name: str, run_once, expected_gate: str, budget_ms: float) -> None:
+    for index in range(WARMUP_RUNS):
+        _, stats = run_once(index)
+        assert stats["gate"] == expected_gate, (
+            f"{name} warm-up expected {expected_gate}, got {stats['gate']}"
+        )
+
+    samples = []
+    for index in range(WARMUP_RUNS, WARMUP_RUNS + RUNS):
+        elapsed_ms, stats = run_once(index)
+        assert stats["gate"] == expected_gate, (
+            f"{name} expected {expected_gate}, got {stats['gate']}"
+        )
+        samples.append(elapsed_ms)
+    _summarize(name, samples, budget_ms)
+
+
+def _tool_json_result(run_id: str) -> str:
+    return json.dumps(
+        {
+            "run": run_id,
+            "status": "ok",
+            "items": [
+                {"id": index, "name": f"module_{index}", "active": True}
+                for index in range(100)
+            ],
+        },
+        indent=2,
+    )
+
+
+def _first_seen_sample(index: int):
+    session_id = f"benchmark:first-seen:{index}"
+    clear_session(session_id)
+    result = _tool_json_result(str(index))
+    try:
+        elapsed_ms, (output, stats) = _timed_call(
+            lambda: compress_tool_result(
+                "search_files", result, session_id=session_id
+            )
+        )
+        assert output != result and stats.get("saved_chars", 0) > 0
+        return elapsed_ms, stats
+    finally:
+        clear_session(session_id)
+
+
+def _repeat_passthrough_sample(index: int):
+    session_id = f"benchmark:repeat:{index}"
+    clear_session(session_id)
+    result = _tool_json_result("repeat")
+    try:
+        _, first_stats = compress_tool_result(
+            "search_files", result, session_id=session_id
+        )
+        assert first_stats["gate"] == "ok"
+        elapsed_ms, (output, stats) = _timed_call(
+            lambda: compress_tool_result(
+                "search_files", result, session_id=session_id
+            )
+        )
+        assert output == result
+        return elapsed_ms, stats
+    finally:
+        clear_session(session_id)
+
+
+def _volatile_result(offset: int) -> str:
+    return "\n".join(
+        f"entry_{index:03d} id "
+        f"00000000-0000-4000-8000-{index + offset:012x} "
+        "carries stable content payload for cross-turn benchmark"
+        for index in range(60)
+    )
+
+
+def _cross_turn_fold_sample(index: int):
+    session_id = f"benchmark:cross-turn:{index}"
+    clear_session(session_id)
+    seed = _volatile_result(index * 100)
+    query = _volatile_result(100_000 + index * 100)
+    try:
+        _, seed_stats = compress_tool_result(
+            "search_files", seed, session_id=session_id
+        )
+        assert seed_stats["gate"] == "ok" and seed_stats.get("digest")
+
+        # Match the hook lifecycle: a successful prior-turn result is indexed,
+        # then the turn clock advances before the next result is measured.
+        note_turn(seed, seed_stats["digest"], session_id, "turn-1")
+        expire_old_turns(session_id, keep_turns=2)
+
+        elapsed_ms, (output, stats) = _timed_call(
+            lambda: compress_tool_result(
+                "search_files", query, session_id=session_id
+            )
+        )
+        assert output != query and stats.get("fold_saved", 0) > 0
+        note_turn(query, stats.get("digest", ""), session_id, "turn-2")
+        return elapsed_ms, stats
+    finally:
+        clear_session(session_id)
+
+
+def _large_no_gain_result(run_id: int) -> str:
+    return "\n".join(
+        f"record_{run_id:03d}_{index:04d}_value_{index * 37:08d}_"
+        f"hash_{(index * index) % 1_000_003:07d}_"
+        f"state_{(index * 7_919) % 999_983:06d}"
+        for index in range(180)
+    )
+
+
+def _no_gain_sample(index: int):
+    session_id = f"benchmark:no-gain:{index}"
+    clear_session(session_id)
+    result = _large_no_gain_result(index)
+    try:
+        elapsed_ms, (output, stats) = _timed_call(
+            lambda: compress_tool_result(
+                "search_files", result, session_id=session_id
+            )
+        )
+        assert output == result
+        return elapsed_ms, stats
+    finally:
+        clear_session(session_id)
 
 
 def test_terminal_compression_speed():
     output = "build progress step 1\n" * 200  # ~4.4KB
-    runs = 100
-    t0 = time.perf_counter()
-    for _ in range(runs):
-        res, stats = compress_terminal("cargo build", output)
-        assert stats["gate"] == "ok"
-    elapsed_ms = (time.perf_counter() - t0) * 1000 / runs
-    print(f"\n[BENCHMARK] compress_terminal avg: {elapsed_ms:.3f} ms")
-    # Must comfortably meet sub-millisecond or low single-digit ms
-    assert elapsed_ms < 10.0, f"Too slow: {elapsed_ms:.3f} ms"
 
+    def run_once(_index: int):
+        elapsed_ms, (result, stats) = _timed_call(
+            lambda: compress_terminal("cargo build", output)
+        )
+        assert isinstance(result, str)
+        return elapsed_ms, stats
 
-def test_tool_result_compression_speed():
-    clear_session("bench")
-    # Simulate repetitive JSON tool result
-    json_result = (
-        '{"status": "ok", "items": ['
-        + ', '.join(f'{{"id": {i}, "name": "module_{i}", "active": true}}' for i in range(100))
-        + ']}'
+    _measure_case(
+        "compress_terminal (4.4 KB repeated log)",
+        run_once,
+        expected_gate="ok",
+        budget_ms=LATENCY_BUDGET_MS,
     )
-    runs = 50
-    t0 = time.perf_counter()
-    for i in range(runs):
-        res, stats = compress_tool_result("search_files", json_result, session_id="bench")
-    elapsed_ms = (time.perf_counter() - t0) * 1000 / runs
-    print(f"\n[BENCHMARK] compress_tool_result avg: {elapsed_ms:.3f} ms")
-    assert elapsed_ms < 10.0, f"Too slow: {elapsed_ms:.3f} ms"
+
+
+def test_tool_result_compression_scenarios():
+    _measure_case(
+        "compress_tool_result first-seen / fresh session (pretty JSON)",
+        _first_seen_sample,
+        expected_gate="ok",
+        budget_ms=LATENCY_BUDGET_MS,
+    )
+    _measure_case(
+        "compress_tool_result exact-repeat passthrough",
+        _repeat_passthrough_sample,
+        expected_gate="passthrough_repeat",
+        budget_ms=LATENCY_BUDGET_MS,
+    )
+    _measure_case(
+        "compress_tool_result cross-turn fold (60 shared lines)",
+        _cross_turn_fold_sample,
+        expected_gate="ok",
+        budget_ms=LATENCY_BUDGET_MS,
+    )
+    _measure_case(
+        "compress_tool_result large no-gain input (~9.5 KB)",
+        _no_gain_sample,
+        expected_gate="reverted_gate",
+        budget_ms=LATENCY_BUDGET_MS,
+    )
 
 
 def test_ccr_put_get_speed():
     import tempfile
-    with tempfile.TemporaryDirectory() as td:
-        from pathlib import Path
-        p = Path(td)
-        content = "hello world full content " * 100
-        # Warm up & average over 50 runs
-        runs = 50
-        t0 = time.perf_counter()
-        digest = ""
-        for _ in range(runs):
-            digest = ccr_put(content, dir=p)
-        assert digest
-        put_ms = (time.perf_counter() - t0) * 1000 / runs
+    from pathlib import Path
 
-        t1 = time.perf_counter()
-        retrieved = ""
-        for _ in range(runs):
-            retrieved = ccr_get(digest, dir=p)
-        get_ms = (time.perf_counter() - t1) * 1000 / runs
+    with tempfile.TemporaryDirectory() as temp_dir:
+        directory = Path(temp_dir)
+        contents = {}
+        put_samples = []
+        digests = []
 
-        assert retrieved == content
-        print(f"\n[BENCHMARK] CCR put avg: {put_ms:.3f} ms, CCR get avg: {get_ms:.3f} ms")
-        assert put_ms < 5.0
-        assert get_ms < 5.0
+        for index in range(WARMUP_RUNS + RUNS):
+            content = f"hello world full content run={index} " * 100
+            elapsed_ms, digest = _timed_call(
+                lambda content=content: ccr_put(content, dir=directory)
+            )
+            assert digest
+            contents[digest] = content
+            digests.append(digest)
+            if index >= WARMUP_RUNS:
+                put_samples.append(elapsed_ms)
+
+        # Keep read measurements on one existing entry, matching the previous
+        # warm local-cache workload; unique-file reads have different disk costs.
+        read_digest = digests[-1]
+        for _ in range(WARMUP_RUNS):
+            assert ccr_get(read_digest, dir=directory) == contents[read_digest]
+
+        get_samples = []
+        for _ in range(RUNS):
+            elapsed_ms, retrieved = _timed_call(
+                lambda: ccr_get(read_digest, dir=directory)
+            )
+            assert retrieved == contents[read_digest]
+            get_samples.append(elapsed_ms)
+
+        _summarize("CCR put (unique payload)", put_samples, budget_ms=5.0)
+        _summarize(
+            "CCR get (same stored payload, repeated)",
+            get_samples,
+            budget_ms=5.0,
+        )
 
 
 if __name__ == "__main__":
     test_terminal_compression_speed()
-    test_tool_result_compression_speed()
+    test_tool_result_compression_scenarios()
     test_ccr_put_get_speed()
     print("\nAll benchmark assertions passed!")

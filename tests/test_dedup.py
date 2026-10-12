@@ -41,6 +41,26 @@ check("volatile-uuid", "<UUID>" in t2 and "123e4567" not in t2)
 check("volatile-sess", "<SESS>" in t2 and "20260917_214935" not in t2)
 check("volatile-ts", "<TS>" in t2)
 
+# 2b. no-op normalization stays lossless on large ordinary output
+ordinary = ("INFO build status line 123 process completed\n" * 22000)[:1_000_000]
+clean, clean_saved = hygiene(ordinary)
+normalized, normalized_saved = normalize_volatile(ordinary)
+check("large-hygiene-noop", clean == ordinary and clean_saved == 0)
+check("large-volatile-noop", normalized == ordinary and normalized_saved == 0)
+del ordinary, clean, normalized
+
+# 2c. remember keeps owner keys and hashes only when no owner is supplied
+import hashlib as _hashlib
+owner_text = "stored content with an explicit owner"
+owner_key = remember(owner_text, "owner-key", owner="custom-owner")
+check("remember-owner-key", owner_key == "custom-owner")
+clear_session("owner-key")
+fallback_text = "stored content without an owner"
+fallback_key = remember(fallback_text, "fallback-key")
+expected_key = _hashlib.sha256(fallback_text.encode("utf-8", "replace")).hexdigest()[:12]
+check("remember-hash-fallback", fallback_key == expected_key)
+clear_session("fallback-key")
+
 # 3. fold: second result folds spans from first
 clear_session(SID)
 code1 = "\n".join(f"def func_{i}(): return {i}" for i in range(40))
@@ -180,7 +200,12 @@ n_exp = expire_old_turns("mask", keep_turns=2)
 check("mask-expires", n_exp == 2)
 # old content no longer folds (freshness), recent still does
 from dedup import _seen as _dbg_seen
-check("mask-index-shrunk", len(_dbg_seen("mask")["spans"]) == 2)
+mask_state = _dbg_seen("mask")
+check(
+    "mask-index-shrunk",
+    len(mask_state["spans"]) == 2
+    and mask_state["span_chars"] == sum(len(text) for _, text in mask_state["spans"]),
+)
 # placeholders for consumers
 ph = mask_summary("line one\nline two\n" + "y" * 2100, "digest-t1", 2200)
 check("mask-summary", ph.startswith("[tt:masked") and "retrieve:digest-t1" in ph)
@@ -198,6 +223,42 @@ check("mask-maps", set(mapped) == {"digest-t1"})
 # idempotent per turn
 mapped2 = mask_old_turns("mask2", "new3", keep_turns=2, store=store)
 check("mask-idempotent", mapped2 == {})
+
+# 15. fold-index memory budgets evict old corpus and bound the line index
+import dedup as _dedup
+
+_old_span_cap = _dedup._MAX_SPAN_CHARS
+_old_line_cap = _dedup._MAX_INDEXED_LINES
+try:
+    _dedup._MAX_SPAN_CHARS = 100
+    _dedup._MAX_INDEXED_LINES = 10
+    clear_session("span-budget")
+    remember("a" * 60, "span-budget", owner="span-a")
+    remember("b" * 60, "span-budget", owner="span-b")
+    budget_state = _dbg_seen("span-budget")
+    check(
+        "span-budget-evicts-oldest",
+        [h for h, _ in budget_state["spans"]] == ["span-b"]
+        and budget_state.get("span_chars") == 60,
+    )
+    remember("c" * 101, "span-budget", owner="span-too-large")
+    check(
+        "oversize-span-preserves-cache",
+        [h for h, _ in budget_state["spans"]] == ["span-b"],
+    )
+
+    _dedup._MAX_SPAN_CHARS = 1000
+    _dedup._MAX_INDEXED_LINES = 2
+    clear_session("line-budget")
+    line_text = "\n".join(f"line-{i}-" + ("x" * 40) for i in range(3))
+    remember(line_text, "line-budget", owner="line-owner")
+    line_state = _dbg_seen("line-budget")
+    check("line-index-budget", len(line_state["lines"]) == 2)
+finally:
+    _dedup._MAX_SPAN_CHARS = _old_span_cap
+    _dedup._MAX_INDEXED_LINES = _old_line_cap
+    clear_session("span-budget")
+    clear_session("line-budget")
 
 print(f"\n{check.failed} failures")
 if __name__ == "__main__":
