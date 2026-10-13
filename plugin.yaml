@@ -1,5 +1,5 @@
 name: trimtok
-version: 0.6.0
+version: 0.6.1
 description: "Local stdlib-only context compressor: per-command budgets, balanced windowing, error rails, Drain templates, shingle near-dedup, HEAD_TAIL stubs, cross-turn fold, command/tool exclusions, file-local CCR with paginated trimtok_retrieve."
 entry_point: __init__.py
 author: "P Choke & MIKA"
