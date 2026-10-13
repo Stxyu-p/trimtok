@@ -516,6 +516,8 @@ def remember(text: str, session_id: str = "", owner: str | None = None) -> str:
     every pointer resolves via trimtok_retrieve. Defaults to the span hash
     (unit-test path; resolution via hook CCR does not apply there).
     """
+    if not isinstance(text, str):
+        return owner or ""
     seen = _seen(session_id)
     corpus = seen["spans"]
     key = owner or hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]
