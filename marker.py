@@ -10,6 +10,18 @@ import re
 
 SENTINEL_RE = re.compile(r"\[tt:(?:legend\]|(?:terminal|tool|seen|masked|template|shingle|headtail)\b[^\]]*retrieve:[0-9a-f]+)")
 
+# Single source of truth (zero-spaghetti law 1): KEEP prefix + template-slot
+# regex live here because core + dedup both need them. The slot pattern is
+# the stronger of the two historical copies: volatile placeholders, UUIDs,
+# short times, and digits inside identifiers (func_0) all become {}.
+KEEP_PREFIX = "TRIMTOK_KEEP:"
+
+SLOT_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    r"|<TAG>|<UUID>|<SESS>|<TS>|\b\d{1,2}:\d{2}:\d{2}\b|(?<!\d)\d+",
+    re.I,
+)
+
 LEGEND_FOLD = "[tt:legend] Lines folded as [repeated Nx]. Full original in CCR, use trimtok_retrieve."
 LEGEND_TOON = (
     "[tt:legend] Table below is TOON: header [N]{f1,f2} lists fields, "

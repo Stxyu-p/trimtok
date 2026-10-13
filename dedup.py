@@ -11,12 +11,13 @@ import re
 import time
 
 try:
-    from .marker import SENTINEL_RE, headtail_head, is_exempt, masked, seen_line, seen_lines, shingle_head, template_head, tool_head
+    from .marker import KEEP_PREFIX as _KEEP_PREFIX
+    from .marker import SENTINEL_RE, SLOT_RE as _SLOT_RE, headtail_head, is_exempt, masked, seen_line, seen_lines, shingle_head, template_head, tool_head
     from .marker import LEGEND_TOON as _TOON_LEGEND
 except ImportError:  # direct unit-test import
-    from marker import SENTINEL_RE, headtail_head, is_exempt, masked, seen_line, seen_lines, shingle_head, template_head, tool_head
+    from marker import KEEP_PREFIX as _KEEP_PREFIX
+    from marker import SENTINEL_RE, SLOT_RE as _SLOT_RE, headtail_head, is_exempt, masked, seen_line, seen_lines, shingle_head, template_head, tool_head
     from marker import LEGEND_TOON as _TOON_LEGEND
-_KEEP_PREFIX = "TRIMTOK_KEEP:"
 _MIN_SPAN_LINES = 5
 _MIN_SPAN_CHARS = 200
 _MIN_LINE_CHARS = 40  # single repeated lines at/above this fold individually
@@ -318,16 +319,9 @@ def _fold_intra_repeats(text: str) -> tuple[str, int]:
 
 
 # Drain-style intra template fold (core._fold_templates shape for one doc):
-# volatile slots (numbers incl. inside identifiers like func_0, UUIDs, short
-# times, <TAG> placeholders) become {} so scattered same-template lines
-# group even when no two are adjacent. Same contract as terminal: first
-# occurrence verbatim (keep-earliest), groups of <3 pass through,
-# exempt/KEEP/marker lines never group.
-_SLOT_RE = re.compile(
-    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-    r"|<TAG>|<UUID>|<SESS>|<TS>|\b\d{1,2}:\d{2}:\d{2}\b|(?<!\d)\d+",
-    re.I,
-)
+# slot pattern (_SLOT_RE) imported from marker: same single source of truth.
+# Same contract as terminal: first occurrence verbatim (keep-earliest),
+# groups of <3 pass through, exempt/KEEP/marker lines never group.
 
 
 def _intra_template_key(line: str) -> str:

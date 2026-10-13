@@ -15,11 +15,13 @@ from functools import lru_cache
 VERSION = "0.6.1"
 
 try:
+    from .marker import KEEP_PREFIX as _KEEP_PREFIX
     from .marker import LEGEND_FOLD as LEGEND
-    from .marker import SENTINEL_RE, is_exempt, terminal_head
+    from .marker import SENTINEL_RE, SLOT_RE as _SLOT_RE, is_exempt, terminal_head
 except ImportError:  # direct unit-test import
+    from marker import KEEP_PREFIX as _KEEP_PREFIX
     from marker import LEGEND_FOLD as LEGEND
-    from marker import SENTINEL_RE, is_exempt, terminal_head
+    from marker import SENTINEL_RE, SLOT_RE as _SLOT_RE, is_exempt, terminal_head
 
 # Single compiled patterns, module-level, no per-call re.compile
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][AB0]")
@@ -61,10 +63,9 @@ _NOISE_LINE_RE = re.compile(
     r".*up to date.*|.*already (satisfied|installed).*|^\s*Collecting .*|"
     r"^\s*Downloading .*|^\s*Using cached .*)$"
 )
-_KEEP_PREFIX = "TRIMTOK_KEEP:"
+# (_KEEP_PREFIX + _SLOT_RE imported from marker: single source of truth.)
 _HEAD_KEEP = 2
 _TAIL_KEEP = 2
-_MIN_KEEP = 3
 
 
 def strip_ansi(text: str) -> str:
@@ -79,15 +80,6 @@ def _normalize_line(line: str) -> str:
     line = _TS_PREFIX_RE.sub("", line)
     line = _PID_PREFIX_RE.sub("", line)
     return line.strip()
-
-
-# Drain-style template slots (squeez log_template.rs shape): numbers, UUIDs,
-# short times become {} so scattered same-template lines group together.
-_SLOT_RE = re.compile(
-    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-    r"|\b\d{1,2}:\d{2}:\d{2}\b|\b\d+\b",
-    re.I,
-)
 
 
 @lru_cache(maxsize=8192)
