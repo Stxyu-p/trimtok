@@ -128,12 +128,26 @@ _two = ("same long payload line abcdefgh content here\n" * 2 + "diff line here\n
 _o10, _s10 = compress_tool_result("search_files", _two, session_id=SID + "-intra2")
 check("intra-run2-no", _o10.count("[repeated ") == 0)
 
-# 7c. W3 CLOSED by design: first-seen UNIQUE doc stays full (keep-earliest),
-# EXCEPT large ones (>=100KB) which emit a HEAD_TAIL stub (research §lossless-compact).
+# 7c. W3 REFINED (2026-10-13 intra-template improvement): first-seen docs
+# whose lines share a volatile-slot template (group>=3) now fold to a
+# [tt:template ... retrieve:H] pointer — H is the raw digest the hook stores,
+# so every pointer resolves via trimtok_retrieve (verified end-to-end).
+# Genuinely unique docs (no template group) still revert full (keep-earliest).
 clear_session(SID + "-firstseen")
 _fs = "\n".join(f"first-seen-unique-{i}-qwerty-{i * 13}-zz-{i * i % 100019}" for i in range(120)) + "\n" + "v" * 2100
 _o11, _s11 = compress_tool_result("search_files", _fs, session_id=SID + "-firstseen")
-check("firstseen-unique-full", _s11["gate"] == "reverted_gate" and _o11 == _fs)
+check("firstseen-template-folds", _s11["gate"] == "ok" and "[tt:template lines=119 retrieve:" in _o11)
+check("firstseen-template-resolves", _s11.get("digest") and _s11["digest"] in _o11)
+clear_session(SID + "-firstseen-uq")
+import random as _uq_rnd
+_uq_rnd.seed(99)
+_uq_words = ["alpha", "beta", "gamma", "delta", "config", "status", "result",
+             "payload", "query", "index", "cache", "token", "river", "stone",
+             "cloud", "flame", "harbor", "maple", "quartz", "willow"]
+_uq_lines = [" ".join(_uq_rnd.sample(_uq_words, 6)) + f" marker{i:05d} tailtext here" for i in range(120)]
+_uq_fs2 = "\n".join(_uq_lines) + "\n" + "v" * 2100
+_ouq, _suq = compress_tool_result("search_files", _uq_fs2, session_id=SID + "-firstseen-uq")
+check("firstseen-unique-full", _suq["gate"] == "reverted_gate" and _ouq == _uq_fs2)
 
 # 7d. HEAD_TAIL: large unique doc (192KB) emits stub, not full revert.
 import random as _rnd

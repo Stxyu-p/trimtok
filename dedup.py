@@ -11,10 +11,10 @@ import re
 import time
 
 try:
-    from .marker import SENTINEL_RE, headtail_head, is_exempt, masked, seen_line, seen_lines, shingle_head, tool_head
+    from .marker import SENTINEL_RE, headtail_head, is_exempt, masked, seen_line, seen_lines, shingle_head, template_head, tool_head
     from .marker import LEGEND_TOON as _TOON_LEGEND
 except ImportError:  # direct unit-test import
-    from marker import SENTINEL_RE, headtail_head, is_exempt, masked, seen_line, seen_lines, shingle_head, tool_head
+    from marker import SENTINEL_RE, headtail_head, is_exempt, masked, seen_line, seen_lines, shingle_head, template_head, tool_head
     from marker import LEGEND_TOON as _TOON_LEGEND
 _KEEP_PREFIX = "TRIMTOK_KEEP:"
 _MIN_SPAN_LINES = 5
@@ -313,6 +313,71 @@ def _fold_intra_repeats(text: str) -> tuple[str, int]:
             out.extend(lines[i:j])
         i = j
     if not saved:
+        return text, 0
+    return "\n".join(out), saved
+
+
+# Drain-style intra template fold (core._fold_templates shape for one doc):
+# volatile slots (numbers incl. inside identifiers like func_0, UUIDs, short
+# times, <TAG> placeholders) become {} so scattered same-template lines
+# group even when no two are adjacent. Same contract as terminal: first
+# occurrence verbatim (keep-earliest), groups of <3 pass through,
+# exempt/KEEP/marker lines never group.
+_SLOT_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    r"|<TAG>|<UUID>|<SESS>|<TS>|\b\d{1,2}:\d{2}:\d{2}\b|(?<!\d)\d+",
+    re.I,
+)
+
+
+def _intra_template_key(line: str) -> str:
+    norm = line.strip()
+    if len(norm) < 20:
+        return ""
+    key = _SLOT_RE.sub("{}", norm)
+    if len(key) < 20:
+        return ""
+    # a key with no slot is an exact-duplicate group — intra-repeats owns it
+    if "{}" not in key:
+        return ""
+    return key
+
+
+def _fold_intra_templates(text: str, owner: str | None = None) -> tuple[str, int]:
+    lines = text.split("\n")
+    groups: dict[str, list[int]] = {}
+    for idx, line in enumerate(lines):
+        if (
+            not line.strip()
+            or line.startswith("[tt:")
+            or line.startswith(_KEEP_PREFIX)
+        ):
+            continue
+        key = _intra_template_key(line)
+        if key:
+            groups.setdefault(key, []).append(idx)
+    big = {k: v for k, v in groups.items() if len(v) >= 3}
+    if not big:
+        return text, 0
+    first_of = {}
+    for key, members in big.items():
+        first_of[members[0]] = (key, len(members))
+    in_big = set()
+    for members in big.values():
+        in_big.update(members[1:])
+    out: list[str] = []
+    saved = 0
+    for idx, line in enumerate(lines):
+        if idx in in_big:
+            saved += len(line)
+            continue
+        out.append(line)
+        if idx in first_of:
+            _, count = first_of[idx]
+            marker = template_head(count - 1, owner or "")
+            out.append(marker)
+            saved -= len(marker)
+    if saved <= 0:
         return text, 0
     return "\n".join(out), saved
 
@@ -742,9 +807,15 @@ def compress_tool_result(
             # line of each run stays verbatim (keep-earliest holds
             # within-document; CCR stores the raw original).
             folded, i_saved = _fold_intra_repeats(folded)
+        dt_saved = 0
+        if i_saved == 0:
+            # Drain templates within one doc (D7 volatile shape): scattered
+            # same-template lines no adjacent-repeat pass can see. Same
+            # second-chance position as intra-repeats — verbatim won already.
+            folded, dt_saved = _fold_intra_templates(folded, owner=_rh)
         ht_saved = 0
         ht_head = ht_tail = ht_omitted = 0
-        if f_saved == 0 and i_saved == 0:
+        if f_saved == 0 and i_saved == 0 and dt_saved == 0:
             # HEAD_TAIL: large unique doc — nothing folded. Keep head+tail
             # verbatim, stub the middle (terminal-window shape, CCR recovers).
             stubbed, ht_saved = _fold_headtail(folded)
@@ -802,6 +873,7 @@ def compress_tool_result(
             "minify_saved": m_saved, "toon_saved": t_saved,
             "toon_used": toon_used,
             "fold_saved": f_saved, "intra_saved": i_saved,
+            "intra_template_saved": dt_saved,
             "headtail_saved": ht_saved,
             "ms": (time.perf_counter() - t0) * 1000,
         }
