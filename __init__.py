@@ -622,7 +622,13 @@ def register(ctx: Any) -> None:
         handler=_handle_retrieve,
         emoji="\U0001f9f9",
     )
-    if hasattr(ctx, "register_slash_command"):
+    if hasattr(ctx, "register_command"):
+        ctx.register_command(
+            "trimtok",
+            _handle_ts_command,
+            "View trimtok token savings, status, or retrieve cached originals",
+        )
+    elif hasattr(ctx, "register_slash_command"):  # legacy host API
         ctx.register_slash_command(
             name="trimtok",
             description="View trimtok token savings, status, or retrieve cached originals",
