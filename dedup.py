@@ -12,11 +12,11 @@ import time
 
 try:
     from .marker import KEEP_PREFIX as _KEEP_PREFIX
-    from .marker import SENTINEL_RE, SLOT_RE as _SLOT_RE, headtail_head, is_exempt, masked, seen_line, seen_lines, shingle_head, template_head, tool_head
+    from .marker import SENTINEL_RE, SLOT_RE as _SLOT_RE, estimate_tokens, headtail_head, is_exempt, is_important, masked, seen_line, seen_lines, shingle_head, template_head, tool_head
     from .marker import LEGEND_TOON as _TOON_LEGEND
 except ImportError:  # direct unit-test import
     from marker import KEEP_PREFIX as _KEEP_PREFIX
-    from marker import SENTINEL_RE, SLOT_RE as _SLOT_RE, headtail_head, is_exempt, masked, seen_line, seen_lines, shingle_head, template_head, tool_head
+    from marker import SENTINEL_RE, SLOT_RE as _SLOT_RE, estimate_tokens, headtail_head, is_exempt, is_important, masked, seen_line, seen_lines, shingle_head, template_head, tool_head
     from marker import LEGEND_TOON as _TOON_LEGEND
 _MIN_SPAN_LINES = 5
 _MIN_SPAN_CHARS = 200
@@ -227,6 +227,7 @@ def fold_spans(
             and not line.startswith("[tt:")
             and not line.startswith(_KEEP_PREFIX)
             and not is_exempt(line)
+            and not is_important(line)
         ):
             ptr = seen_line(owner or line_owner[line])
             out.append(ptr)
@@ -322,6 +323,10 @@ def _fold_intra_repeats(text: str) -> tuple[str, int]:
 # slot pattern (_SLOT_RE) imported from marker: same single source of truth.
 # Same contract as terminal: first occurrence verbatim (keep-earliest),
 # groups of <3 pass through, exempt/KEEP/marker lines never group.
+# NOTE (Step 4 reverted 2026-10-14): signature pinning (def/class rail) was
+# tried here and REJECTED — it kept all 400 SIM search sig lines verbatim,
+# regressing SIM 61.2% -> 30.0% (-31.2pp). One-line search hits fold via
+# templates by design; naked sigs without slots never group anyway.
 
 
 def _intra_template_key(line: str) -> str:
@@ -456,6 +461,7 @@ def _fold_shingles(
             or line.startswith("[tt:")
             or line.startswith(_KEEP_PREFIX)
             or is_exempt(line)
+            or is_important(line)
         ):
             out.append(line)
             continue
@@ -863,6 +869,8 @@ def compress_tool_result(
             "gate": "ok", "digest": digest,
             "before_chars": len(result), "after_chars": len(new_result),
             "saved_chars": len(result) - len(new_result),
+            "est_tokens_before": estimate_tokens(result),
+            "est_tokens_after": estimate_tokens(new_result),
             "hygiene_saved": h_saved, "volatile_saved": v_saved,
             "minify_saved": m_saved, "toon_saved": t_saved,
             "toon_used": toon_used,

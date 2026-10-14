@@ -604,6 +604,43 @@ def _on_session_reset(session_id: Any = None, **kw: Any) -> None:
     clear_session(str(session_id or ""))
 
 
+def compress_agent_payload(
+    payload: dict | str, mode: str = "tool", **kw: Any
+) -> tuple[dict | str, dict]:
+    """Multi-agent glue (Step 5): dict-in/str-out over the stdlib engine.
+
+    Extracts the string field (content/output/stdout/result), runs the
+    matching compressor, writes it back. Never raises; unknown shapes
+    pass through. read_file stays verbatim (D5a) via compress_tool_result.
+    """
+    try:
+        from core import compress_terminal as _ct
+        from dedup import compress_tool_result as _ctr
+    except ImportError:
+        return payload, {"gate": "passthrough_exception"}
+    try:
+        if isinstance(payload, str):
+            if mode == "terminal":
+                return _ct(kw.get("command", ""), payload)
+            return _ctr(kw.get("tool_name", "agent"), payload,
+                        session_id=str(kw.get("session_id", "")))
+        if isinstance(payload, dict):
+            for key in ("content", "output", "stdout", "result"):
+                if isinstance(payload.get(key), str):
+                    if mode == "terminal":
+                        new_text, stats = _ct(kw.get("command", ""), payload[key])
+                    else:
+                        new_text, stats = _ctr(
+                            str(payload.get("tool_name") or kw.get("tool_name", "agent")),
+                            payload[key],
+                            session_id=str(payload.get("session_id") or kw.get("session_id", "")),
+                        )
+                    return {**payload, key: new_text}, stats
+        return payload, {"gate": "passthrough_non_str"}
+    except Exception:
+        return payload, {"gate": "passthrough_exception"}
+
+
 def register(ctx: Any) -> None:
     _on_transform._ctx = ctx  # type: ignore[attr-defined]
     _on_tool_result._ctx = ctx  # type: ignore[attr-defined]

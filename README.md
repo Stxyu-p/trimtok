@@ -25,10 +25,10 @@ Terminal output and tool results pass through folding stages before reaching the
 | 3k-line error log | 141,779 → 9,200 | 93.5% |
 | 4.8k-line traceback | 94,656 → 11,216 | 88.2% |
 | JSON envelope + tail | 7,337 → 5,224 | 28.8% |
-| Realistic 5-turn session | 105,839 → 74,110 | 30.0% |
-| **All 26 stress cases** | **3,059,792 → 347,587** | **88.6%** |
+| Realistic 5-turn session | 105,839 → 41,092 | 61.2% |
+| **All 26 stress cases** | **3,059,792 → 324,346** | **89.4%** |
 
-Median overhead ~1 ms per path (terminal 0.9 ms, tool fold 1.1 ms, CCR read 0.3 ms). Measured with `python tests/test_benchmark.py` and `python tests/stress_heavy.py`; full tables in `tests/MEASURE_0.6.0.md`.
+Median overhead ~1 ms per path (terminal 0.6 ms, tool fold 1.4 ms, CCR get 0.1 ms with in-memory LRU). Measured with `python tests/test_benchmark.py` and `python tests/stress_heavy.py`; full tables in `tests/BASELINE_0.6.1.md`.
 
 <p align="center">
   <img src="docs/architecture-dark.svg" alt="trimtok Architecture" width="100%">
@@ -59,11 +59,11 @@ across distinct files.
 
 ## Core capabilities
 
-**Terminal reduction** (`transform_terminal_output`) — ANSI purge, adjacent-repeat fold, Drain template fold (`×N` + verbatim sample), error rails (EN + Thai, verbatim), quality gate with `partial` overflow mode, per-command line budgets, never-inflate revert.
+**Terminal reduction** (`transform_terminal_output`): ANSI purge, adjacent-repeat fold, Drain template fold (`×N` + verbatim sample), error rails (EN + Thai, verbatim), quality gate with `partial` overflow mode, per-command line budgets, never-inflate revert.
 
-**Tool-result folding** (`transform_tool_result`) — hygiene, volatile normalization (UUID/session/timestamp), lossless JSON minify (whole-doc or leading-prefix), cross-turn span fold, intra-document repeat fold, shingle near-dedup (Jaccard ≥ 0.8), HEAD_TAIL stubs for large unique docs (≥100 KB), exemption list (ports/hashes/counts never fold), strict TOON for uniform arrays (opt-in).
+**Tool-result folding** (`transform_tool_result`): hygiene, volatile normalization (UUID/session/timestamp), lossless JSON minify (whole-doc or leading-prefix), cross-turn span fold, intra-document repeat fold, polarity-locked error preservation, shingle near-dedup (Jaccard ≥ 0.8), HEAD_TAIL stubs for large unique docs (≥100 KB), exemption list (ports/hashes/counts never fold), strict TOON for uniform arrays (opt-in).
 
-**Retrieval safety rail (CCR)** — every folded output stored by 12-char SHA-256 digest (`~/.hermes/plugin-data/trimtok/`), TTL + LRU eviction, exact roundtrip:
+**Retrieval safety rail (CCR)** (`ccr.py`): two-tier content-addressed retrieval cache (fast in-memory LRU + atomic local filesystem storage), every folded output stored by 12-char SHA-256 digest (`~/.hermes/plugin-data/trimtok/`), TTL + LRU eviction, sub-millisecond retrieval (0.1 ms median), exact roundtrip:
 ```json
 {
   "name": "trimtok_retrieve",

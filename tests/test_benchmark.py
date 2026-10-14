@@ -155,11 +155,25 @@ def _cross_turn_fold_sample(index: int):
         clear_session(session_id)
 
 
+def _idx_letters(index: int) -> str:
+    # ponytail: base-26 letters break Drain template keys (digits fold to
+    # slots, letters stay) so each line is its own group of 1.
+    chars = []
+    value = index
+    for _ in range(4):
+        chars.append(chr(ord('a') + value % 26))
+        value //= 26
+    return ''.join(chars)
+
+
 def _large_no_gain_result(run_id: int) -> str:
-    return "\n".join(
+    # Case A fixture: strictly unique non-templated lines. Per-line letter
+    # tags keep Drain groups <3 so the token-gate reverts (reverted_gate).
+    # Stale-assertion root cause was _fold_intra_templates, not repeats.
+    return '\n'.join(
         f"record_{run_id:03d}_{index:04d}_value_{index * 37:08d}_"
-        f"hash_{(index * index) % 1_000_003:07d}_"
-        f"state_{(index * 7_919) % 999_983:06d}"
+        f"hash_{(index * index) % 1_000_003:07d}_tag_{_idx_letters(index)}_kqj_"
+        f"state_{(index * 7_919) % 999_983:06d}_{_idx_letters(index * 13 + 7)}"
         for index in range(180)
     )
 

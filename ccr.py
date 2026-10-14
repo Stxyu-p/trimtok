@@ -10,9 +10,12 @@ import hashlib
 import os
 import tempfile
 import time
+from collections import OrderedDict
 from pathlib import Path
 
 _PUT_COUNT = 0
+_MEM_LRU: OrderedDict[tuple[Path, str], tuple[str, float]] = OrderedDict()
+_MAX_MEM_LRU = 512
 
 
 def default_dir() -> Path:
@@ -55,6 +58,9 @@ def put(
             os.replace(temp_path, path)
             temp_path = None
         _PUT_COUNT += 1
+        _MEM_LRU[(base, digest)] = (content, time.time())
+        if len(_MEM_LRU) > _MAX_MEM_LRU:
+            _MEM_LRU.popitem(last=False)
         if _PUT_COUNT % 16 == 0:
             _evict(base, max_entries, max_bytes, ttl_hours)
         return digest
@@ -90,10 +96,20 @@ def get(
                 return None
             match = matches[0]
         cutoff = time.time() - max(0, ttl_hours) * 3600
-        if _is_expired(match.stat(), cutoff):
+        st = match.stat()
+        if _is_expired(st, cutoff):
             match.unlink(missing_ok=True)
+            _MEM_LRU.pop((base, match.stem), None)
             return None
-        return match.read_text(encoding="utf-8", errors="replace")
+        key = (base, match.stem)
+        if key in _MEM_LRU and _MEM_LRU[key][1] >= st.st_mtime:
+            _MEM_LRU.move_to_end(key)
+            return _MEM_LRU[key][0]
+        text = match.read_text(encoding="utf-8", errors="replace")
+        _MEM_LRU[key] = (text, st.st_mtime)
+        if len(_MEM_LRU) > _MAX_MEM_LRU:
+            _MEM_LRU.popitem(last=False)
+        return text
     except Exception:
         return None
 

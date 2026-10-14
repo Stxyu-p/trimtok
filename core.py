@@ -12,16 +12,16 @@ import re
 import time
 from functools import lru_cache
 
-VERSION = "0.6.1"
+VERSION = "0.6.2"
 
 try:
     from .marker import KEEP_PREFIX as _KEEP_PREFIX
     from .marker import LEGEND_FOLD as LEGEND
-    from .marker import SENTINEL_RE, SLOT_RE as _SLOT_RE, is_exempt, terminal_head
+    from .marker import SENTINEL_RE, SLOT_RE as _SLOT_RE, estimate_tokens, is_exempt, is_important, terminal_head
 except ImportError:  # direct unit-test import
     from marker import KEEP_PREFIX as _KEEP_PREFIX
     from marker import LEGEND_FOLD as LEGEND
-    from marker import SENTINEL_RE, SLOT_RE as _SLOT_RE, is_exempt, terminal_head
+    from marker import SENTINEL_RE, SLOT_RE as _SLOT_RE, estimate_tokens, is_exempt, is_important, terminal_head
 
 # Single compiled patterns, module-level, no per-call re.compile
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][AB0]")
@@ -344,6 +344,8 @@ def compress_terminal(
                     "gate": "ok", "kind": kind, "digest": digest,
                     "before_chars": len(output), "after_chars": len(new_output),
                     "saved_chars": len(output) - len(new_output),
+                    "est_tokens_before": estimate_tokens(output),
+                    "est_tokens_after": estimate_tokens(new_output),
                     "hidden_lines": hidden, "dropped_lines": dropped,
                     "partial": True, "omitted_errors": len(missing),
                     "ms": (time.perf_counter() - t0) * 1000,
@@ -358,6 +360,8 @@ def compress_terminal(
             "gate": "ok", "kind": kind, "digest": digest,
             "before_chars": len(output), "after_chars": len(new_output),
             "saved_chars": len(output) - len(new_output),
+            "est_tokens_before": estimate_tokens(output),
+            "est_tokens_after": estimate_tokens(new_output),
             "hidden_lines": hidden, "dropped_lines": dropped,
             "ms": (time.perf_counter() - t0) * 1000,
         }

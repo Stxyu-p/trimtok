@@ -16,6 +16,44 @@ SENTINEL_RE = re.compile(r"\[tt:(?:legend\]|(?:terminal|tool|seen|masked|templat
 # short times, and digits inside identifiers (func_0) all become {}.
 KEEP_PREFIX = "TRIMTOK_KEEP:"
 
+# Error preservation patterns (Priority 1: Zero Loss of Intelligence)
+_ERROR_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_])"
+    r"(error(?:s)?|exception|traceback|fail(?:ed|ure)?|panic|fatal|critical|"
+    r"warn(?:ing)?|denied|refused|timeout|seg(?:fault|mentation\s+fault)|"
+    r"assert(?:ion)?(?:error|ion| failed)?|oom|epipe|"
+    r"exit\s+code\s+[1-9]|out\s+of\s+memory|"
+    r"ข้อผิดพลาด|ผิดพลาด|ล้มเหลว|ขัดข้อง)"
+    r"(?![A-Za-z0-9_])"
+    r"|^\s*(File |  at |Caused by:)"
+)
+
+_ERROR_HINTS = (
+    "error", "exception", "traceback", "fail", "panic", "fatal", "critical",
+    "warn", "denied", "refused", "timeout", "segfault", "segment", "fault",
+    "assert", "oom", "epipe", "exit code", "out of memory", "memory",
+    "ผิดพลาด", "ล้มเหลว", "ขัดข้อง", "ข้อผิดพลาด",
+    "file ", "  at ", "caused by:",
+)
+
+
+def looks_suspicious(low: str) -> bool:
+    for h in _ERROR_HINTS:
+        if h in low:
+            return True
+    return False
+
+
+def is_important(line: str) -> bool:
+    """True when a line contains an error, exception, or failure indicator."""
+    if not line:
+        return False
+    if line.startswith(KEEP_PREFIX):
+        return True
+    if not looks_suspicious(line.lower()):
+        return False
+    return bool(_ERROR_RE.search(line))
+
 SLOT_RE = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
     r"|<TAG>|<UUID>|<SESS>|<TS>|\b\d{1,2}:\d{2}:\d{2}\b|(?<!\d)\d+",
@@ -62,6 +100,33 @@ def headtail_head(kept_head: int, kept_tail: int, omitted: int, digest: str) -> 
 
 
 _HASH_RE = re.compile(r"retrieve:([0-9a-f]{12,16})")
+
+
+# Byte-class token estimator (Step 3, stats-only): pure-stdlib, single-pass
+# C-level regex. Never used for gate decisions (gates compare len() only).
+# Accuracy target +-5-8% on Thai/CJK + symbol-heavy code vs chars//4.
+_RE_THAI_CJK = re.compile(r"[\u0e00-\u0e7f\u4e00-\u9fff\u3040-\u30ff]")
+_RE_PUNCT = re.compile(r"[{}()\[\].,;:=+\-*/<>!&|^~%@#$\\]")
+
+
+def estimate_tokens(text: str) -> int:
+    """Rough BPE-ish token estimate without tiktoken. Never raises."""
+    try:
+        if not text or not isinstance(text, str):
+            return 0
+        n_chars = len(text)
+        if n_chars == 0:
+            return 0
+        # ponytail: two findall scans, C-speed; <0.05ms typical, <1ms at 1MB.
+        # Upgrade path: single-pass translation table if profiling says so.
+        n_punct = len(_RE_PUNCT.findall(text))
+        if text.isascii():
+            return max(1, (n_chars - n_punct) // 4 + (n_punct * 2) // 3)
+        n_thai_cjk = len(_RE_THAI_CJK.findall(text))
+        n_rest = n_chars - n_thai_cjk - n_punct
+        return max(1, (n_rest // 4) + ((n_punct * 2) // 3) + int(n_thai_cjk * 0.9))
+    except Exception:
+        return 0
 
 
 # W-guards: digit-dense identifiers. NOTE (learned the hard way):
