@@ -216,6 +216,49 @@ check(
     f"saved={s14c.get('saved_chars')}",
 )
 
+# D16: cross-turn command delta loop (Phase 4) — repeated pytest, faults evolve
+print("=== D16 COMMAND DELTA LOOP (5 turns) ===")
+with tempfile.TemporaryDirectory() as td:
+    from pathlib import Path
+    import ccr
+    import delta_engine
+    d16 = Path(td)
+    orig16 = ccr.default_dir
+    ccr.default_dir = lambda: d16
+    try:
+        delta_engine.clear_session("d16")
+        base16 = [f"test_{i:04d}.py::test_x PASSED" for i in range(1500)]
+        persistent16 = "FAILED test_0500.py::test_z - AssertionError: boom"
+        turns16 = []
+        for k in range(5):
+            ls = list(base16)
+            ls[100] = f"FAILED test_0100.py::test_a - AssertionError: flaky {k}"
+            ls[101] = f"FAILED test_0101.py::test_b - AssertionError: flaky {k + 1}"
+            ls.append(persistent16)
+            ls.append(f"===== 2 failed, 1498 passed in 4{k}.{k}s =====")
+            turns16.append("\n".join(ls))
+        tot_b = tot_d = 0
+        for t in turns16:
+            o, s = compress_terminal("pytest -q", t, session_id="d16", delta_enabled=True)
+            tot_b += len(t); tot_d += len(o)
+        off_b = off_a = 0
+        for t in turns16:
+            o, s = compress_terminal("pytest -q", t)
+            off_b += len(t); off_a += len(o)
+        red_d = (tot_b - tot_d) / tot_b * 100
+        red_o = (off_b - off_a) / off_b * 100
+        log("D16-loop-delta", tot_b, tot_d, "delta", 0, f"reduction={red_d:.1f}% per-turn-off={red_o:.1f}%")
+        check("D16-delta>=82", red_d >= 82.0, f"delta={red_d:.1f}%")
+        o5, s5 = compress_terminal("pytest -q", turns16[4], session_id="d16", delta_enabled=True)
+        check(
+            "D16-canary-still-failing",
+            persistent16 in o5 and "STILL FAILING" in o5,
+            f"delta_chars={len(o5)} saved={s5.get('saved_chars')}",
+        )
+    finally:
+        ccr.default_dir = orig16
+        ccr_v2.close(dir=d16)
+
 print("=== CCR + RETRIEVE ===")
 with tempfile.TemporaryDirectory() as td:
     from pathlib import Path

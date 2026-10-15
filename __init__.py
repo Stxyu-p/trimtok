@@ -17,6 +17,7 @@ try:
     from .dedup import (
         clear_session, compress_tool_result, note_turn,
     )
+    from .delta_engine import clear_session as delta_clear_session
     from .guard import Deadline, VERBATIM_TOOLS
 except ImportError:  # direct unit-test import
     from core import VERSION, compress_terminal
@@ -25,6 +26,7 @@ except ImportError:  # direct unit-test import
     from dedup import (
         clear_session, compress_tool_result, note_turn,
     )
+    from delta_engine import clear_session as delta_clear_session
     from guard import Deadline, VERBATIM_TOOLS
 
 _MAX_GREP_PATTERN_CHARS = 256
@@ -378,6 +380,9 @@ def _on_transform(
         output,
         min_chars=min_chars,
         max_lines=_int_cfg(ctx, "max_lines", 120, 10, 10000),
+        session_id=str(kw.get("session_id") or kw.get("task_id") or ""),
+        delta_enabled=_bool_cfg(ctx, "delta_enabled", True),
+        delta_threshold=_float_cfg(ctx, "delta_threshold", 0.65, 0.5, 1.0),
         deadline=Deadline(_float_cfg(ctx, "guard_ms", 50.0, 1.0, 1000.0)),
     )
     _usage_terminal(command, output, stats, ctx)
@@ -639,6 +644,7 @@ def _handle_ts_command(raw_args: str) -> str:
 
 def _on_session_reset(session_id: Any = None, **kw: Any) -> None:
     clear_session(str(session_id or ""))
+    delta_clear_session(str(session_id or ""))
 
 
 def compress_agent_payload(

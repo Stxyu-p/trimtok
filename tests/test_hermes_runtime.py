@@ -114,6 +114,28 @@ def main() -> int:
         assert ccr_dir.is_relative_to(home)
         assert ccr_dir.is_dir()
 
+        # Phase 4: a repeated command in one session collapses to a delta view,
+        # and a fault that persists stays visible under STILL FAILING (the
+        # plan's Regression Blindness canary).
+        p4_a = "\n".join(f"test_{i:04d}.py::test_x PASSED" for i in range(600))
+        p4_a += "\nFAILED test_0500.py::test_stuck - AssertionError: nope"
+        p4_a += "\n===== 1 failed, 600 passed in 9.8s ====="
+        p4_b = p4_a.replace("in 9.8s", "in 9.9s")
+        hooks["transform_terminal_output"][0](
+            command="pytest -q", output=p4_a, returncode=1, session_id=session_id
+        )
+        delta_output = hooks["transform_terminal_output"][0](
+            command="pytest -q", output=p4_b, returncode=1, session_id=session_id
+        )
+        assert isinstance(delta_output, str)
+        assert delta_output.startswith("[tt:delta"), delta_output[:120]
+        assert "STILL FAILING" in delta_output
+        assert "test_stuck" in delta_output
+        assert len(delta_output) < len(p4_b) // 5
+        assert re.search(r"#c\d+", delta_output.split("]")[0]), (
+            "delta refs should be store aliases in the packaged plugin"
+        )
+
         # Release the v2 sqlite store so the doctor runtime can delete its
         # temp HERMES_HOME (Windows keeps an open db file locked).
         for module in list(sys.modules.values()):
@@ -126,6 +148,10 @@ def main() -> int:
         print(
             f"PASS: terminal hook compressed {len(terminal_source)} -> "
             f"{len(terminal_output)} chars and retrieval restored the original"
+        )
+        print(
+            "PASS: command delta fired cross-turn, STILL FAILING canary visible, "
+            "alias refs in packaged mode"
         )
         print(
             f"PASS: tool-result hook compressed {len(tool_source)} -> "

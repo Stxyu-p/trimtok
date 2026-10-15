@@ -13,13 +13,15 @@ import time
 from functools import lru_cache
 from typing import Any
 
-VERSION = "0.9.0"
+VERSION = "0.10.0"
 
 try:
+    from . import delta_engine
     from .marker import KEEP_PREFIX as _KEEP_PREFIX
     from .marker import LEGEND_FOLD as LEGEND
     from .marker import SENTINEL_RE, SLOT_RE as _SLOT_RE, estimate_tokens, is_exempt, is_important, terminal_head
 except ImportError:  # direct unit-test import
+    import delta_engine
     from marker import KEEP_PREFIX as _KEEP_PREFIX
     from marker import LEGEND_FOLD as LEGEND
     from marker import SENTINEL_RE, SLOT_RE as _SLOT_RE, estimate_tokens, is_exempt, is_important, terminal_head
@@ -260,9 +262,17 @@ def compress_terminal(
     min_chars: int = 2048,
     max_lines: int = 120,
     now: float | None = None,
+    session_id: str = "",
+    delta_enabled: bool = False,
+    delta_threshold: float = 0.65,
     deadline: Any | None = None,
 ) -> tuple[str, dict]:
     """Compress one terminal output. Returns (new_output, stats).
+
+    delta_enabled is opt-in (Phase 4): repeated commands inside one session
+    compare against the previous run and collapse to a delta view. Off by
+    default so direct callers keep the pure, deterministic contract; the
+    terminal hook enables it from plugin config.
 
     stats keys: kind, before_chars, after_chars, saved_chars, hidden_lines,
     dropped_lines, gate (ok|passthrough_small|passthrough_sentinel|
@@ -282,6 +292,26 @@ def compress_terminal(
         kind = detect_kind(output)
         budget = _budget_for(command, kind, max_lines)
         text = strip_ansi(output)
+        # Phase 4 cross-turn delta (opt-in; the plugin hook enables it): a
+        # repeated command whose output overlaps the previous run >= threshold
+        # collapses to STILL FAILING / +added / -removed. Faults that persist
+        # are re-shown even though "unchanged" — otherwise a test that failed
+        # in turn 1 and still fails in turn 2 would go blind (plan canary).
+        if delta_enabled:
+            _delta = delta_engine.try_delta(
+                session_id, command, text,
+                threshold=delta_threshold, deadline=deadline,
+            )
+            if _delta is not None and len(_delta) < len(output):
+                return _delta, {
+                    "gate": "ok", "kind": kind, "delta": True,
+                    "before_chars": len(output), "after_chars": len(_delta),
+                    "saved_chars": len(output) - len(_delta),
+                    "est_tokens_before": estimate_tokens(output),
+                    "est_tokens_after": estimate_tokens(_delta),
+                    "digest": hashlib.sha256(output.encode("utf-8", "replace")).hexdigest()[:12],
+                    "ms": (time.perf_counter() - t0) * 1000,
+                }
         lines = text.split("\n")
         # single classification pass; every stage below reuses the flags
         flagged_all = _classify(lines)

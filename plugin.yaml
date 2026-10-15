@@ -1,6 +1,6 @@
 name: trimtok
-version: 0.9.0
-description: "Local stdlib-only context compressor: per-command budgets, balanced windowing, error rails, Drain templates, shingle near-dedup, HEAD_TAIL stubs, cross-turn fold, command/tool exclusions, two-tier SQLite CCR with short #ref aliases, scoped search grouping, lossless TOON columnar JSON tables (round-trip verified, BPE Token-Gain Gate), fail-open guard (guard_ms, default 50), paginated trimtok_retrieve."
+version: 0.10.0
+description: "Local stdlib-only context compressor: per-command budgets, balanced windowing, error rails, Drain templates, shingle near-dedup, HEAD_TAIL stubs, cross-turn fold, command/tool exclusions, two-tier SQLite CCR with short #ref aliases, scoped search grouping, lossless TOON columnar JSON tables (round-trip verified, BPE Token-Gain Gate), cross-turn command delta engine (STILL FAILING / +added / -removed), fail-open guard (guard_ms, default 50), paginated trimtok_retrieve."
 entry_point: __init__.py
 author: "P Choke & MIKA"
 provides_hooks:
@@ -44,6 +44,14 @@ config_schema:
     type: bool
     default: true
     description: Lossless JSON to TOON columnar tables (round-trip verified; folds only when >=4 BPE tokens are saved).
+  delta_enabled:
+    type: bool
+    default: true
+    description: Cross-turn delta for repeated terminal commands (STILL FAILING / +added / -removed vs previous run).
+  delta_threshold:
+    type: float
+    default: 0.65
+    description: Similarity gate for command deltas (plan kill-criteria - raise to 0.80 if retrieves exceed ~15% of turns).
   min_chars:
     type: int
     default: 2048

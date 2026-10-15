@@ -12,7 +12,7 @@ import re
 # v2 ref form ([tt:... #c1]), and the compact pointer form ([@#c1], [@#c1x5]).
 SENTINEL_RE = re.compile(
     r"\[(?:@#[0-9A-Za-z]+(?:x\d+)?\]"
-    r"|tt:(?:legend\]|(?:terminal|tool|seen|masked|template|shingle|headtail)\b"
+    r"|tt:(?:legend\]|(?:terminal|tool|seen|masked|template|shingle|headtail|delta)\b"
     r"[^\]]*(?:retrieve:[0-9a-f]+|#[0-9A-Za-z]+)))"
 )
 
@@ -50,6 +50,17 @@ LEGEND_TOON = (
     "shorthand; \"@rows[N]{f1,f2}:\" header, then N rows, cells split by \"|\" "
     "(quoted = literal)."
 )
+LEGEND_DELTA = (
+    "[tt:legend] Delta vs previous run of the same command: + added, "
+    "- resolved/removed, ! still failing; refs = full snapshots via trimtok_retrieve."
+)
+
+
+def delta_head(cmd: str, sim: float, added: int, removed: int, still: int, cur_ref: str, prev_ref: str) -> str:
+    return (
+        f'[tt:delta cmd="{cmd[:60].replace(chr(34), chr(39))}" sim={sim:.0%} '
+        f"+#{added} -#{removed} !#{still} {cur_ref} {prev_ref}]"
+    )
 
 
 def terminal_head(kind: str, hidden: int, ref: str) -> str:
