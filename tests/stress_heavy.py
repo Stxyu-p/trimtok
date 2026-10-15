@@ -178,6 +178,29 @@ for t in ("t1", "t2", "t3", "t4"):
     remember(f"unique body {t} " + "z" * 3000, "maskt", owner=f"d-{t}")
 n_exp = expire_old_turns("maskt", keep_turns=2)
 check("D13-mask-expires", n_exp == 2, f"expired={n_exp}")
+# D14 scoped search: multi-file grep groups by file with defs headers
+clear_session("scoped")
+d14 = "\n".join(
+    f"src/mod{i}.py:{n * 3 + 7}:def handler_{i}_{n}(req): return case_{n}"
+    for i in range(8)
+    for n in range(100)
+)
+o14, s14 = run_tool("D14-scoped-search", "search_files", d14, "scoped")
+check(
+    "D14-scoped",
+    s14["gate"] == "ok" and "=== src/mod0.py (100 hits)" in o14 and "[@#" in o14,
+    f"saved={s14.get('saved_chars')} search_saved={s14.get('search_saved')}",
+)
+# D14b: the plan's canary — a fault hit inside the folded middle stays visible
+clear_session("scoped2")
+d14c = d14.split("\n")
+d14c.insert(350, "src/mod3.py:998:status=500 upstream gone")
+o14c, s14c = run_tool("D14b-scoped-canary", "search_files", "\n".join(d14c), "scoped2")
+check(
+    "D14b-canary",
+    s14c["gate"] == "ok" and "status=500 upstream gone" in o14c,
+    f"saved={s14c.get('saved_chars')}",
+)
 
 print("=== CCR + RETRIEVE ===")
 with tempfile.TemporaryDirectory() as td:

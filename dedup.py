@@ -15,10 +15,12 @@ try:
     from .marker import KEEP_PREFIX as _KEEP_PREFIX
     from .marker import SENTINEL_RE, SLOT_RE as _SLOT_RE, estimate_tokens, headtail_head, is_exempt, is_important, masked, seen_line, seen_lines, shingle_head, template_head, tool_head
     from .marker import LEGEND_TOON as _TOON_LEGEND
+    from .scoped_search import group_search_hits
 except ImportError:  # direct unit-test import
     from marker import KEEP_PREFIX as _KEEP_PREFIX
     from marker import SENTINEL_RE, SLOT_RE as _SLOT_RE, estimate_tokens, headtail_head, is_exempt, is_important, masked, seen_line, seen_lines, shingle_head, template_head, tool_head
     from marker import LEGEND_TOON as _TOON_LEGEND
+    from scoped_search import group_search_hits
 _MIN_SPAN_LINES = 5
 _MIN_SPAN_CHARS = 200
 _MIN_LINE_CHARS = 40  # single repeated lines at/above this fold individually
@@ -360,6 +362,7 @@ def _fold_intra_templates(
             not line.strip()
             or line.startswith("[tt:")
             or line.startswith(_KEEP_PREFIX)
+            or is_important(line)
         ):
             continue
         key = _intra_template_key(line)
@@ -806,16 +809,32 @@ def compress_tool_result(
         text, v_saved = normalize_volatile(text)
         # lossless JSON minify first (default-on): whole-doc only, value-identical
         text, m_saved = minify_json(text)
+        # Phase 2 scoped search: multi-file grep hits collapse into
+        # file-grouped blocks (header + defs + folded middle) BEFORE the
+        # generic folds. Single-file docs skip — the template fold already
+        # collapses those (the locked 5-turn SIM baseline rides on this).
+        # remember() below still indexes the UNGROUPED text, keyed by the raw
+        # digest, so cross-turn folding and pointer resolution stay intact.
+        grouped, ss_saved = group_search_hits(text, owner=_rh, deadline=deadline)
         t_saved = 0
         toon_used = False
-        # fold FIRST against prior corpus, remember AFTER: indexing before
-        # folding lets a doc fold against itself (self-fold — every line
-        # "seen"). First occurrence must stay verbatim (rule: keep-earliest).
-        # Every pointer embeds _rh (== _raw_digest below): the hook stores the
-        # raw original under it, so all pointers resolve via trimtok_retrieve.
-        folded, _, f_saved = fold_spans(text, session_id, owner=_rh, deadline=deadline)
+        f_saved = 0
         i_saved = 0
-        if f_saved == 0:
+        dt_saved = 0
+        if ss_saved > 0:
+            # Scoped search docs are FINAL here: the generic folds below
+            # would fold away the very structure grouping created (file
+            # headers into one template pointer). remember() still indexes
+            # the ungrouped text, so later queries fold against raw lines.
+            folded = grouped
+        else:
+            # fold FIRST against prior corpus, remember AFTER: indexing before
+            # folding lets a doc fold against itself (self-fold — every line
+            # "seen"). First occurrence must stay verbatim (rule: keep-earliest).
+            # Every pointer embeds _rh (== _raw_digest below): the hook stores
+            # the raw original under it, so all pointers resolve.
+            folded, _, f_saved = fold_spans(text, session_id, owner=_rh, deadline=deadline)
+        if ss_saved == 0 and f_saved == 0:
             # W4: intra-document repeat fold on FIRST-SEEN docs. fold_spans
             # only folds against the prior corpus, so a repetitive doc with
             # nothing before it reverts (1MB repeat blob: 0%). Fold adjacent
@@ -823,15 +842,14 @@ def compress_tool_result(
             # line of each run stays verbatim (keep-earliest holds
             # within-document; CCR stores the raw original).
             folded, i_saved = _fold_intra_repeats(folded, deadline)
-        dt_saved = 0
-        if i_saved == 0:
+        if ss_saved == 0 and i_saved == 0:
             # Drain templates within one doc (D7 volatile shape): scattered
             # same-template lines no adjacent-repeat pass can see. Same
             # second-chance position as intra-repeats — verbatim won already.
             folded, dt_saved = _fold_intra_templates(folded, owner=_rh, deadline=deadline)
         ht_saved = 0
         ht_head = ht_tail = ht_omitted = 0
-        if f_saved == 0 and i_saved == 0 and dt_saved == 0:
+        if ss_saved == 0 and f_saved == 0 and i_saved == 0 and dt_saved == 0:
             # HEAD_TAIL: large unique doc — nothing folded. Keep head+tail
             # verbatim, stub the middle (terminal-window shape, CCR recovers).
             stubbed, ht_saved = _fold_headtail(folded)
@@ -892,6 +910,7 @@ def compress_tool_result(
             "toon_used": toon_used,
             "fold_saved": f_saved, "intra_saved": i_saved,
             "intra_template_saved": dt_saved,
+            "search_saved": ss_saved,
             "headtail_saved": ht_saved,
             "ms": (time.perf_counter() - t0) * 1000,
         }

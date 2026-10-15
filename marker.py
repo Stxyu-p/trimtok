@@ -22,32 +22,12 @@ SENTINEL_RE = re.compile(
 # short times, and digits inside identifiers (func_0) all become {}.
 KEEP_PREFIX = "TRIMTOK_KEEP:"
 
-# Error preservation patterns (Priority 1: Zero Loss of Intelligence)
-_ERROR_RE = re.compile(
-    r"(?i)(?<![A-Za-z0-9_])"
-    r"(error(?:s)?|exception|traceback|fail(?:ed|ure)?|panic|fatal|critical|"
-    r"warn(?:ing)?|denied|refused|timeout|seg(?:fault|mentation\s+fault)|"
-    r"assert(?:ion)?(?:error|ion| failed)?|oom|epipe|"
-    r"exit\s+code\s+[1-9]|out\s+of\s+memory|"
-    r"ข้อผิดพลาด|ผิดพลาด|ล้มเหลว|ขัดข้อง)"
-    r"(?![A-Za-z0-9_])"
-    r"|^\s*(File |  at |Caused by:)"
-)
-
-_ERROR_HINTS = (
-    "error", "exception", "traceback", "fail", "panic", "fatal", "critical",
-    "warn", "denied", "refused", "timeout", "segfault", "segment", "fault",
-    "assert", "oom", "epipe", "exit code", "out of memory", "memory",
-    "ผิดพลาด", "ล้มเหลว", "ขัดข้อง", "ข้อผิดพลาด",
-    "file ", "  at ", "caused by:",
-)
-
-
-def looks_suspicious(low: str) -> bool:
-    for h in _ERROR_HINTS:
-        if h in low:
-            return True
-    return False
+# Error preservation patterns live in polarity.py (Phase 2: single source,
+# +HTTP-status faults). is_important stays here as the name all folds import.
+try:
+    from .polarity import is_fault_line, looks_suspicious  # noqa: F401
+except ImportError:  # direct unit-test import
+    from polarity import is_fault_line, looks_suspicious  # type: ignore  # noqa: F401
 
 
 def is_important(line: str) -> bool:
@@ -56,9 +36,7 @@ def is_important(line: str) -> bool:
         return False
     if line.startswith(KEEP_PREFIX):
         return True
-    if not looks_suspicious(line.lower()):
-        return False
-    return bool(_ERROR_RE.search(line))
+    return is_fault_line(line)
 
 SLOT_RE = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"

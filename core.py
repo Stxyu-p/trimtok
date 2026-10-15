@@ -13,7 +13,7 @@ import time
 from functools import lru_cache
 from typing import Any
 
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 
 try:
     from .marker import KEEP_PREFIX as _KEEP_PREFIX
@@ -26,32 +26,8 @@ except ImportError:  # direct unit-test import
 
 # Single compiled patterns, module-level, no per-call re.compile
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][AB0]")
-_ERROR_RE = re.compile(
-    r"(?i)(?<![A-Za-z0-9_])"
-    r"(error(?:s)?|exception|traceback|fail(?:ed|ure)?|panic|fatal|critical|"
-    r"warn(?:ing)?|denied|refused|timeout|seg(?:fault|mentation\s+fault)|"
-    r"assert(?:ion)?(?:error|ion| failed)?|oom|epipe|"
-    r"exit\s+code\s+[1-9]|out\s+of\s+memory|"
-    r"ข้อผิดพลาด|ผิดพลาด|ล้มเหลว|ขัดข้อง)"
-    r"(?![A-Za-z0-9_])"
-    r"|^\s*(File |  at |Caused by:)"
-)
-
-# Fast pre-filter: single-pass substring scan
-_ERROR_HINTS = (
-    "error", "exception", "traceback", "fail", "panic", "fatal", "critical",
-    "warn", "denied", "refused", "timeout", "segfault", "segment", "fault",
-    "assert", "oom", "epipe", "exit code", "out of memory", "memory",
-    "ผิดพลาด", "ล้มเหลว", "ขัดข้อง", "ข้อผิดพลาด",
-    "file ", "  at ", "caused by:",
-)
-
-
-def _looks_suspicious(low: str) -> bool:
-    for h in _ERROR_HINTS:
-        if h in low:
-            return True
-    return False
+# fault-island rails moved to polarity.py (Phase 2 single source);
+# is_important is the marker.py import above — core keeps no local copy.
 
 
 _TS_PREFIX_RE = re.compile(
@@ -136,14 +112,6 @@ def _fold_templates(
             _, count = first_of[idx]
             out.append((f"[template ×{count - 1}]", False))
     return out, hidden, len(big)
-
-
-def is_important(line: str) -> bool:
-    if line.startswith(_KEEP_PREFIX):
-        return True
-    if not _looks_suspicious(line.lower()):
-        return False
-    return bool(_ERROR_RE.search(line))
 
 
 def detect_kind(text: str) -> str:

@@ -1,6 +1,6 @@
 name: trimtok
-version: 0.7.0
-description: "Local stdlib-only context compressor: per-command budgets, balanced windowing, error rails, Drain templates, shingle near-dedup, HEAD_TAIL stubs, cross-turn fold, command/tool exclusions, two-tier SQLite CCR with short #ref aliases, 8.5ms fail-open guard, paginated trimtok_retrieve."
+version: 0.8.0
+description: "Local stdlib-only context compressor: per-command budgets, balanced windowing, error rails, Drain templates, shingle near-dedup, HEAD_TAIL stubs, cross-turn fold, command/tool exclusions, two-tier SQLite CCR with short #ref aliases, scoped search grouping, fail-open guard (guard_ms, default 50), paginated trimtok_retrieve."
 entry_point: __init__.py
 author: "P Choke & MIKA"
 provides_hooks:
