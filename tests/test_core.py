@@ -50,6 +50,7 @@ _fp = ("x" * 1900) + "\n[tt:note this is just log text\n" + ("data line payload 
 _fp_out, _fp_st = compress_terminal("cat", _fp)
 check("sentinel-no-false-positive", _fp_st["gate"] != "passthrough_sentinel")
 check("sentinel-real-marker", bool(SENTINEL_RE.search("[tt:seen lines=60 retrieve:abc123def456]")))
+check("sentinel-v2-ref", bool(SENTINEL_RE.search("[@#c7]")) and bool(SENTINEL_RE.search("[@#c1x5]")) and bool(SENTINEL_RE.search("[tt:terminal kind=log hidden=42 #c1]")))
 check("sentinel-bare-mention", not SENTINEL_RE.search("[tt:note this is just log"))
 
 # 6. TRIMTOK_KEEP: lines survive windowing
@@ -162,6 +163,7 @@ with tempfile.TemporaryDirectory() as td:
     from __init__ import _handle_retrieve
     # monkeypatch default_dir for test
     import ccr
+    import ccr_v2
     orig_dir = ccr.default_dir
     ccr.default_dir = lambda: d
     try:
@@ -207,6 +209,7 @@ with tempfile.TemporaryDirectory() as td:
         check("retrieve-grep-rejects-oversized-input", "error" in oversized_input)
     finally:
         ccr.default_dir = orig_dir
+        ccr_v2.close(dir=d)
 
 # 9. detect kinds
 check("detect-diff", detect_kind("diff --git a/b\n@@ -1 +1 @@\n-x\n+y\n" * 30) == "diff")
@@ -238,6 +241,7 @@ with tempfile.TemporaryDirectory() as td:
         with patch.object(plugin, "_audit_path", return_value=legacy_path):
             plugin._audit({"saved_chars": 3})
         check("audit-trims-oversized-existing-log", legacy_path.stat().st_size <= 120)
+        ccr_v2.close(dir=Path(td))
 
 # Usage log: every gate incl. non-ok, both hook shapes, retrieve hits, rotation.
 with tempfile.TemporaryDirectory() as td:
@@ -273,7 +277,7 @@ with tempfile.TemporaryDirectory() as td:
         check("usage-no-content", all("heartbeat ok payload" not in json.dumps(r) and len(r.get("cmd", "") or r.get("tool", "")) <= 120 for r in rows))
         # retrieve hit + miss both logged
         import re as _re
-        m = _re.search(r"retrieve:([0-9a-f]{12})", out_ok or "")
+        m = _re.search(r"#(c[0-9A-Za-z]+|[0-9a-f]{12})", out_ok or "")
         if m:
             plugin._handle_retrieve({"hash": m.group(1)})
         plugin._handle_retrieve({"hash": "deadbeef1234"})
@@ -291,6 +295,7 @@ with tempfile.TemporaryDirectory() as td:
         plugin._usage({"gate": "ok"}, ctx=_UOff())
         after = len(_all_rows())
         check("usage-opt-out", before == after)
+        ccr_v2.close(dir=Path(td))
 # rotation under a small cap (single backup generation, same as audit)
 with tempfile.TemporaryDirectory() as td:
     from pathlib import Path as _P2

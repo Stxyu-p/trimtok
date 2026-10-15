@@ -11,8 +11,9 @@ import hashlib
 import re
 import time
 from functools import lru_cache
+from typing import Any
 
-VERSION = "0.6.2"
+VERSION = "0.7.0"
 
 try:
     from .marker import KEEP_PREFIX as _KEEP_PREFIX
@@ -96,6 +97,7 @@ def _template_key(line: str) -> str:
 
 def _fold_templates(
     flagged: list[tuple[str, bool]],
+    deadline: Any | None = None,
 ) -> tuple[list[tuple[str, bool]], int, int]:
     """Fold scattered same-template runs. Returns (flagged, hidden, groups).
 
@@ -107,6 +109,8 @@ def _fold_templates(
     """
     groups: dict[str, list[int]] = {}
     for idx, (line, important) in enumerate(flagged):
+        if deadline is not None and (idx & 511) == 0:
+            deadline.check()
         if important or is_exempt(line):
             continue
         key = _template_key(line)
@@ -169,6 +173,7 @@ def _classify(lines: list[str]) -> list[tuple[str, bool]]:
 
 def _fold_repeats(
     flagged: list[tuple[str, bool]],
+    deadline: Any | None = None,
 ) -> tuple[list[tuple[str, bool]], int]:
     """Fold adjacent normalized-duplicate runs. Returns ((line, important), hidden)."""
     out: list[tuple[str, bool]] = []
@@ -176,6 +181,8 @@ def _fold_repeats(
     i = 0
     n = len(flagged)
     while i < n:
+        if deadline is not None and (i & 511) == 0:
+            deadline.check()
         line, important = flagged[i]
         if important or is_exempt(line):
             out.append((line, important))
@@ -285,6 +292,7 @@ def compress_terminal(
     min_chars: int = 2048,
     max_lines: int = 120,
     now: float | None = None,
+    deadline: Any | None = None,
 ) -> tuple[str, dict]:
     """Compress one terminal output. Returns (new_output, stats).
 
@@ -301,6 +309,8 @@ def compress_terminal(
             return output, {"gate": "passthrough_small", "ms": 0.0}
         if SENTINEL_RE.search(output[:2000]):
             return output, {"gate": "passthrough_sentinel", "ms": 0.0}
+        if deadline is not None:
+            deadline.check()
         kind = detect_kind(output)
         budget = _budget_for(command, kind, max_lines)
         text = strip_ansi(output)
@@ -308,10 +318,10 @@ def compress_terminal(
         # single classification pass; every stage below reuses the flags
         flagged_all = _classify(lines)
         # fold repeats first, reducing lines before regex noise filter
-        folded, hidden = _fold_repeats(flagged_all)
+        folded, hidden = _fold_repeats(flagged_all, deadline)
         # Drain templates second (scattered same-shape lines adjacent folding
         # cannot see); groups <3 pass through, important lines never group
-        folded, t_hidden, _t_groups = _fold_templates(folded)
+        folded, t_hidden, _t_groups = _fold_templates(folded, deadline)
         hidden += t_hidden
         kept = [
             (ln, imp) for ln, imp in folded
@@ -365,5 +375,7 @@ def compress_terminal(
             "hidden_lines": hidden, "dropped_lines": dropped,
             "ms": (time.perf_counter() - t0) * 1000,
         }
+    except TimeoutError:
+        return output, {"gate": "passthrough_timeout", "ms": (time.perf_counter() - t0) * 1000}
     except Exception:
         return output, {"gate": "passthrough_exception", "ms": (time.perf_counter() - t0) * 1000}

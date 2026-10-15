@@ -5,6 +5,7 @@ from core import compress_terminal, detect_kind
 from dedup import (clear_session, compress_tool_result, hygiene, normalize_volatile,
                    minify_json, toon_encode, remember, note_turn, expire_old_turns)
 from ccr import put as ccr_put, get as ccr_get
+import ccr_v2
 
 fails = 0
 rows = []  # (name, before, after, pct, gate, ms, note)
@@ -122,15 +123,15 @@ r3 = base + "\n" + "C" * 2200
 o1, s1 = run_tool("D3-turn1-base", "search_files", r1, "chain")
 o2, s2 = run_tool("D3-turn2-folds", "search_files", r2, "chain")
 o3, s3 = run_tool("D4-turn3-folds", "search_files", r3, "chain")
-check("D3-fold", s2["gate"] == "ok" and "[tt:seen" in o2, f"saved={s2.get('saved_chars')}")
-check("D4-fold3", s3["gate"] == "ok" and "[tt:seen" in o3, f"saved={s3.get('saved_chars')}")
+check("D3-fold", s2["gate"] == "ok" and "[@#" in o2, f"saved={s2.get('saved_chars')}")
+check("D4-fold3", s3["gate"] == "ok" and "[@#" in o3, f"saved={s3.get('saved_chars')}")
 # D5 read_file verbatim + fold against
 clear_session("rf")
 big_read = "content line data payload here\n" * 1500 + "z" * 1000
 o_r, s_r = run_tool("D5a-read-verbatim", "read_file", big_read, "rf")
 o_q, s_q = run_tool("D5b-search-folds-vs-read", "search_files", ("content line data payload here\n" * 1500) + "w" * 1000, "rf")
 check("D5-verbatim", s_r["gate"] == "passthrough_reference" and o_r == big_read)
-check("D5-fold-vs-read", s_q["gate"] == "ok" and "[tt:seen" in o_q)
+check("D5-fold-vs-read", s_q["gate"] == "ok" and "[@#" in o_q)
 # D6 hygiene heavy
 h = ("trailing spaces here   \n" * 1000) + ("\n\n\n\n" * 500) + ("clean line\n" * 500)
 t_h, s_h = hygiene(h)
@@ -149,7 +150,7 @@ la = lbase + "\n" + "P" * 2100
 lb = lbase + "\n" + "Q" * 2100
 run_tool("D9a-seed", "search_files", la, "lines")
 o_lb, s_lb = run_tool("D9b-line-fold", "search_files", lb, "lines")
-check("D9-linefold", "[tt:seen" in o_lb, f"saved={s_lb.get('saved_chars')}")
+check("D9-linefold", "[@#" in o_lb, f"saved={s_lb.get('saved_chars')}")
 # D10 JSON envelope inner fold (minified vs pretty SKILL.md case)
 clear_session("env")
 inner = "\n".join(f"documentation line {i} explaining the skill usage in detail here" for i in range(80))
@@ -201,6 +202,7 @@ with tempfile.TemporaryDirectory() as td:
         check("C3-grep-nomatch", gr.get("matches_count") == 0)
     finally:
         ccr.default_dir = orig
+        ccr_v2.close(dir=d)
 
 print("=== SESSION SIM (realistic 5-turn) ===")
 clear_session("sim")

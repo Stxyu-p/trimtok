@@ -1,6 +1,6 @@
 name: trimtok
-version: 0.6.2
-description: "Local stdlib-only context compressor: per-command budgets, balanced windowing, error rails, Drain templates, shingle near-dedup, HEAD_TAIL stubs, cross-turn fold, command/tool exclusions, file-local CCR with paginated trimtok_retrieve."
+version: 0.7.0
+description: "Local stdlib-only context compressor: per-command budgets, balanced windowing, error rails, Drain templates, shingle near-dedup, HEAD_TAIL stubs, cross-turn fold, command/tool exclusions, two-tier SQLite CCR with short #ref aliases, 8.5ms fail-open guard, paginated trimtok_retrieve."
 entry_point: __init__.py
 author: "P Choke & MIKA"
 provides_hooks:
@@ -16,6 +16,10 @@ config_schema:
     type: bool
     default: true
     description: Master switch for all hooks (fail-open; false = passthrough).
+  guard_ms:
+    type: float
+    default: 50
+    description: Fail-open deadline budget in ms (1-1000); hooks return the original text when exceeded. Safety ceiling — set 8.5 for the strict plan profile.
   phase2_enabled:
     type: bool
     default: true

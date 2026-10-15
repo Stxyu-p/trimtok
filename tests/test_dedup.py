@@ -51,7 +51,7 @@ _a = "\n".join(f"10:00:{i % 60:02d} INFO worker done task {i} with payload data 
 _b = "\n".join(f"10:01:{i % 60:02d} INFO worker done task {i} with payload data padding abcdef" for i in range(60)) + "\n" + "B" * 2200
 _, _sa = compress_tool_result("search_files", _a, session_id="ts-near-dup")
 _ob, _sb = compress_tool_result("search_files", _b, session_id="ts-near-dup")
-check("volatile-near-dup-folds", _sb["gate"] == "ok" and "[tt:seen" in _ob)
+check("volatile-near-dup-folds", _sb["gate"] == "ok" and "[@#" in _ob)
 
 # 2b. no-op normalization stays lossless on large ordinary output
 ordinary = ("INFO build status line 123 process completed\n" * 22000)[:1_000_000]
@@ -83,7 +83,7 @@ check("first-indexed", st1["gate"] in ("ok", "reverted_gate"))
 code2 = "\n".join(f"def func_{i}(): return {i}" for i in range(40)) + "\n" + "y" * 2100
 out2, st2 = compress_tool_result("search_files", code2, session_id=SID)
 check("fold-gate", st2["gate"] == "ok")
-check("fold-pointer", "[tt:seen lines=" in out2)
+check("fold-pointer", "[@#" in out2)
 check("fold-saved", st2["saved_chars"] > 500)
 
 # 4. read_file stays verbatim but indexes
@@ -94,7 +94,7 @@ check("read-verbatim", out3 == big_read and st3["gate"] == "passthrough_referenc
 # ...and a later search can fold against it
 out4, st4 = compress_tool_result(
     "search_files", ("content line\n" * 500) + "w" * 1000, session_id=SID + "2")
-check("fold-against-read", st4["gate"] == "ok" and "[tt:seen" in out4)
+check("fold-against-read", st4["gate"] == "ok" and "[@#" in out4)
 
 # 5. sentinel passthrough
 out5, st5 = compress_tool_result("search_files", out2, session_id=SID)
@@ -136,7 +136,7 @@ check("intra-run2-no", _o10.count("[repeated ") == 0)
 clear_session(SID + "-firstseen")
 _fs = "\n".join(f"first-seen-unique-{i}-qwerty-{i * 13}-zz-{i * i % 100019}" for i in range(120)) + "\n" + "v" * 2100
 _o11, _s11 = compress_tool_result("search_files", _fs, session_id=SID + "-firstseen")
-check("firstseen-template-folds", _s11["gate"] == "ok" and "[tt:template lines=119 retrieve:" in _o11)
+check("firstseen-template-folds", _s11["gate"] == "ok" and "[tt:template lines=119 #" in _o11)
 check("firstseen-template-resolves", _s11.get("digest") and _s11["digest"] in _o11)
 clear_session(SID + "-firstseen-uq")
 import random as _uq_rnd
@@ -227,7 +227,7 @@ _e1 = _json.dumps({"content": _inner, "meta": {"id": 1}}, indent=2) + "\n" + "p"
 _e2 = _json.dumps({"content": _inner, "meta": {"id": 2}}, indent=2) + "\n" + "q" * 2100
 _, _es1 = compress_tool_result("search_files", _e1, session_id="env-tail")
 _o2, _es2 = compress_tool_result("search_files", _e2, session_id="env-tail")
-check("env-tail-folds", _es2["gate"] == "ok" and "[tt:seen" in _o2)
+check("env-tail-folds", _es2["gate"] == "ok" and "[@#" in _o2)
 
 # 11. TOON uniform (off by default, on with flag)
 import json as _jj
@@ -301,7 +301,7 @@ o_a, s_a = compress_tool_result("search_files", r_a, session_id="resolve")
 corpus_texts[s_a.get("digest", "")] = r_a
 o_b, s_b = compress_tool_result("search_files", r_b, session_id="resolve")
 corpus_texts[s_b.get("digest", "")] = r_b
-ptrs = _re.findall(r"\[tt:seen lines? retrieve:([0-9a-f]{12})\]", o_b)
+ptrs = _re.findall(r"\[@#([0-9a-f]{12})(?:x\d+)?\]", o_b)
 check("resolve-has-pointers", len(ptrs) > 0)
 # each pointer hash == the digest of a stored block (head marker digest)
 stored = {s_a.get("digest"), s_b.get("digest")}
@@ -326,7 +326,7 @@ check(
 )
 # placeholders for consumers
 ph = mask_summary("line one\nline two\n" + "y" * 2100, "digest-t1", 2200)
-check("mask-summary", ph.startswith("[tt:masked") and "retrieve:digest-t1" in ph)
+check("mask-summary", ph.startswith("[tt:masked") and "#digest-t1" in ph)
 # mask_old_turns maps digests -> placeholders against a CCR mirror
 store = {"digest-t1": "line one\n" + "y" * 2100, "digest-t2": "small"}
 # need turn registry entries first

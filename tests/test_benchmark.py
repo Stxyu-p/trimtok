@@ -282,8 +282,49 @@ def test_ccr_put_get_speed():
         )
 
 
+def test_ccr_v2_put_get_speed():
+    import tempfile
+    from pathlib import Path
+
+    import ccr_v2
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        directory = Path(temp_dir)
+        contents = {}
+        refs = []
+        put_samples = []
+
+        for index in range(WARMUP_RUNS + RUNS):
+            content = f"v2 payload run={index} " * 100
+            elapsed_ms, ref = _timed_call(
+                lambda content=content: ccr_v2.put(content, dir=directory)
+            )
+            assert ref.startswith("#") and len(ref) <= 5
+            contents[ref] = content
+            refs.append(ref)
+            if index >= WARMUP_RUNS:
+                put_samples.append(elapsed_ms)
+
+        read_ref = refs[-1]
+        for _ in range(WARMUP_RUNS):
+            assert ccr_v2.get(read_ref, dir=directory) == contents[read_ref]
+
+        get_samples = []
+        for _ in range(RUNS):
+            elapsed_ms, retrieved = _timed_call(
+                lambda: ccr_v2.get(read_ref, dir=directory)
+            )
+            assert retrieved == contents[read_ref]
+            get_samples.append(elapsed_ms)
+
+        _summarize("CCR v2 put (unique payload)", put_samples, budget_ms=3.0)
+        _summarize("CCR v2 get (same alias, cached)", get_samples, budget_ms=1.0)
+        ccr_v2.close(dir=directory)
+
+
 if __name__ == "__main__":
     test_terminal_compression_speed()
     test_tool_result_compression_scenarios()
     test_ccr_put_get_speed()
+    test_ccr_v2_put_get_speed()
     print("\nAll benchmark assertions passed!")

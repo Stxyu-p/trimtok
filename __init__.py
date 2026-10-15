@@ -12,16 +12,20 @@ from typing import Any
 
 try:
     from .core import VERSION, compress_terminal
-    from .ccr import default_dir, get as ccr_get, purge as ccr_purge, put as ccr_put, stats as ccr_stats
+    from .ccr import default_dir
+    from .ccr_v2 import get as ccr_get, purge as ccr_purge, put as ccr_put, stats as ccr_stats
     from .dedup import (
         clear_session, compress_tool_result, note_turn,
     )
+    from .guard import Deadline, VERBATIM_TOOLS
 except ImportError:  # direct unit-test import
     from core import VERSION, compress_terminal
-    from ccr import default_dir, get as ccr_get, purge as ccr_purge, put as ccr_put, stats as ccr_stats
+    from ccr import default_dir
+    from ccr_v2 import get as ccr_get, purge as ccr_purge, put as ccr_put, stats as ccr_stats
     from dedup import (
         clear_session, compress_tool_result, note_turn,
     )
+    from guard import Deadline, VERBATIM_TOOLS
 
 _MAX_GREP_PATTERN_CHARS = 256
 _MAX_GREP_INPUT_CHARS = 1_000_000
@@ -35,7 +39,8 @@ RETRIEVE_SCHEMA = {
     "name": "trimtok_retrieve",
     "description": (
         "Retrieve the uncompressed original content of a previously folded or windowed "
-        "tool result by its content hash. Supports optional line pagination (offset/limit) "
+        "tool result by its content reference: the short '#ref' shown in [tt:...] markers, "
+        "or a legacy 12-char hash. Supports optional line pagination (offset/limit) "
         "and grep regex filtering to inspect specific details without flooding context."
     ),
     "parameters": {
@@ -43,7 +48,7 @@ RETRIEVE_SCHEMA = {
         "properties": {
             "hash": {
                 "type": "string",
-                "description": "The content hash shown in the [tt:... retrieve:<hash>] marker.",
+                "description": "The content ref shown in the [tt:... #ref] marker (e.g. '#c1'), or a legacy hex hash.",
             },
             "offset": {
                 "type": "integer",
@@ -221,6 +226,14 @@ def _int_cfg(ctx: Any, key: str, default: int, low: int, high: int) -> int:
     return max(low, min(high, value))
 
 
+def _float_cfg(ctx: Any, key: str, default: float, low: float, high: float) -> float:
+    try:
+        value = float(_config_value(ctx, key, default))
+    except Exception:
+        return default
+    return max(low, min(high, value))
+
+
 def _bool_cfg(ctx: Any, key: str, default: bool) -> bool:
     value = _config_value(ctx, key, default)
     return value if isinstance(value, bool) else default
@@ -262,8 +275,13 @@ def _store_original(
     )
     if not stored:
         return None
-    if stored != digest:
-        compressed = compressed.replace(f"retrieve:{digest}", f"retrieve:{stored}", 1)
+    # v2 store returns a short alias ref ('#c1'); swap every '#<digest>' ref in
+    # this block for it (a dedup result can carry dozens of pointers to one
+    # block). Legacy/hex refs are left alone when the store fell back.
+    if digest:
+        old_ref = f"#{digest}"
+        if stored != old_ref:
+            compressed = compressed.replace(old_ref, stored)
     return compressed, stored
 
 
@@ -360,6 +378,7 @@ def _on_transform(
         output,
         min_chars=min_chars,
         max_lines=_int_cfg(ctx, "max_lines", 120, 10, 10000),
+        deadline=Deadline(_float_cfg(ctx, "guard_ms", 50.0, 1.0, 1000.0)),
     )
     _usage_terminal(command, output, stats, ctx)
     return _finalize(output, new_output, stats, ctx, {
@@ -388,6 +407,11 @@ def _on_tool_result(
         return None
     if _excluded_tool(tool_name, ctx):
         return None
+    verbatim_name = str(tool_name or "").strip()
+    if verbatim_name in VERBATIM_TOOLS and verbatim_name != "read_file":
+        # read_file keeps its dedup path (indexed for later folds, still
+        # returned verbatim); the other verbatim tools bypass compression.
+        return None
     sid = str(session_id or task_id or "default")
     turn = str(turn_id or "")
     new_result, stats = compress_tool_result(
@@ -396,6 +420,7 @@ def _on_tool_result(
         session_id=sid,
         min_chars=_int_cfg(ctx, "min_chars", 2048, 0, 10_000_000),
         toon_enabled=_bool_cfg(ctx, "toon_enabled", False),
+        deadline=Deadline(_float_cfg(ctx, "guard_ms", 50.0, 1.0, 1000.0)),
     )
     _usage_tool(tool_name, result, stats, ctx)
     out = _finalize(result, new_result, stats, ctx, {
@@ -434,14 +459,26 @@ def _on_post_llm(
     return None
 
 
+def _parse_ref(raw: Any) -> str:
+    """Accept '#c1' aliases, bare 'c1', legacy hex, 'retrieve:#c1' forms."""
+    ref = str(raw or "").strip().strip("<>").strip()
+    ref = ref.removeprefix("tt:").split(",")[0].strip()
+    ref = ref.removeprefix("retrieve:").strip()
+    if ref.startswith("#"):
+        return "#" + re.sub(r"[^0-9A-Za-z]", "", ref[1:])[:16]
+    hex_ref = "".join(c for c in ref if c in "0123456789abcdef")[:16]
+    if hex_ref:
+        return hex_ref
+    return re.sub(r"[^0-9A-Za-z]", "", ref)[:16]
+
+
 def _handle_retrieve(args: dict, **kw: Any) -> str:
-    digest = str((args or {}).get("hash") or "").strip().strip("<>").removeprefix("tt:").split(",")[0].strip()
-    digest = "".join(c for c in digest if c in "0123456789abcdef")[:16]
-    if not digest:
-        return _err("hash is required (from a '[tt:... retrieve:<hash>]' marker)")
+    ref = _parse_ref((args or {}).get("hash"))
+    if not ref:
+        return _err("hash is required (a '#ref' from a [tt:...] marker, or a legacy hex hash)")
     ctx = getattr(_handle_retrieve, "_ctx", None)
     ttl_hours = _int_cfg(ctx, "ccr_ttl_hours", 24, 1, 24 * 30) if ctx is not None else 24
-    content = ccr_get(digest, ttl_hours=ttl_hours)
+    content = ccr_get(ref, ttl_hours=ttl_hours)
     if content is None:
         _usage_retrieve(args, hit=False, ctx=ctx)
         return _err("Not found or expired (TTL passed). Re-run the original command instead.")
@@ -583,7 +620,7 @@ def _handle_ts_command(raw_args: str) -> str:
             c_stat = ccr_stats(ttl_hours=ttl_hours)
             return (
                 f"trimtok v{VERSION}: {len(lines)} transforms logged (recent window), ~{saved:,} chars saved.\n"
-                f"CCR Cache: {c_stat.get('entries', 0)} files (~{c_stat.get('bytes', 0) // 1024} KB)."
+                f"CCR Cache: {c_stat.get('entries', 0)} entries (~{c_stat.get('bytes', 0) // 1024} KB)."
             )
         except Exception:
             return f"trimtok v{VERSION}: status unavailable."

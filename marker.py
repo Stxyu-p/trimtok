@@ -8,7 +8,13 @@ from __future__ import annotations
 
 import re
 
-SENTINEL_RE = re.compile(r"\[tt:(?:legend\]|(?:terminal|tool|seen|masked|template|shingle|headtail)\b[^\]]*retrieve:[0-9a-f]+)")
+# Matches every marker generation: legacy ([tt:seen ... retrieve:<hex>]), the
+# v2 ref form ([tt:... #c1]), and the compact pointer form ([@#c1], [@#c1x5]).
+SENTINEL_RE = re.compile(
+    r"\[(?:@#[0-9A-Za-z]+(?:x\d+)?\]"
+    r"|tt:(?:legend\]|(?:terminal|tool|seen|masked|template|shingle|headtail)\b"
+    r"[^\]]*(?:retrieve:[0-9a-f]+|#[0-9A-Za-z]+)))"
+)
 
 # Single source of truth (zero-spaghetti law 1): KEEP prefix + template-slot
 # regex live here because core + dedup both need them. The slot pattern is
@@ -60,46 +66,54 @@ SLOT_RE = re.compile(
     re.I,
 )
 
-LEGEND_FOLD = "[tt:legend] Lines folded as [repeated Nx]. Full original in CCR, use trimtok_retrieve."
+LEGEND_FOLD = "[tt:legend] Fold markers: [repeated Nx], [@#ref] (xN = N lines). Full originals in CCR via trimtok_retrieve."
 LEGEND_TOON = (
     "[tt:legend] Table below is TOON: header [N]{f1,f2} lists fields, "
     "each following line is one object, values in header order."
 )
 
 
-def terminal_head(kind: str, hidden: int, digest: str) -> str:
-    return f"[tt:terminal kind={kind} hidden={hidden} retrieve:{digest}]"
+def terminal_head(kind: str, hidden: int, ref: str) -> str:
+    return f"[tt:terminal kind={kind} hidden={hidden} #{ref}]"
 
 
-def tool_head(saved: int, digest: str) -> str:
-    return f"[tt:tool kind=result saved={saved} retrieve:{digest}]"
+def tool_head(saved: int, ref: str) -> str:
+    return f"[tt:tool kind=result saved={saved} #{ref}]"
 
 
-def seen_lines(count: int, digest: str) -> str:
-    return f"[tt:seen lines={count} retrieve:{digest}]"
+# Pointer family: folded line runs collapse to a minimal ref stub so repeated
+# folds stay cheap — '#c1' alias when stored, 12-hex before the store swap.
+# Format: [@#ref] single line; [@#refxN] N-line span (Argon plan Stage 0).
+def seen_lines(count: int, ref: str) -> str:
+    return f"[@#{ref}x{count}]"
 
 
-def seen_line(digest: str) -> str:
-    return f"[tt:seen line retrieve:{digest}]"
+def seen_line(ref: str) -> str:
+    return f"[@#{ref}]"
 
 
-def masked(chars: int, digest: str) -> str:
-    return f"[tt:masked chars={chars} retrieve:{digest}]"
+def masked(chars: int, ref: str) -> str:
+    return f"[tt:masked chars={chars} #{ref}]"
 
 
-def template_head(count: int, digest: str) -> str:
-    return f"[tt:template lines={count} retrieve:{digest}]"
+def template_head(count: int, ref: str) -> str:
+    return f"[tt:template lines={count} #{ref}]"
 
 
-def shingle_head(count: int, digest: str) -> str:
-    return f"[tt:shingle lines={count} retrieve:{digest}]"
+def shingle_head(count: int, ref: str) -> str:
+    # count kept for call-shape compatibility (callers always pass 1)
+    return f"[tt:shingle #{ref}]"
 
 
-def headtail_head(kept_head: int, kept_tail: int, omitted: int, digest: str) -> str:
-    return f"[tt:headtail head={kept_head} tail={kept_tail} omitted={omitted} retrieve:{digest}]"
+def headtail_head(kept_head: int, kept_tail: int, omitted: int, ref: str) -> str:
+    # head/tail counts are derivable from the stub body itself; only the
+    # omission count and the ref are load-bearing. Params kept for call shape.
+    return f"[tt:headtail omitted={omitted} #{ref}]"
 
 
-_HASH_RE = re.compile(r"retrieve:([0-9a-f]{12,16})")
+# v2 refs are short Base62 aliases (#c1) or 12-hex digests; both forms carry
+# the same meaning: "the full original sits in CCR under this ref".
+_HASH_RE = re.compile(r"(?:retrieve:|#)([0-9A-Za-z]{1,16})")
 
 
 # Byte-class token estimator (Step 3, stats-only): pure-stdlib, single-pass

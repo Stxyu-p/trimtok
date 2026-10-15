@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import re
 import time
+from typing import Any
 
 try:
     from .marker import KEEP_PREFIX as _KEEP_PREFIX
@@ -186,6 +187,7 @@ def fold_spans(
     min_lines: int = _MIN_SPAN_LINES,
     min_chars: int = _MIN_SPAN_CHARS,
     owner: str | None = None,
+    deadline: Any | None = None,
 ) -> tuple[str, list[tuple[str, str]], int]:
     """Replace verbatim runs seen in earlier tool results with pointers.
 
@@ -216,6 +218,8 @@ def fold_spans(
     n = len(lines)
     new_spans: list[tuple[str, str]] = []
     while i < n:
+        if deadline is not None and (i & 255) == 0:
+            deadline.check()
         line = lines[i]
         # single repeated line: fold individually, keep first occurrence verbatim.
         # Pointer embeds the CURRENT block digest (owner), never first-seen:
@@ -269,12 +273,12 @@ def fold_spans(
     if folded_chars == 0 and out:
         corpus_long = [ln for ln in line_owner if len(ln.split()) >= _SHINGLE_MIN_WORDS]
         if corpus_long:
-            out, sh_saved = _fold_shingles(out, corpus_long, owner)
+            out, sh_saved = _fold_shingles(out, corpus_long, owner, deadline)
             folded_chars += sh_saved
     return "\n".join(out), new_spans, folded_chars
 
 
-def _fold_intra_repeats(text: str) -> tuple[str, int]:
+def _fold_intra_repeats(text: str, deadline: Any | None = None) -> tuple[str, int]:
     """Fold adjacent duplicate line runs inside one first-seen document.
 
     W4: terminal folds repeats within its own output; the tool path only
@@ -291,6 +295,8 @@ def _fold_intra_repeats(text: str) -> tuple[str, int]:
     i = 0
     n = len(lines)
     while i < n:
+        if deadline is not None and (i & 511) == 0:
+            deadline.check()
         line = lines[i]
         key = line.strip()
         if (
@@ -342,10 +348,14 @@ def _intra_template_key(line: str) -> str:
     return key
 
 
-def _fold_intra_templates(text: str, owner: str | None = None) -> tuple[str, int]:
+def _fold_intra_templates(
+    text: str, owner: str | None = None, deadline: Any | None = None
+) -> tuple[str, int]:
     lines = text.split("\n")
     groups: dict[str, list[int]] = {}
     for idx, line in enumerate(lines):
+        if deadline is not None and (idx & 511) == 0:
+            deadline.check()
         if (
             not line.strip()
             or line.startswith("[tt:")
@@ -435,6 +445,7 @@ def _fold_shingles(
     lines: list[str],
     corpus_lines: list[str],
     owner: str | None,
+    deadline: Any | None = None,
 ) -> tuple[list[str], int]:
     """Fold near-duplicate lines (Jaccard>=0.8) against prior corpus lines.
 
@@ -455,7 +466,9 @@ def _fold_shingles(
     min_len = len(shingle_head(1, "0" * 12))
     out: list[str] = []
     saved = 0
-    for line in lines:
+    for li, line in enumerate(lines):
+        if deadline is not None and (li & 255) == 0:
+            deadline.check()
         if (
             len(line) <= min_len
             or line.startswith("[tt:")
@@ -753,6 +766,7 @@ def compress_tool_result(
     session_id: str = "",
     min_chars: int = 2048,
     toon_enabled: bool = False,
+    deadline: Any | None = None,
 ) -> tuple[str, dict]:
     """Full Phase 2 pipeline on one tool result. Never raises."""
     t0 = time.perf_counter()
@@ -786,6 +800,8 @@ def compress_tool_result(
         raw_hashes = _seen(session_id or "default")["raw"]
         if _rh in raw_hashes:
             return result, {"gate": "passthrough_repeat", "ms": 0.0}
+        if deadline is not None:
+            deadline.check()
         text, h_saved = hygiene(result)
         text, v_saved = normalize_volatile(text)
         # lossless JSON minify first (default-on): whole-doc only, value-identical
@@ -797,7 +813,7 @@ def compress_tool_result(
         # "seen"). First occurrence must stay verbatim (rule: keep-earliest).
         # Every pointer embeds _rh (== _raw_digest below): the hook stores the
         # raw original under it, so all pointers resolve via trimtok_retrieve.
-        folded, _, f_saved = fold_spans(text, session_id, owner=_rh)
+        folded, _, f_saved = fold_spans(text, session_id, owner=_rh, deadline=deadline)
         i_saved = 0
         if f_saved == 0:
             # W4: intra-document repeat fold on FIRST-SEEN docs. fold_spans
@@ -806,13 +822,13 @@ def compress_tool_result(
             # normalized-duplicate line runs inside this doc itself — first
             # line of each run stays verbatim (keep-earliest holds
             # within-document; CCR stores the raw original).
-            folded, i_saved = _fold_intra_repeats(folded)
+            folded, i_saved = _fold_intra_repeats(folded, deadline)
         dt_saved = 0
         if i_saved == 0:
             # Drain templates within one doc (D7 volatile shape): scattered
             # same-template lines no adjacent-repeat pass can see. Same
             # second-chance position as intra-repeats — verbatim won already.
-            folded, dt_saved = _fold_intra_templates(folded, owner=_rh)
+            folded, dt_saved = _fold_intra_templates(folded, owner=_rh, deadline=deadline)
         ht_saved = 0
         ht_head = ht_tail = ht_omitted = 0
         if f_saved == 0 and i_saved == 0 and dt_saved == 0:
@@ -879,6 +895,9 @@ def compress_tool_result(
             "headtail_saved": ht_saved,
             "ms": (time.perf_counter() - t0) * 1000,
         }
+    except TimeoutError:
+        return result, {"gate": "passthrough_timeout",
+                        "ms": (time.perf_counter() - t0) * 1000}
     except Exception:
         return result, {"gate": "passthrough_exception",
                         "ms": (time.perf_counter() - t0) * 1000}

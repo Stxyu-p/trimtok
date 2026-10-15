@@ -61,6 +61,23 @@ def main() -> int:
         assert len(retrieve_tools) == 1
         retrieve = retrieve_tools[0]
 
+        # Pipeline-correctness test, not a budget test (see test_v2_phase1.py):
+        # give the guard a generous budget so a loaded machine cannot flip the
+        # hook to fail-open mid-assert.
+        plugin_module = next(
+            (
+                m
+                for m in list(sys.modules.values())
+                if hasattr(m, "_finalize")
+                and hasattr(m, "Deadline")
+                and "trimtok" in str(getattr(m, "__file__", "")).lower()
+            ),
+            None,
+        )
+        assert plugin_module is not None, "trimtok plugin module not found"
+        _real_deadline = plugin_module.Deadline
+        plugin_module.Deadline = lambda budget_ms=None: _real_deadline(500)
+
         terminal_source = "\n".join(
             f"{i:04d} INFO worker-{i % 7} completed task payload-{i:04d}"
             for i in range(700)
@@ -70,7 +87,7 @@ def main() -> int:
         )
         assert isinstance(terminal_output, str)
         assert len(terminal_output) < len(terminal_source)
-        terminal_match = re.search(r"retrieve:([0-9a-f]{12})", terminal_output)
+        terminal_match = re.search(r"#(c[0-9A-Za-z]+|[0-9a-f]{12})", terminal_output)
         assert terminal_match
         terminal_restored = json.loads(retrieve({"hash": terminal_match.group(1)}))
         assert terminal_restored.get("original_content") == terminal_source
@@ -87,7 +104,7 @@ def main() -> int:
         )
         assert isinstance(tool_output, str)
         assert len(tool_output) < len(tool_source)
-        tool_match = re.search(r"retrieve:([0-9a-f]{12})", tool_output)
+        tool_match = re.search(r"#(c[0-9A-Za-z]+|[0-9a-f]{12})", tool_output)
         assert tool_match
         tool_restored = json.loads(retrieve({"hash": tool_match.group(1)}))
         assert tool_restored.get("original_content") == tool_source
@@ -96,6 +113,15 @@ def main() -> int:
         hooks["on_session_end"][0](session_id=session_id)
         assert ccr_dir.is_relative_to(home)
         assert ccr_dir.is_dir()
+
+        # Release the v2 sqlite store so the doctor runtime can delete its
+        # temp HERMES_HOME (Windows keeps an open db file locked).
+        for module in list(sys.modules.values()):
+            if (
+                str(getattr(module, "__file__", "")).lower().endswith("ccr_v2.py")
+                and hasattr(module, "close")
+            ):
+                module.close()
 
         print(
             f"PASS: terminal hook compressed {len(terminal_source)} -> "
