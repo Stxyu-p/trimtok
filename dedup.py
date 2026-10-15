@@ -16,11 +16,15 @@ try:
     from .marker import SENTINEL_RE, SLOT_RE as _SLOT_RE, estimate_tokens, headtail_head, is_exempt, is_important, masked, seen_line, seen_lines, shingle_head, template_head, tool_head
     from .marker import LEGEND_TOON as _TOON_LEGEND
     from .scoped_search import group_search_hits
+    from .toon_codec import fold_json_to_toon
+    from .bpe_estimator import estimate_bpe_gain
 except ImportError:  # direct unit-test import
     from marker import KEEP_PREFIX as _KEEP_PREFIX
     from marker import SENTINEL_RE, SLOT_RE as _SLOT_RE, estimate_tokens, headtail_head, is_exempt, is_important, masked, seen_line, seen_lines, shingle_head, template_head, tool_head
     from marker import LEGEND_TOON as _TOON_LEGEND
     from scoped_search import group_search_hits
+    from toon_codec import fold_json_to_toon
+    from bpe_estimator import estimate_bpe_gain
 _MIN_SPAN_LINES = 5
 _MIN_SPAN_CHARS = 200
 _MIN_LINE_CHARS = 40  # single repeated lines at/above this fold individually
@@ -669,62 +673,8 @@ def mask_old_turns(
     return out
 
 
-_TOON_MIN_ROWS = 3
-
-
-def toon_encode(rows: list[dict], *, max_rows: int = 0) -> tuple[str, bool]:
-    """Minimal TOON for uniform dict arrays (stdlib, no dep).
-
-    Returns (text, complete). complete=False when rows were capped (head+tail
-    sample with omission marker). Never raises.
-    """
-    try:
-        if not rows or not all(isinstance(r, dict) for r in rows):
-            return "", False
-        # uniform check: every row has exactly the field set IN THE SAME ORDER
-        # (squeez toon.rs strict shape: key order mismatch = reject)
-        first_keys = list(rows[0].keys())
-        if any(list(r.keys()) != first_keys for r in rows):
-            return "", False
-        fields = first_keys
-        # flat scalars only (no nested dict/list — keep it dumb and safe)
-        for r in rows:
-            for v in r.values():
-                if not isinstance(v, (str, int, float, bool)) and v is not None:
-                    return "", False
-        # Field names form the unquoted header; reject names that would make
-        # its delimiters ambiguous rather than emitting a corrupt table.
-        if any(any(c in k for c in ',{}[]"\r\n') for k in fields):
-            return "", False
-        total = len(rows)
-        capped = False
-        if max_rows and total > max_rows:
-            keep_h = max_rows // 2
-            keep_t = max_rows - keep_h
-            sample = rows[:keep_h] + rows[total - keep_t:]
-            capped = True
-        else:
-            sample = rows
-
-        def _cell(v: object) -> str:
-            if v is None:
-                return "null"
-            if isinstance(v, bool):
-                return "true" if v else "false"
-            if isinstance(v, str):
-                return '"' + v.replace('"', '""') + '"'
-            s = str(v)
-            return s
-
-        lines = [f"[{total}]{{{','.join(fields)}}}:"] if not capped else [
-            f"[{total}]{{{','.join(fields)}}} (showing {len(sample)}):"]
-        for r in sample:
-            lines.append("  " + ",".join(_cell(r.get(f)) for f in fields))
-        if capped:
-            lines.append(f"[... {total - len(sample)} rows omitted ...]")
-        return "\n".join(lines), not capped
-    except Exception:
-        return "", False
+# legacy toon_encode removed in Phase 3 — the single TOON path is now
+# toon_codec.fold_json_to_toon (lossless round-trip + Token-Gain Gate).
 
 
 def minify_json(text: str) -> tuple[str, int]:
@@ -768,10 +718,10 @@ def compress_tool_result(
     *,
     session_id: str = "",
     min_chars: int = 2048,
-    toon_enabled: bool = False,
+    toon_enabled: bool = True,
     deadline: Any | None = None,
 ) -> tuple[str, dict]:
-    """Full Phase 2 pipeline on one tool result. Never raises."""
+    """Full v2 pipeline on one tool result (scoped search + TOON). Never raises."""
     t0 = time.perf_counter()
     try:
         if not isinstance(result, str):
@@ -864,22 +814,20 @@ def compress_tool_result(
         # original under it, so every pointer resolves via trimtok_retrieve.
         # (_rh IS the raw digest — computed above from result.)
         remember(text, session_id, owner=_rh)
-        # TOON AFTER fold (default-off, behavior-gated): a whole-doc encoding —
-        # folding its emitted table lines against the corpus would eat the
-        # legend + rows, so it recodes the folded text as a final step.
+        # TOON AFTER fold (Phase 3, lossless): a whole-doc encoding — folding
+        # its emitted table lines against the corpus would eat the legend +
+        # rows, so it recodes the folded text as a final step. The codec
+        # round-trip-verifies losslessness; the Token-Gain Gate keeps the
+        # fold only when it saves >= 4 BPE tokens net of the legend.
         if toon_enabled:
             try:
-                import json as _json
-
-                _data = _json.loads(folded.strip())
-                if isinstance(_data, list) and len(_data) >= _TOON_MIN_ROWS:
-                    _toon, _complete = toon_encode(_data)
-                    if _toon:
-                        _cand = _TOON_LEGEND + "\n" + _toon
-                        if len(_cand) < len(folded):
-                            t_saved = len(folded) - len(_cand)
-                            folded = _cand
-                            toon_used = True
+                _cand = fold_json_to_toon(folded)
+                if _cand != folded:
+                    _cand = _TOON_LEGEND + "\n" + _cand
+                    if len(_cand) < len(folded) and estimate_bpe_gain(folded, _cand) >= 4:
+                        t_saved = len(folded) - len(_cand)
+                        folded = _cand
+                        toon_used = True
             except Exception:
                 pass
         # token-gate

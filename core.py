@@ -13,7 +13,7 @@ import time
 from functools import lru_cache
 from typing import Any
 
-VERSION = "0.8.0"
+VERSION = "0.9.0"
 
 try:
     from .marker import KEEP_PREFIX as _KEEP_PREFIX

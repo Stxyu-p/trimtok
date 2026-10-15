@@ -1,6 +1,6 @@
 name: trimtok
-version: 0.8.0
-description: "Local stdlib-only context compressor: per-command budgets, balanced windowing, error rails, Drain templates, shingle near-dedup, HEAD_TAIL stubs, cross-turn fold, command/tool exclusions, two-tier SQLite CCR with short #ref aliases, scoped search grouping, fail-open guard (guard_ms, default 50), paginated trimtok_retrieve."
+version: 0.9.0
+description: "Local stdlib-only context compressor: per-command budgets, balanced windowing, error rails, Drain templates, shingle near-dedup, HEAD_TAIL stubs, cross-turn fold, command/tool exclusions, two-tier SQLite CCR with short #ref aliases, scoped search grouping, lossless TOON columnar JSON tables (round-trip verified, BPE Token-Gain Gate), fail-open guard (guard_ms, default 50), paginated trimtok_retrieve."
 entry_point: __init__.py
 author: "P Choke & MIKA"
 provides_hooks:
@@ -42,8 +42,8 @@ config_schema:
     description: Record every hook invocation (all gates + retrieves) to usage.jsonl for long-horizon use-case data.
   toon_enabled:
     type: bool
-    default: false
-    description: Compact tabular JSON arrays to column-header format.
+    default: true
+    description: Lossless JSON to TOON columnar tables (round-trip verified; folds only when >=4 BPE tokens are saved).
   min_chars:
     type: int
     default: 2048

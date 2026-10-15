@@ -46,8 +46,9 @@ SLOT_RE = re.compile(
 
 LEGEND_FOLD = "[tt:legend] Fold markers: [repeated Nx], [@#ref] (xN = N lines). Full originals in CCR via trimtok_retrieve."
 LEGEND_TOON = (
-    "[tt:legend] Table below is TOON: header [N]{f1,f2} lists fields, "
-    "each following line is one object, values in header order."
+    "[tt:legend] TOON table (lossless): \"@prefix(A)=base\" = shared path "
+    "shorthand; \"@rows[N]{f1,f2}:\" header, then N rows, cells split by \"|\" "
+    "(quoted = literal)."
 )
 
 

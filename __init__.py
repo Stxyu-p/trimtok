@@ -419,7 +419,7 @@ def _on_tool_result(
         result,
         session_id=sid,
         min_chars=_int_cfg(ctx, "min_chars", 2048, 0, 10_000_000),
-        toon_enabled=_bool_cfg(ctx, "toon_enabled", False),
+        toon_enabled=_bool_cfg(ctx, "toon_enabled", True),
         deadline=Deadline(_float_cfg(ctx, "guard_ms", 50.0, 1.0, 1000.0)),
     )
     _usage_tool(tool_name, result, stats, ctx)

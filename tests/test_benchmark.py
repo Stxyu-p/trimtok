@@ -213,11 +213,14 @@ def test_terminal_compression_speed():
 
 
 def test_tool_result_compression_scenarios():
+    # First-seen pretty JSON now includes the default-on TOON fold (parse +
+    # round-trip verify ≈ +3-6 ms quiet, more under load); budget it above the
+    # plain-fold cases on purpose while staying far below the 50 ms guard.
     _measure_case(
         "compress_tool_result first-seen / fresh session (pretty JSON)",
         _first_seen_sample,
         expected_gate="ok",
-        budget_ms=LATENCY_BUDGET_MS,
+        budget_ms=25.0,
     )
     _measure_case(
         "compress_tool_result exact-repeat passthrough",

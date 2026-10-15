@@ -3,7 +3,7 @@ import os, sys, time, json, tempfile, hashlib
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core import compress_terminal, detect_kind
 from dedup import (clear_session, compress_tool_result, hygiene, normalize_volatile,
-                   minify_json, toon_encode, remember, note_turn, expire_old_turns)
+                   minify_json, remember, note_turn, expire_old_turns)
 from ccr import put as ccr_put, get as ccr_get
 import ccr_v2
 
@@ -111,9 +111,23 @@ check("D1-minify", st.get("minify_saved", 0) > 0, f"minify={st.get('minify_saved
 # D2 TOON 500 uniform rows off vs on
 rows500 = [{"id": i, "name": f"u{i}", "ok": True} for i in range(500)]
 raw500 = json.dumps(rows500)
-clear_session("toon-off"); o_off, s_off = run_tool("D2a-TOON-off-500", "search_files", raw500, "toon-off")
+clear_session("toon-off"); o_off, s_off = run_tool("D2a-TOON-off-500", "search_files", raw500, "toon-off", "toon off", toon_enabled=False)
 clear_session("toon-on"); o_on, s_on = run_tool("D2b-TOON-on-500", "search_files", raw500, "toon-on", "toon on", toon_enabled=True)
 check("D2-toon-saves-more", s_on.get("saved_chars", 0) >= s_off.get("saved_chars", 0), f"off={s_off.get('saved_chars')} on={s_on.get('saved_chars')}")
+# D15 TOON lossless 1000-row table (path prefix + status canary) — Phase 3
+clear_session("toonp3a")
+t_rows = [
+    {"path": f"C:\\repo\\src\\mod{i:04d}.py", "lines": 999999 if i == 777 else 40 + (i % 900), "status": 500 if i == 777 else 200, "ok": True}
+    for i in range(1000)
+]
+pj3 = json.dumps(t_rows, indent=2)
+o15a, s15a = run_tool("D15a-toon-off-1k", "search_files", pj3, "toonp3a", "toon off", toon_enabled=False)
+clear_session("toonp3b")
+o15b, s15b = run_tool("D15b-toon-on-1k", "search_files", pj3, "toonp3b", "toon on")
+check("D15-toon-uses", s15b.get("toon_used", False) and s15b.get("toon_saved", 0) > 0, f"toon_saved={s15b.get('toon_saved')}")
+check("D15-toon-beats-minify", s15b.get("saved_chars", 0) > s15a.get("saved_chars", 0), f"off={s15a.get('saved_chars')} on={s15b.get('saved_chars')}")
+check("D15-canary", ("999999" in o15b) and ("500" in o15b))
+check("D15-prefix", "@prefix(~/)" in o15b)
 # D3/D4 cross-turn chain
 clear_session("chain")
 base = "\n".join(f"shared content line {i} with enough detail text abcdef" for i in range(60))

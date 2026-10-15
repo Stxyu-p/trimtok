@@ -17,7 +17,6 @@ from dedup import (
     normalize_volatile,
     note_turn,
     remember,
-    toon_encode,
 )
 
 
@@ -229,37 +228,48 @@ _, _es1 = compress_tool_result("search_files", _e1, session_id="env-tail")
 _o2, _es2 = compress_tool_result("search_files", _e2, session_id="env-tail")
 check("env-tail-folds", _es2["gate"] == "ok" and "[@#" in _o2)
 
-# 11. TOON uniform (off by default, on with flag)
+# 11. TOON lossless columnar (default ON; round-trip verified; gain-gated)
 import json as _jj
+from toon_codec import fold_json_to_toon as _fjt, toon_decode as _tdec
 rows = [{"id": i, "name": f"u{i}", "ok": True} for i in range(120)]
 raw = _jj.dumps(rows)
 clear_session("toon")
-o_off, s_off = compress_tool_result("search_files", raw, session_id="toon")
-check("toon-default-off", not s_off.get("toon_used", False))
-clear_session("toon2")
-o_on, s_on = compress_tool_result("search_files", raw, session_id="toon2", toon_enabled=True)
-check("toon-on-saves", s_on.get("toon_used", False) and s_on.get("toon_saved", 0) > 0)
-check("toon-legend", "[tt:legend]" in o_on)
-# mixed dicts never TOON
+o_def, s_def = compress_tool_result("search_files", raw, session_id="toon")
+check("toon-default-on", s_def.get("toon_used", False) and s_def.get("toon_saved", 0) > 0)
+check("toon-legend", "[tt:legend]" in o_def)
+_i1 = o_def.find("@prefix(")
+_i2 = o_def.find("@rows[")
+_start = _i1 if _i1 != -1 and (_i2 == -1 or _i1 < _i2) else _i2
+check("toon-roundtrip", _tdec(o_def[_start:]) == rows)
+clear_session("toonoff")
+_, s_offwe = compress_tool_result("search_files", raw, session_id="toonoff", toon_enabled=False)
+check("toon-flag-off", not s_offwe.get("toon_used", False))
+# mixed/nested/tail docs never TOON
 clear_session("toon3")
 mixed = _jj.dumps({"a": 1, "nested": {"x": [1, 2]}}) + "\n" + "z" * 2100
-_, s_mix = compress_tool_result("search_files", mixed, session_id="toon3", toon_enabled=True)
+_, s_mix = compress_tool_result("search_files", mixed, session_id="toon3")
 check("toon-mixed-no", not s_mix.get("toon_used", False))
-# toon_encode unit: non-uniform + nested rejected
-t1, _ = toon_encode([{"a": 1}, {"b": 2}])
-check("toon-nonuniform", t1 == "")
-t2, _ = toon_encode([{"a": {"x": 1}}])
-check("toon-nested-no", t2 == "")
-typed, _ = toon_encode([
-    {"value": None}, {"value": ""}, {"value": "true"},
-    {"value": True}, {"value": 1},
-])
-check("toon-preserves-scalar-types", len(set(typed.splitlines()[1:])) == 5)
-ambiguous, _ = toon_encode([{"a,b": 1}, {"a,b": 2}, {"a,b": 3}])
-check("toon-rejects-ambiguous-field", ambiguous == "")
+# fold unit: non-uniform / nested / bad-field rejected (returns input)
+_t_bad1 = _jj.dumps([{"a": 1}, {"b": 2}])
+check("toon-nonuniform", _fjt(_t_bad1) == _t_bad1)
+_t_bad2 = _jj.dumps([{"a": {"x": 1}}, {"a": {"x": 2}}, {"a": {"x": 3}}])
+check("toon-nested-no", _fjt(_t_bad2) == _t_bad2)
+_t_bad3 = _jj.dumps([{"a,b": 1}, {"a,b": 2}, {"a,b": 3}])
+check("toon-rejects-ambiguous-field", _fjt(_t_bad3) == _t_bad3)
+# scalar type fidelity survives the round-trip (the exported side is exact)
+typed_rows = [{"value": v} for v in (None, "", "true", True, 1, 2.5, "5", "a|b", "~x", "  pad  ")]
+_t_json = _jj.dumps(typed_rows)
+_t_out = _fjt(_t_json)
+check("toon-scalar-fidelity", _t_out != _t_json and _tdec(_t_out) == typed_rows)
+# key order per row is tolerated (decode equality is order-free)
+_ord_rows = [{"alpha": 1, "beta": 2}, {"beta": 3, "alpha": 4}, {"alpha": 5, "beta": 6},
+             {"beta": 7, "alpha": 8}, {"alpha": 9, "beta": 10}]
+_ord_json = _jj.dumps(_ord_rows)
+_t_ord3 = _fjt(_ord_json)
+check("toon-key-order-ok", _t_ord3 != _ord_json and _tdec(_t_ord3) == _ord_rows)
 
-# 11b. Guardrails: exemption list + TOON strict key-order.
-from dedup import is_exempt as _is_exempt, toon_encode as _te2
+# 11b. Guardrails: exemption list + minimum-size gate.
+from dedup import is_exempt as _is_exempt
 check("exempt-port", _is_exempt("listen on port 8080 ready"))
 check("exempt-count", _is_exempt("total 3000 errors completed"))
 check("exempt-hash", _is_exempt("commit abc1234def5678 done"))
@@ -272,9 +282,7 @@ _small500 = "x" * 2000
 assert len(_small500) // 4 < 512
 _o500, _s500 = _ctr2("search_files", _small500, session_id="min-gate")
 check("min-gate-500tok", _s500["gate"] == "passthrough_small")
-# TOON strict: key order must match exactly (squeez toon.rs shape)
-_t_ord, _ = _te2([{"a": 1, "b": 2}, {"b": 3, "a": 4}])
-check("toon-strict-order", _t_ord == "")
+# (TOON key-order tolerance covered in section 11 — decode equality is order-free)
 
 # 12. per-command budgets
 import sys as _sys
