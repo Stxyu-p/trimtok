@@ -14,13 +14,13 @@
 
 <p align="center">
   <a href="#overview">Overview</a> ·
-  <a href="#whats-new-in-v300">What's New in 3.0</a> ·
   <a href="#how-it-works">How It Works</a> ·
   <a href="#architecture--modules">Modules</a> ·
   <a href="#safety-rail-ccr-v3">CCR v3 Retrieval</a> ·
   <a href="#performance">Performance</a> ·
   <a href="#configuration">Configuration</a> ·
-  <a href="#installation">Installation</a>
+  <a href="#installation">Installation</a> ·
+  <a href="CHANGELOG.md">Changelog</a>
 </p>
 
 ---
@@ -101,30 +101,6 @@ Verified across the bundled 34-case heavy stress suite (`python tests/stress_hea
 | 1,000-row JSON array via TOON v2 (`D15b`) | `101,885 → 26,147 chars` | **74.3%** |
 | Realistic 5-turn mixed session (`SIM`) | `105,839 → 39,904 chars` | **62.3%** |
 | **All 34 stress cases combined** | **`3,559,894 → 417,581 chars`** | **88.3%** (~785k tokens saved) |
-
----
-
-## What's New in v3.0.0
-
-1. **True-BPE Token Gate & Fast JSON Ingestion (`bpe_estimator.py`):**
-   - Uses a module-level offline `tiktoken` (`cl100k_base`) singleton with 64 KB fast sampling (< 0.7 ms on 96 KB inputs) and Rust `jiter` for fast JSON parsing (0.70 ms on 1,000-object payloads), with automatic fallback to Python stdlib when optional packages are absent.
-   - Enforces a strict **BPE Token Non-Inflation Gate** across `core.py` and `dedup.py` so symbol-dense outputs never inflate token counts.
-2. **TOON v2 Hierarchical & Nested Columnar Codec (`toon_codec.py`):**
-   - Automatically unwraps multi-level dict envelopes using dot-notation headers (`@data.results[N]{fields}:`).
-   - Encodes small nested lists and dicts (`<= 120 chars`) as compact inline JSON cells (`["dev","lead"]`).
-   - Replaces string-serialized round-trip checks with fast recursive in-memory type-strict equality (`_strict_eq`).
-3. **Two-Stage Fuzzy Stateful Delta Engine (`delta_engine.py`):**
-   - **Safe Command Family Normalization:** Strips cosmetic flags (`-v`, `-vv`, `-q`, `--tb=...`, `--color=...`) while preserving scope and filter arguments (`-k`, target paths).
-   - **2-Stage Line Alignment:** Combines Stage-1 $O(N)$ skeleton normalization (`_SLOT_RE`) with Stage-2 `rapidfuzz` Levenshtein similarity so delta views fire reliably even when line numbers or timestamps shift between runs.
-   - **Canary Fault Rail:** Any error present in the previous run and still failing is guaranteed to remain visible under `STILL FAILING / ACTIVE ERRORS`.
-4. **Structured Traceback & Semantic Diff Pruning (`traceback_pruner.py`, `diff_engine.py`):**
-   - Collapses intermediate framework runs ($\ge 2$ frames in `site-packages`, `dist-packages`, `node_modules`, `<frozen`, `_pytest`, `starlette`, `fastapi`, etc.) for both Python and Node/JS stack traces while keeping 100% of the entrypoint, user frames, crash frame, and exception line.
-   - Runs prior to `_classify()` in `core.py` so intentionally omitted framework frames never trigger false `reverted_quality` rollbacks.
-   - Preserves all unified diff file headers (`diff --git`, `---`, `+++`), hunk headers (`@@ -a,b +c,d @@ [scope]`), and `+`/`-` edits while collapsing runs of $> 6$ unchanged context lines.
-5. **Targeted Context-Aware CCR v3 Retrieval (`__init__.py`):**
-   - Adds compute-on-read `section` slicing (`"errors"`, `"diff"`, `"summary"`, `"tail"`) and `context_lines` (`0–20`, default `3`) to `trimtok_retrieve`, cutting retrieval token usage by 77–90% with zero write-path latency or SQLite schema breaking changes.
-
-Full release history is maintained in [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
