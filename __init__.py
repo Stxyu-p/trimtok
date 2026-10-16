@@ -19,6 +19,7 @@ try:
     )
     from .delta_engine import clear_session as delta_clear_session
     from .guard import Deadline, VERBATIM_TOOLS
+    from .marker import is_important
 except ImportError:  # direct unit-test import
     from core import VERSION, compress_terminal
     from ccr import default_dir
@@ -28,6 +29,7 @@ except ImportError:  # direct unit-test import
     )
     from delta_engine import clear_session as delta_clear_session
     from guard import Deadline, VERBATIM_TOOLS
+    from marker import is_important
 
 _MAX_GREP_PATTERN_CHARS = 256
 _MAX_GREP_INPUT_CHARS = 1_000_000
@@ -42,7 +44,8 @@ RETRIEVE_SCHEMA = {
     "description": (
         "Retrieve the uncompressed original content of a previously folded or windowed "
         "tool result by its content reference: the short '#ref' shown in [tt:...] markers, "
-        "or a legacy 12-char hash. Supports optional line pagination (offset/limit) "
+        "or a legacy 12-char hash. Supports optional line pagination (offset/limit), "
+        "focused section slicing (errors/diff/summary/tail), "
         "and grep regex filtering to inspect specific details without flooding context."
     ),
     "parameters": {
@@ -51,6 +54,22 @@ RETRIEVE_SCHEMA = {
             "hash": {
                 "type": "string",
                 "description": "The content ref shown in the [tt:... #ref] marker (e.g. '#c1'), or a legacy hex hash.",
+            },
+            "section": {
+                "type": "string",
+                "enum": ["errors", "diff", "summary", "tail"],
+                "description": (
+                    "Optional focused section to retrieve: 'errors' (error lines ± context), "
+                    "'diff' (git/unified diff hunks ± context), 'summary' (stats + head/tail + top errors), "
+                    "or 'tail' (last N lines)."
+                ),
+            },
+            "context_lines": {
+                "type": "integer",
+                "description": (
+                    "Optional context lines around matched lines (0-20, default 3). "
+                    "Used with section='errors' or 'diff'."
+                ),
             },
             "offset": {
                 "type": "integer",
@@ -526,6 +545,125 @@ def _handle_retrieve(args: dict, **kw: Any) -> str:
 
     lines = content.splitlines()
     total_lines = len(lines)
+
+    section = str((args or {}).get("section") or "").strip().lower()
+    if section:
+        ctx_lines = max(0, min(20, int((args or {}).get("context_lines", 3))))
+        if section == "errors":
+            match_indices = [i for i, line in enumerate(lines) if is_important(line)]
+            if not match_indices:
+                _usage_retrieve(args, hit=True, ctx=ctx, mode="section_errors", matches=0)
+                return _ok({
+                    "section": "errors",
+                    "error_matches": 0,
+                    "total_lines": total_lines,
+                    "lines": "(no error lines detected)",
+                })
+            intervals: list[tuple[int, int]] = []
+            for idx in match_indices:
+                s = max(0, idx - ctx_lines)
+                e = min(total_lines, idx + ctx_lines + 1)
+                if not intervals:
+                    intervals.append((s, e))
+                else:
+                    last_s, last_e = intervals[-1]
+                    if s <= last_e:
+                        intervals[-1] = (last_s, max(last_e, e))
+                    else:
+                        intervals.append((s, e))
+            chunks: list[str] = []
+            returned_lines = 0
+            for s, e in intervals:
+                chunk_lines = [f"{i + 1}|{lines[i]}" for i in range(s, e)]
+                returned_lines += len(chunk_lines)
+                chunks.append("\n".join(chunk_lines))
+            formatted = "\n[...]\n".join(chunks)
+            _usage_retrieve(args, hit=True, ctx=ctx, mode="section_errors",
+                            matches=len(match_indices), returned=returned_lines, total=total_lines)
+            return _ok({
+                "section": "errors",
+                "error_matches": len(match_indices),
+                "returned_lines": returned_lines,
+                "total_lines": total_lines,
+                "lines": formatted,
+            })
+        if section == "diff":
+            diff_indices = []
+            diff_prefixes = ("diff --git ", "--- ", "+++ ", "index ", "similarity index ", "new file mode ", "deleted file mode ")
+            for i, line in enumerate(lines):
+                if line.startswith(diff_prefixes) or line.startswith("@@ "):
+                    diff_indices.append(i)
+                elif (line.startswith("+") and not line.startswith("+++")) or (line.startswith("-") and not line.startswith("---")):
+                    diff_indices.append(i)
+            if not diff_indices:
+                _usage_retrieve(args, hit=True, ctx=ctx, mode="section_diff", matches=0)
+                return _ok({
+                    "section": "diff",
+                    "diff_matches": 0,
+                    "total_lines": total_lines,
+                    "lines": "(no diff hunks or changes detected)",
+                })
+            intervals = []
+            for idx in diff_indices:
+                s = max(0, idx - ctx_lines)
+                e = min(total_lines, idx + ctx_lines + 1)
+                if not intervals:
+                    intervals.append((s, e))
+                else:
+                    last_s, last_e = intervals[-1]
+                    if s <= last_e:
+                        intervals[-1] = (last_s, max(last_e, e))
+                    else:
+                        intervals.append((s, e))
+            chunks = []
+            returned_lines = 0
+            for s, e in intervals:
+                chunk_lines = [f"{i + 1}|{lines[i]}" for i in range(s, e)]
+                returned_lines += len(chunk_lines)
+                chunks.append("\n".join(chunk_lines))
+            formatted = "\n[...]\n".join(chunks)
+            _usage_retrieve(args, hit=True, ctx=ctx, mode="section_diff",
+                            matches=len(diff_indices), returned=returned_lines, total=total_lines)
+            return _ok({
+                "section": "diff",
+                "diff_matches": len(diff_indices),
+                "returned_lines": returned_lines,
+                "total_lines": total_lines,
+                "lines": formatted,
+            })
+        if section == "summary":
+            error_indices = [i for i, line in enumerate(lines) if is_important(line)]
+            head_count = min(15, total_lines)
+            head_lines = [f"{i + 1}|{lines[i]}" for i in range(head_count)]
+            tail_start = max(head_count, total_lines - 25)
+            tail_lines = [f"{i + 1}|{lines[i]}" for i in range(tail_start, total_lines)]
+            top_errors = [f"{i + 1}|{lines[i]}" for i in error_indices[:20]]
+            _usage_retrieve(args, hit=True, ctx=ctx, mode="section_summary",
+                            errors=len(error_indices), total=total_lines)
+            return _ok({
+                "section": "summary",
+                "total_lines": total_lines,
+                "total_chars": len(content),
+                "error_lines_count": len(error_indices),
+                "head_lines": "\n".join(head_lines),
+                "tail_lines": "\n".join(tail_lines),
+                "top_errors": "\n".join(top_errors) if top_errors else "(none)",
+            })
+        if section == "tail":
+            limit = int((args or {}).get("limit") or 50)
+            cnt = max(1, min(1000, limit))
+            tail_start = max(0, total_lines - cnt)
+            tail_slice = [f"{tail_start + i + 1}|{line}" for i, line in enumerate(lines[tail_start:])]
+            _usage_retrieve(args, hit=True, ctx=ctx, mode="section_tail",
+                            returned=len(tail_slice), total=total_lines)
+            return _ok({
+                "section": "tail",
+                "returned_lines": len(tail_slice),
+                "total_lines": total_lines,
+                "lines": "\n".join(tail_slice),
+            })
+        return _err(f"Invalid section '{section}'. Allowed: 'errors', 'diff', 'summary', 'tail'")
+
     offset = (args or {}).get("offset")
     limit = (args or {}).get("limit")
     if offset is not None or limit is not None:
@@ -638,8 +776,11 @@ def _handle_ts_command(raw_args: str) -> str:
         return f"trimtok v{VERSION}: purged {purged} cached original files."
     if arg.startswith("retrieve"):
         h = arg.partition(" ")[2].strip()
-        return _handle_retrieve({"hash": h})
-    return "Usage: /trimtok [status|stats|usage|purge|retrieve <hash>]"
+        parts = h.split()
+        if len(parts) >= 2 and parts[1] in ("errors", "diff", "summary", "tail"):
+            return _handle_retrieve({"hash": parts[0], "section": parts[1]})
+        return _handle_retrieve({"hash": parts[0] if parts else ""})
+    return "Usage: /trimtok [status|stats|usage|purge|retrieve <hash> [section]]"
 
 
 def _on_session_reset(session_id: Any = None, **kw: Any) -> None:

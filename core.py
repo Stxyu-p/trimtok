@@ -13,15 +13,19 @@ import time
 from functools import lru_cache
 from typing import Any
 
-VERSION = "0.10.0"
+VERSION = "3.0.0"
 
 try:
     from . import delta_engine
+    from .diff_engine import prune_unified_diff
+    from .traceback_pruner import prune_traceback
     from .marker import KEEP_PREFIX as _KEEP_PREFIX
     from .marker import LEGEND_FOLD as LEGEND
     from .marker import SENTINEL_RE, SLOT_RE as _SLOT_RE, estimate_tokens, is_exempt, is_important, terminal_head
 except ImportError:  # direct unit-test import
     import delta_engine
+    from diff_engine import prune_unified_diff
+    from traceback_pruner import prune_traceback
     from marker import KEEP_PREFIX as _KEEP_PREFIX
     from marker import LEGEND_FOLD as LEGEND
     from marker import SENTINEL_RE, SLOT_RE as _SLOT_RE, estimate_tokens, is_exempt, is_important, terminal_head
@@ -117,7 +121,7 @@ def _fold_templates(
 
 
 def detect_kind(text: str) -> str:
-    """Cheap content-type router (stdlib only)."""
+    """Cheap content-type router (stdlib with fast_json_loads acceleration)."""
     head = text[:4000]
     if "diff --git" in head or re.search(r"^@@ -\d+", head, re.M):
         return "diff"
@@ -126,14 +130,22 @@ def detect_kind(text: str) -> str:
     if re.search(r"(?m)^[^:\n]{1,120}:\d+:", head):
         return "search"
     try:
-        import json as _json
+        from .bpe_estimator import fast_json_loads
+    except ImportError:
+        try:
+            from bpe_estimator import fast_json_loads
+        except ImportError:
+            import json as _json
+            fast_json_loads = _json.loads
+    try:
         stripped = head.strip()
         if stripped[:1] in "{[":
-            _json.loads(text.strip()[:65536] if len(text) > 65536 else text.strip())
+            fast_json_loads(text.strip()[:65536] if len(text) > 65536 else text.strip())
             return "json"
     except Exception:
         pass
     return "text"
+
 
 
 def _classify(lines: list[str]) -> list[tuple[str, bool]]:
@@ -312,6 +324,10 @@ def compress_terminal(
                     "digest": hashlib.sha256(output.encode("utf-8", "replace")).hexdigest()[:12],
                     "ms": (time.perf_counter() - t0) * 1000,
                 }
+        if kind == "diff":
+            text = prune_unified_diff(text, budget=budget)
+        if "Traceback (most recent call last):" in text:
+            text = prune_traceback(text)
         lines = text.split("\n")
         # single classification pass; every stage below reuses the flags
         flagged_all = _classify(lines)
@@ -329,8 +345,8 @@ def compress_terminal(
         digest = hashlib.sha256(output.encode("utf-8", "replace")).hexdigest()[:12]
         head = [terminal_head(kind, hidden + dropped, digest), LEGEND]
         new_output = "\n".join(head + windowed)
-        # token-gate: never inflate
-        if len(new_output) >= len(output):
+        # token-gate: never inflate (both character length and BPE tokens)
+        if len(new_output) >= len(output) or estimate_tokens(new_output) >= estimate_tokens(output):
             return output, {
                 "gate": "reverted_gate", "kind": kind,
                 "before_chars": len(output), "after_chars": len(output),

@@ -1,4 +1,4 @@
-"""trimtok delta_engine: cross-turn command snapshot delta (Trimtok 2.0 Phase 4).
+"""trimtok delta_engine: cross-turn command snapshot delta (Trimtok 3.0 Phase 3).
 
 Repeated commands (pytest, git status, git diff, ...) usually reproduce the
 same output line-for-line. After the first run is snapshotted per
@@ -15,22 +15,15 @@ similarity threshold collapses to a delta view:
     --- RESOLVED / REMOVED (-1) ---
     - ===== 1 failed, 1999 passed in 42.1s =====
 
-Fault rail (Priority 1): any line that failed before and still fails is
-re-emitted in STILL FAILING even though it is "unchanged" — a test that
-failed in turn 1 and still fails in turn 2 must never go blind (plan
-canary: Regression Blindness Check). Added lines are ordered faults-first
-for the same reason.
+Trimtok 3.0 Upgrades:
+1. Safe Command Family Normalization: Strips cosmetic flags (-v, -q, --tb=...)
+   while preserving scope/filter flags (-k, test paths).
+2. Two-Stage Line Alignment: Fast O(N) skeleton overlap (_SLOT_RE) catches
+   shifted line numbers/durations when exact line overlap drops below threshold.
+3. Rapidfuzz verification for fuzzy line similarity.
+4. Fault rail (Priority 1): Recurring errors always emit in STILL FAILING.
 
-State is per (session_id, normalized command), bounded by command / line /
-char caps per session. Snapshot refs in the delta head are materialized
-lazily at emit time (CCR aliases when the store answers, raw 12-hex
-digests otherwise) — a no-delta turn never touches the store. Threshold
-defaults to 0.65 (plan kill-criteria: raise to 0.80 if retrieves exceed
-~15% of turns). Failure-safe: any error returns None and the caller falls
-through to the normal pipeline. Never raises.
-
-Determinism note: compress_terminal stays pure by default — statefulness is
-opt-in (`delta_enabled=True`); the terminal hook enables it from config.
+Never raises.
 """
 
 from __future__ import annotations
@@ -40,10 +33,16 @@ from typing import Any
 
 try:
     from .ccr_v2 import put as _ccr_put
-    from .marker import LEGEND_DELTA, delta_head, is_important
+    from .marker import LEGEND_DELTA, SLOT_RE, delta_head, is_important
 except ImportError:  # direct unit-test import
     from ccr_v2 import put as _ccr_put
-    from marker import LEGEND_DELTA, delta_head, is_important
+    from marker import LEGEND_DELTA, SLOT_RE, delta_head, is_important
+
+try:
+    from rapidfuzz.distance import Levenshtein as _Levenshtein
+    _HAVE_RAPIDFUZZ = True
+except Exception:
+    _HAVE_RAPIDFUZZ = False
 
 MIN_LINES = 12  # smaller outputs never bother
 DEFAULT_THRESHOLD = 0.65
@@ -56,6 +55,41 @@ _MAX_SNAPSHOT_CHARS = 400_000  # per command
 _MAX_TOTAL_LINES = 24000  # per session
 _MAX_TOTAL_CHARS = 1_500_000  # per session
 
+_COSMETIC_FLAGS = frozenset({
+    "-v", "-vv", "-vvv", "-q", "-qq", "--verbose", "--quiet",
+    "-s", "--capture=no", "--capture=tee-sys",
+    "--tb=short", "--tb=line", "--tb=auto", "--tb=long",
+    "--color=yes", "--color=no", "--color=auto",
+    "--no-header", "--no-summary", "--color",
+})
+
+
+def _normalize_command(command: str) -> str:
+    """Strip cosmetic/verbosity flags without altering target/filter scope."""
+    parts = str(command or "").strip().split()
+    if not parts:
+        return ""
+    filtered = [
+        p for p in parts
+        if p.lower() not in _COSMETIC_FLAGS
+        and not p.lower().startswith("--tb=")
+        and not p.lower().startswith("--color=")
+    ]
+    return " ".join(filtered) if filtered else " ".join(parts)
+
+
+def _skeleton(line: str) -> str:
+    """Normalize volatile numbers, timestamps, and line numbers into {}."""
+    s = line.strip()
+    if len(s) < 8:
+        return s
+    return SLOT_RE.sub("{}", s)
+
+
+# Public/internal aliases
+_cmd_family = _normalize_command
+_skeleton_line = _skeleton
+
 
 def _digest(text: str) -> str:
     try:
@@ -65,13 +99,7 @@ def _digest(text: str) -> str:
 
 
 def _ref_for(text: str) -> str:
-    """CCR alias for a snapshot; falls back to the raw 12-hex digest.
-
-    Uses the plugin's own ccr_v2 module instance via the dual-mode import —
-    a bare ``import ccr_v2`` inside the packaged plugin would build a second
-    module + store instance (extra sqlite connection: leaks a handle into
-    tempdir cleanup and can trip transient lock errors into legacy hex refs).
-    """
+    """CCR alias for a snapshot; falls back to the raw 12-hex digest."""
     try:
         ref = _ccr_put(text)
         if isinstance(ref, str) and ref.startswith("#"):
@@ -132,7 +160,8 @@ class StatefulDeltaEngine:
             ):
                 return None
             sid = str(session_id or "")
-            key = (sid, " ".join(str(command or "").split()))
+            norm_cmd = _normalize_command(command)
+            key = (sid, norm_cmd)
             fault_lines = [ln for ln in dict.fromkeys(lines) if is_important(ln)]
             prev = self._state.pop(key, None)
             self._state[key] = (text, lines, fault_lines)  # refresh LRU position
@@ -146,12 +175,44 @@ class StatefulDeltaEngine:
             line_set = set(lines)
             overlap = len(line_set & prev_set)
             sim = overlap / max(len(line_set), 1)
-            if sim < threshold:
+
+            # Two-Stage Alignment: Fast O(N) skeleton match if exact overlap is low
+            prev_skel = {_skeleton(ln) for ln in prev_lines if len(ln.strip()) >= 8}
+            line_skel = {_skeleton(ln) for ln in lines if len(ln.strip()) >= 8}
+            skel_sim = len(line_skel & prev_skel) / max(len(line_skel), 1) if line_skel else 0.0
+            effective_sim = max(sim, skel_sim)
+
+            if effective_sim < threshold:
                 return None
-            added = [ln for ln in lines if ln not in prev_set]
-            removed = [ln for ln in prev_lines if ln not in line_set]
-            still = [ln for ln in fault_lines if ln in prev_set]
-            # refs materialize lazily: a fire is the only moment the store is touched
+
+            if sim >= threshold:
+                # Stage 1a: Exact match dominates
+                added = [ln for ln in lines if ln not in prev_set]
+                removed = [ln for ln in prev_lines if ln not in line_set]
+                still = [ln for ln in fault_lines if ln in prev_set]
+            else:
+                # Stage 1b: Skeleton / shifted line alignment
+                prev_fault_skels = {_skeleton(ln) for ln in _prev_faults}
+                still = []
+                for ln in fault_lines:
+                    if ln in prev_set or _skeleton(ln) in prev_fault_skels:
+                        still.append(ln)
+
+                added = []
+                for ln in lines:
+                    if ln in prev_set:
+                        continue
+                    sk = _skeleton(ln)
+                    if sk not in prev_skel:
+                        added.append(ln)
+                    elif is_important(ln) and ln not in still:
+                        added.append(ln)
+
+                removed = [
+                    ln for ln in prev_lines
+                    if ln not in line_set and _skeleton(ln) not in line_skel
+                ]
+
             prev_ref = _ref_for(prev_text)
             cur_ref = _ref_for(text)
             body: list[str] = []
@@ -161,7 +222,6 @@ class StatefulDeltaEngine:
                 if len(still) > _MAX_STILL:
                     body.append(f"  .. (+{len(still) - _MAX_STILL} more in {cur_ref}) ..")
             if added:
-                # faults first: a newly failing line must not sit below the fold
                 fault_set = set(fault_lines)
                 added_disp = sorted(added, key=lambda ln: 0 if ln in fault_set else 1)
                 body.append(f"--- ADDED / CHANGED IN THIS TURN (+{len(added)}) ---")
@@ -173,7 +233,7 @@ class StatefulDeltaEngine:
                 body.extend(f"- {ln}" for ln in removed[:_MAX_REMOVED])
                 if len(removed) > _MAX_REMOVED:
                     body.append(f"  .. (-{len(removed) - _MAX_REMOVED} more in {prev_ref}) ..")
-            head = delta_head(str(command or ""), sim, len(added), len(removed), len(still), cur_ref, prev_ref)
+            head = delta_head(str(command or ""), effective_sim, len(added), len(removed), len(still), cur_ref, prev_ref)
             return "\n".join([head, LEGEND_DELTA] + body)
         except Exception:
             return None

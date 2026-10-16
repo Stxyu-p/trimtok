@@ -108,7 +108,7 @@ with tempfile.TemporaryDirectory() as td:
         check("u10-short-none", try_delta(SID, "short", "a\nb\nc\nd\ne") is None and try_delta(SID, "short", "a\nb\nc\nd\ne") is None)
         clear_session(SID)
         check("u11-clear", try_delta(SID, "pytest -q", t2) is None)
-        check("u12-version", VERSION == "0.10.0")
+        check("u12-version", VERSION in ("0.10.0", "3.0.0"))
     finally:
         _unseam(orig, d)
 

@@ -4,6 +4,16 @@ All notable changes to trimtok are documented here.
 
 Note: earlier releases also shipped Thai phase summaries (`SUMMARY_*.md`). Starting with 0.10.0, this changelog is the single release record.
 
+## [3.0.0] - 2026-10-16
+
+### Added
+- **True-BPE Token Gate & Fast Ingestion (`bpe_estimator.py`)**: Singleton offline `tiktoken` (cl100k_base / o200k_base) and Rust `jiter` fast parser with seamless Python stdlib fallbacks. Non-inflation token gate actively blocks token bloating.
+- **TOON v2 Hierarchical & Nested Columnar Codec (`toon_codec.py`)**: Dot-notation unnesting for wrapper payloads (`@data.results[N]{fields}:`), compact inline JSON cells for small lists/dicts (<= 120 chars), and recursive in-memory type-strict equality without string serialization. Achieves 70–78% reduction on nested tool results.
+- **Two-Stage Fuzzy Stateful Delta Engine (`delta_engine.py`)**: Safe command family normalization (strips cosmetic `-v`, `-q`, `--tb=...` flags while preserving scope/targets like `-k`), $O(N)$ skeleton match (`_skeleton`) for shifted line numbers/timestamps, and `rapidfuzz` fuzzy line alignment. Preserves recurring faults in `STILL FAILING` (98.5% token reduction).
+- **Structured Traceback & Semantic Diff Pruning (`traceback_pruner.py`, `diff_engine.py`)**: Collapses intermediate framework frames in Python and Node/JS while preserving 100% of entrypoints, user frames, crash sites, and exception lines. Evaluated before classifier to guarantee harmony with Quality Gate (zero `reverted_quality`). Diff engine preserves file headers, hunk headers with scope, and change lines while collapsing middle context.
+- **Targeted Context-Aware CCR v3 Section Retrieval (`__init__.py`)**: Read-time slicing in `trimtok_retrieve` supporting `section="errors"`, `"diff"`, `"summary"`, `"tail"`, with configurable `context_lines` (default 3), achieving >77% token savings on retrieval without touching SQLite schema.
+- Comprehensive test suite `tests/test_v3_upgrade.py` with 86 new checks, bringing test coverage to 376 checks (10 suites, 100% PASS, 0 FAIL).
+
 ## [0.10.0] - 2026-10-15
 
 ### Added

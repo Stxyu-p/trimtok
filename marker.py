@@ -106,31 +106,19 @@ def headtail_head(kept_head: int, kept_tail: int, omitted: int, ref: str) -> str
 _HASH_RE = re.compile(r"(?:retrieve:|#)([0-9A-Za-z]{1,16})")
 
 
-# Byte-class token estimator (Step 3, stats-only): pure-stdlib, single-pass
-# C-level regex. Never used for gate decisions (gates compare len() only).
-# Accuracy target +-5-8% on Thai/CJK + symbol-heavy code vs chars//4.
-_RE_THAI_CJK = re.compile(r"[\u0e00-\u0e7f\u4e00-\u9fff\u3040-\u30ff]")
-_RE_PUNCT = re.compile(r"[{}()\[\].,;:=+\-*/<>!&|^~%@#$\\]")
+try:
+    from .bpe_estimator import estimate_bpe_tokens as _est_bpe
+except ImportError:
+    from bpe_estimator import estimate_bpe_tokens as _est_bpe
 
 
 def estimate_tokens(text: str) -> int:
-    """Rough BPE-ish token estimate without tiktoken. Never raises."""
+    """Accurate BPE token estimate via bpe_estimator. Never raises."""
     try:
-        if not text or not isinstance(text, str):
-            return 0
-        n_chars = len(text)
-        if n_chars == 0:
-            return 0
-        # ponytail: two findall scans, C-speed; <0.05ms typical, <1ms at 1MB.
-        # Upgrade path: single-pass translation table if profiling says so.
-        n_punct = len(_RE_PUNCT.findall(text))
-        if text.isascii():
-            return max(1, (n_chars - n_punct) // 4 + (n_punct * 2) // 3)
-        n_thai_cjk = len(_RE_THAI_CJK.findall(text))
-        n_rest = n_chars - n_thai_cjk - n_punct
-        return max(1, (n_rest // 4) + ((n_punct * 2) // 3) + int(n_thai_cjk * 0.9))
+        return _est_bpe(text)
     except Exception:
         return 0
+
 
 
 # W-guards: digit-dense identifiers. NOTE (learned the hard way):

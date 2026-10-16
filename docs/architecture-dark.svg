@@ -12,7 +12,7 @@
   <rect x="1" y="1" width="958" height="422" rx="11" fill="url(#grid)"/>
 
   <text x="32" y="34" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="12" letter-spacing="0.5" fill="#94a3b8">trimtok · context compression pipeline</text>
-  <text x="928" y="34" text-anchor="end" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#64748b">v0.10.0 · stdlib only · fail-open</text>
+  <text x="928" y="34" text-anchor="end" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#64748b">v3.0.0 · 100% offline · fail-open</text>
 
   <!-- flow connectors (drawn early, behind cards) -->
   <line x1="277" y1="154" x2="296" y2="154" stroke="#475569" stroke-width="1.2" stroke-dasharray="4 4" marker-end="url(#arr)"/>
@@ -25,13 +25,13 @@
     <rect x="32" y="52" width="245" height="204" rx="8" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
     <text x="50" y="82" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#22d3ee">STAGE 1 · TERMINAL</text>
     <text x="50" y="110" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="14" font-weight="600" fill="#e2e8f0">Terminal Reductions</text>
-    <text x="50" y="140" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• ANSI strip + hygiene</text>
-    <text x="50" y="160" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• repeat &amp; template fold</text>
-    <text x="50" y="180" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• fault rails · EN / TH / 5xx</text>
-    <text x="50" y="200" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• budgets + head / tail</text>
+    <text x="50" y="140" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• traceback &amp; semantic diff prune</text>
+    <text x="50" y="160" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• ANSI strip + repeat / Drain fold</text>
+    <text x="50" y="180" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• fault rails · EN / TH / HTTP 5xx</text>
+    <text x="50" y="200" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• budgets + balanced head / tail</text>
     <rect x="46" y="210" width="217" height="34" rx="6" fill="rgba(251,146,60,0.18)" stroke="#fb923c" stroke-width="1"/>
-    <text x="58" y="225" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#fdba74">command delta · cross-turn</text>
-    <text x="58" y="238" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#fdba74">sim ≥ 0.65 → still-failing</text>
+    <text x="58" y="225" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#fdba74">2-stage fuzzy command delta</text>
+    <text x="58" y="238" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#fdba74">skeleton + fuzzy → still-failing</text>
   </g>
 
   <!-- STAGE 2 · TOOL RESULTS -->
@@ -40,49 +40,49 @@
     <rect x="300" y="52" width="245" height="204" rx="8" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
     <text x="318" y="82" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#34d399">STAGE 2 · TOOL RESULTS</text>
     <text x="318" y="110" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="14" font-weight="600" fill="#e2e8f0">Dedup &amp; Re-Encode</text>
-    <text x="318" y="140" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• hygiene + normalization</text>
-    <text x="318" y="160" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• cross-turn fold + shingle</text>
+    <text x="318" y="140" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• fast JSON ingest + hygiene</text>
+    <text x="318" y="160" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• cross-turn fold + shingle dedup</text>
     <text x="318" y="180" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• scoped search grouping</text>
-    <text x="318" y="200" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• HEAD_TAIL stubs</text>
+    <text x="318" y="200" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• HEAD_TAIL stubs + turn mask</text>
     <rect x="314" y="210" width="217" height="34" rx="6" fill="rgba(6,78,59,0.35)" stroke="#34d399" stroke-width="1"/>
-    <text x="326" y="225" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#6ee7b7">JSON minify · TOON tables</text>
-    <text x="326" y="238" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#6ee7b7">lossless round-trip verified</text>
+    <text x="326" y="225" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#6ee7b7">TOON v2 hierarchical tables</text>
+    <text x="326" y="238" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#6ee7b7">dot-unnest · inline cells · lossless</text>
   </g>
 
   <!-- SAFETY RAIL · CCR -->
   <g>
     <rect x="568" y="52" width="360" height="204" rx="8" fill="#0f172a"/>
     <rect x="568" y="52" width="360" height="204" rx="8" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
-    <text x="586" y="82" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#a78bfa">SAFETY RAIL · CCR</text>
+    <text x="586" y="82" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#a78bfa">SAFETY RAIL · CCR v3</text>
     <text x="586" y="110" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="14" font-weight="600" fill="#e2e8f0">Content-Addressed Store</text>
     <text x="586" y="140" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• SHA-256 hash + short #ref aliases</text>
-    <text x="586" y="160" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• SQLite index + local files</text>
-    <text x="586" y="180" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• trimtok_retrieve · paginated + grep</text>
-    <text x="586" y="200" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• LRU + TTL eviction · 50 MB cap</text>
+    <text x="586" y="160" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• SQLite index + local files (50 MB cap)</text>
+    <text x="586" y="180" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• section slicing: errors / diff / summary / tail</text>
+    <text x="586" y="200" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• line pagination + safe regex grep</text>
     <rect x="582" y="210" width="332" height="34" rx="6" fill="rgba(76,29,149,0.3)" stroke="#a78bfa" stroke-width="1"/>
-    <text x="594" y="231" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#c4b5fd">exact roundtrip · every byte recoverable</text>
+    <text x="594" y="231" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#c4b5fd">compute-on-read · every byte recoverable</text>
   </g>
 
   <!-- GATES strip -->
   <g>
     <rect x="32" y="288" width="896" height="44" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1"/>
     <circle cx="50" cy="310" r="3" fill="#fbbf24"/>
-    <text x="62" y="314" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10.5" fill="#94a3b8">GATES · min size 2 KB · quality gate · never-inflate revert</text>
-    <circle cx="560" cy="310" r="3" fill="#fb7185"/>
-    <text x="572" y="314" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10.5" fill="#94a3b8">FAIL-OPEN · guard 50 ms → original passthrough</text>
+    <text x="62" y="314" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10.5" fill="#94a3b8">GATES · min 2 KB · BPE token non-inflation · fault-preservation quality gate</text>
+    <circle cx="575" cy="310" r="3" fill="#fb7185"/>
+    <text x="587" y="314" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10.5" fill="#94a3b8">FAIL-OPEN · guard 50 ms → original passthrough</text>
   </g>
 
   <!-- PERFORMANCE band -->
   <g>
     <rect x="32" y="344" width="896" height="58" rx="8" fill="#0f172a" stroke="#1e293b" stroke-width="1"/>
-    <text x="48" y="378" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" font-weight="600" fill="#64748b">PERFORMANCE</text>
-    <text x="200" y="378" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="12.5" font-weight="700" fill="#34d399">~1.0 ms</text>
-    <text x="262" y="378" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#64748b">terminal hook</text>
-    <text x="390" y="378" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="12.5" font-weight="700" fill="#34d399">0.6 ms</text>
-    <text x="444" y="378" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#64748b">delta step</text>
-    <text x="560" y="378" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="12.5" font-weight="700" fill="#34d399">&lt; 0.1 ms</text>
-    <text x="624" y="378" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#64748b">repeat path</text>
-    <text x="750" y="378" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="12.5" font-weight="700" fill="#34d399">0</text>
-    <text x="764" y="378" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#64748b">external deps</text>
+    <text x="48" y="378" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" font-weight="600" fill="#64748b">VERIFIED</text>
+    <text x="165" y="378" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="12.5" font-weight="700" fill="#34d399">88.3%</text>
+    <text x="218" y="378" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#64748b">stress cut</text>
+    <text x="330" y="378" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="12.5" font-weight="700" fill="#34d399">~1.6 ms</text>
+    <text x="394" y="378" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#64748b">terminal hook</text>
+    <text x="515" y="378" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="12.5" font-weight="700" fill="#34d399">0.01 ms</text>
+    <text x="580" y="378" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#64748b">warm CCR get</text>
+    <text x="705" y="378" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="12.5" font-weight="700" fill="#34d399">376 / 376</text>
+    <text x="782" y="378" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#64748b">checks pass</text>
   </g>
 </svg>

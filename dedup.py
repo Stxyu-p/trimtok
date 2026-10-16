@@ -7,6 +7,7 @@ Never raises.
 from __future__ import annotations
 
 import hashlib
+import json as _json
 import re
 import time
 from typing import Any
@@ -17,14 +18,15 @@ try:
     from .marker import LEGEND_TOON as _TOON_LEGEND
     from .scoped_search import group_search_hits
     from .toon_codec import fold_json_to_toon
-    from .bpe_estimator import estimate_bpe_gain
+    from .bpe_estimator import estimate_bpe_gain, fast_json_loads
 except ImportError:  # direct unit-test import
     from marker import KEEP_PREFIX as _KEEP_PREFIX
     from marker import SENTINEL_RE, SLOT_RE as _SLOT_RE, estimate_tokens, headtail_head, is_exempt, is_important, masked, seen_line, seen_lines, shingle_head, template_head, tool_head
     from marker import LEGEND_TOON as _TOON_LEGEND
     from scoped_search import group_search_hits
     from toon_codec import fold_json_to_toon
-    from bpe_estimator import estimate_bpe_gain
+    from bpe_estimator import estimate_bpe_gain, fast_json_loads
+
 _MIN_SPAN_LINES = 5
 _MIN_SPAN_CHARS = 200
 _MIN_LINE_CHARS = 40  # single repeated lines at/above this fold individually
@@ -509,9 +511,7 @@ def _fold_inner(
     if len(line) < 500 or line.lstrip()[:1] not in "{[":
         return line, 0
     try:
-        import json as _json
-
-        data = _json.loads(line)
+        data = fast_json_loads(line)
     except Exception:
         return line, 0
     saved = 0
@@ -571,7 +571,7 @@ def _index_json_inners(seen: dict, text: str, key: str) -> None:
 
     if text.lstrip()[:1] in "{[":
         try:
-            _walk(_json.loads(text))
+            _walk(fast_json_loads(text))
             return
         except Exception:
             pass
@@ -585,7 +585,7 @@ def _index_json_inners(seen: dict, text: str, key: str) -> None:
         s = ln.strip()
         if len(s) > 200 and s[:1] in "{[":
             try:
-                _walk(_json.loads(s))
+                _walk(fast_json_loads(s))
             except Exception:
                 continue
 
@@ -686,7 +686,7 @@ def minify_json(text: str) -> tuple[str, int]:
         if not stripped or stripped[0] not in "{[":
             return text, 0
         try:
-            data = _json.loads(stripped)
+            data = fast_json_loads(stripped)
             tail = ""
         except Exception:
             # W-D10: JSON envelope + trailing non-JSON tail — minify the

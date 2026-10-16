@@ -1,27 +1,23 @@
-"""trimtok toon_codec: lossless JSON→TOON columnar transcoder (Trimtok 2.0 Phase 3).
+"""trimtok toon_codec: lossless JSON→TOON columnar transcoder (Trimtok 3.0 Phase 2).
 
-Whole-document JSON arrays (or dict wrappers holding one) with a uniform,
-flat schema transcode to a compact columnar table:
+Whole-document JSON arrays (or nested dict wrappers holding one) with a uniform
+schema transcode to a compact columnar table:
 
     @prefix(~/)=C:\\work\\project\\src\\
-    @rows[3]{path,lines,status}:
+    @data.web[3]{path,lines,status}:
     ~/auth.py|120|ok
     ~/db.py|350|ok
     ~/cache.py|88|ok
 
 Zero loss of intelligence is the hard rail: every value survives, and the
-encoder refuses (returns the input untouched) unless
+encoder refuses (returns the input untouched) unless:
 
-  * the shape is supported (>=3 uniform flat dict rows, <=24 fields),
+  * the shape is supported (>=3 uniform dict rows, <=24 fields),
   * a full decode() round-trip reproduces the parsed document EXACTLY
-    (type-strict, key-order-insensitive compare),
+    (type-strict, key-order-insensitive in-memory compare),
   * the table is smaller than the input, and
-  * the estimated BPE gain clears MIN_BPE_GAIN (Token-Gain Gate — a fold
-    must be worth its tokens, not just its bytes).
+  * the estimated BPE gain clears MIN_BPE_GAIN (Token-Gain Gate).
 
-Deliberately conservative v1 (per plan kill-criteria "flat / 1-level only"):
-nested values, non-uniform key sets, or exotic wrapper names are left to the
-other folds. Extend only together with the same round-trip gate.
 Never raises — refusals return the original text.
 """
 
@@ -33,31 +29,28 @@ import re
 from typing import Any
 
 try:
-    from .bpe_estimator import estimate_bpe_gain
+    from .bpe_estimator import estimate_bpe_gain, fast_json_loads
 except ImportError:  # direct unit-test import
-    from bpe_estimator import estimate_bpe_gain
+    from bpe_estimator import estimate_bpe_gain, fast_json_loads
 
 MIN_ROWS = 3
 MAX_FIELDS = 24
 MIN_BPE_GAIN = 4
 _MIN_DOC_CHARS = 64
 _MAX_RAW_CELL = 160  # raw cells longer than this get quoted for safety
+_MAX_INLINE_JSON_CELL = 120
 
 _ALIAS = "~/"
-_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_HDR_RE = re.compile(r"^@([A-Za-z_][A-Za-z0-9_]*)\[(\d+)\]\{(.*)\}:$")
+_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
+_HDR_RE = re.compile(r"^@([A-Za-z_][A-Za-z0-9_.]*)\[(\d+)\]\{(.*)\}:$")
 _PREFIX_RE = re.compile(r"^@prefix\((.+?)\)=(.*)$")
 _NUM_RE = re.compile(r"^-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$")
 _BAD_RE = re.compile(r'["|\r\n]|^\s|\s$')
 _BAD_FIELD_CHARS = ',{}[]"|\r\n'
 
 
-def _encode_cell(v: Any, prefix: str, cache: dict | None = None) -> str:
-    """Render one scalar cell; strings quote whenever the raw form is ambiguous.
-
-    `cache` (optional, per-doc) memoizes string renderings — tool payloads
-    repeat the same values (statuses, flags) constantly.
-    """
+def _encode_cell(v: Any, prefix: str, cache: dict | None = None) -> str | None:
+    """Render one cell; returns None if the value cannot be safely encoded."""
     if v is None:
         return "null"
     tv = type(v)
@@ -78,6 +71,7 @@ def _encode_cell(v: Any, prefix: str, cache: dict | None = None) -> str:
             or (len(r) in (4, 5) and r in ("null", "true", "false"))
             or (r[0] in "-.0123456789" and _NUM_RE.match(r))
             or (not substituted and r[0] == "~")
+            or (r[0] in "[{")
         ):
             out = json.dumps(v, ensure_ascii=False)
         else:
@@ -91,6 +85,11 @@ def _encode_cell(v: Any, prefix: str, cache: dict | None = None) -> str:
         return str(v)
     if tv is float:
         return repr(v)
+    if tv in (list, dict):
+        s = json.dumps(v, separators=(",", ":"), ensure_ascii=False)
+        if len(s) <= _MAX_INLINE_JSON_CELL and "\n" not in s and "\r" not in s:
+            return s
+        return None
     return json.dumps(v, ensure_ascii=False)
 
 
@@ -110,6 +109,8 @@ def _decode_cell(t: str, prefix: str | None) -> Any:
         return True
     if c0 == "f" and t == "false":
         return False
+    if c0 in "[{":
+        return fast_json_loads(t)
     if c0 in "-.0123456789":
         if t.isdigit() or (c0 == "-" and t[1:].isdigit()):
             return int(t)
@@ -176,30 +177,70 @@ def _common_prefix(records: list[dict]) -> str:
     return ""
 
 
-def _encode_doc(data: Any) -> str | None:
-    """Build the TOON table text for a supported doc, or None."""
-    records: list[dict] | None = None
-    target: str | None = None
-    meta: dict = {}
+def _find_records(data: Any, max_depth: int = 3) -> tuple[list[dict] | None, str | None, dict]:
+    """Locate table records, dot-notation target path, and sibling meta dict."""
     if isinstance(data, list):
         if len(data) >= MIN_ROWS and all(isinstance(x, dict) for x in data):
-            records = data
-    elif isinstance(data, dict):
-        for k, v in data.items():
-            if (
-                records is None
-                and isinstance(v, list)
-                and len(v) >= MIN_ROWS
-                and all(isinstance(x, dict) for x in v)
-            ):
-                records = v
-                target = k
-            else:
-                meta[k] = v
-        if target is not None and not _NAME_RE.match(target):
+            return data, None, {}
+        return None, None, {}
+    if not isinstance(data, dict):
+        return None, None, {}
+
+    # Fast 1-level path (matches v1)
+    for k, v in data.items():
+        if isinstance(v, list) and len(v) >= MIN_ROWS and all(isinstance(x, dict) for x in v):
+            if _NAME_RE.match(k):
+                meta = {mk: mv for mk, mv in data.items() if mk != k}
+                return v, k, meta
+
+    # Multi-level search (e.g. data.web, results.items) up to max_depth
+    def _search(d: dict, path: list[str], depth: int):
+        if depth > max_depth:
             return None
+        for k, v in d.items():
+            if not isinstance(k, str) or "." in k or not _NAME_RE.match(k):
+                continue
+            cur_path = path + [k]
+            if isinstance(v, list) and len(v) >= MIN_ROWS and all(isinstance(x, dict) for x in v):
+                return v, ".".join(cur_path)
+            if isinstance(v, dict):
+                found = _search(v, cur_path, depth + 1)
+                if found is not None:
+                    return found
+        return None
+
+    found = _search(data, [], 1)
+    if found is not None:
+        recs, target_path = found
+
+        def _extract_meta(d: dict, parts: list[str]) -> dict:
+            out = {}
+            for k, v in d.items():
+                if k == parts[0]:
+                    if len(parts) == 1:
+                        continue
+                    if isinstance(v, dict):
+                        sub = _extract_meta(v, parts[1:])
+                        if sub:
+                            out[k] = sub
+                else:
+                    out[k] = v
+            return out
+
+        meta = _extract_meta(data, target_path.split("."))
+        return recs, target_path, meta
+
+    return None, None, {}
+
+
+def _encode_doc(data: Any) -> str | None:
+    """Build the TOON table text for a supported doc, or None."""
+    records, target, meta = _find_records(data)
     if records is None:
         return None
+    if target is not None and not _NAME_RE.match(target):
+        return None
+
     fields = list(dict.fromkeys(k for r in records for k in r.keys()))
     if not fields or len(fields) > MAX_FIELDS:
         return None
@@ -208,6 +249,7 @@ def _encode_doc(data: Any) -> str | None:
         return None
     if any(not k or any(c in k for c in _BAD_FIELD_CHARS) for k in fields):
         return None
+
     prefix = _common_prefix(records)
     used_prefix = False
     row_lines: list[str] = []
@@ -216,12 +258,14 @@ def _encode_doc(data: Any) -> str | None:
         cells = []
         for k in fields:
             v = r.get(k)
-            if v is not None and not isinstance(v, (str, int, float, bool)):
-                return None  # nested / unsupported value: flat-only v1
+            encoded_val = _encode_cell(v, prefix, enc_cache)
+            if encoded_val is None:
+                return None  # unsupported cell structure
             if prefix and isinstance(v, str) and v.startswith(prefix):
                 used_prefix = True
-            cells.append(_encode_cell(v, prefix, enc_cache))
+            cells.append(encoded_val)
         row_lines.append("|".join(cells))
+
     name = target or "rows"
     out: list[str] = []
     if used_prefix:
@@ -254,7 +298,7 @@ def toon_decode(text: str) -> Any:
                 prefix = m.group(2)
                 continue
             if line.startswith("@meta:"):
-                meta = json.loads(line[len("@meta:"):])
+                meta = fast_json_loads(line[len("@meta:"):])
                 if not isinstance(meta, dict):
                     raise ValueError("meta must be an object")
                 continue
@@ -268,9 +312,6 @@ def toon_decode(text: str) -> Any:
                 continue
         if fields is None:
             raise ValueError("row before header")
-        # Fast path: a plain split is exact whenever every cell is quote-free
-        # (cells containing "|" are always quoted by the encoder, so an
-        # over-count can only come from a quoted cell — fall back then).
         cells = line.split("|")
         if len(cells) != len(fields):
             cells = _split_cells(line)
@@ -288,20 +329,45 @@ def toon_decode(text: str) -> Any:
         raise ValueError("no header")
     if len(records) != count:
         raise ValueError("row count mismatch")
+
+    # Reconstruct nested target path if any (e.g. data.web)
     if meta:
         base: dict = dict(meta)
-        base[name] = records
+        parts = name.split(".")
+        cur = base
+        for p in parts[:-1]:
+            if p not in cur or not isinstance(cur[p], dict):
+                cur[p] = {}
+            cur = cur[p]
+        cur[parts[-1]] = records
         return base
     if name != "rows":
-        raise ValueError("unexpected table name without meta")
+        parts = name.split(".")
+        if len(parts) > 1:
+            base = {}
+            cur = base
+            for p in parts[:-1]:
+                cur[p] = {}
+                cur = cur[p]
+            cur[parts[-1]] = records
+            return base
+        return {name: records}
     return records
 
 
 def _strict_eq(a: Any, b: Any) -> bool:
-    """Type-strict, key-order-insensitive equality via canonical JSON dumps."""
-    return json.dumps(a, ensure_ascii=False, sort_keys=True) == json.dumps(
-        b, ensure_ascii=False, sort_keys=True
-    )
+    """Type-strict, key-order-insensitive equality in memory without json.dumps."""
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, dict):
+        if len(a) != len(b) or set(a.keys()) != set(b.keys()):
+            return False
+        return all(_strict_eq(a[k], b[k]) for k in a)
+    if isinstance(a, list):
+        if len(a) != len(b):
+            return False
+        return all(_strict_eq(x, y) for x, y in zip(a, b))
+    return a == b
 
 
 def fold_json_to_toon(raw_text: str) -> str:
@@ -317,7 +383,7 @@ def fold_json_to_toon(raw_text: str) -> str:
         s = raw_text.strip()
         if not (s.startswith(("{", "[")) and s.endswith(("}", "]"))):
             return raw_text
-        data = json.loads(s)
+        data = fast_json_loads(s)
         toon = _encode_doc(data)
         if toon is None or len(toon) >= len(s):
             return raw_text
@@ -328,3 +394,21 @@ def fold_json_to_toon(raw_text: str) -> str:
         return toon
     except Exception:
         return raw_text
+
+
+def encode(data: Any) -> str | None:
+    """Public helper to encode Python structure to TOON table."""
+    return _encode_doc(data)
+
+
+def decode(text: str) -> tuple[Any, Exception | None]:
+    """Public helper to decode TOON table; returns (data, error)."""
+    try:
+        return toon_decode(text), None
+    except Exception as e:
+        return None, e
+
+
+def strict_eq(a: Any, b: Any) -> bool:
+    """Public helper for type-strict, key-order-insensitive comparison."""
+    return _strict_eq(a, b)

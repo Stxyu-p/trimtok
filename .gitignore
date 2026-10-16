@@ -9,5 +9,6 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# Thai phase summaries stay local; the repo uses CHANGELOG.md
+# Thai phase summaries and plans stay local; the repo uses CHANGELOG.md
 SUMMARY_*.md
+PLAN_*.md
