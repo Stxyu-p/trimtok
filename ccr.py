@@ -21,12 +21,19 @@ _LOCK = threading.Lock()
 
 
 def default_dir() -> Path:
+    if os.environ.get("TRIMTOK_DATA_DIR"):
+        return Path(os.environ["TRIMTOK_DATA_DIR"]).expanduser()
     if os.environ.get("HERMES_HOME"):
         return Path(os.environ["HERMES_HOME"]) / "plugin-data" / "trimtok"
     try:
         from hermes_constants import get_hermes_home  # type: ignore
         return get_hermes_home() / "plugin-data" / "trimtok"
     except Exception:
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            win_hermes = Path(local_app_data) / "hermes"
+            if win_hermes.is_dir():
+                return win_hermes / "plugin-data" / "trimtok"
         return Path(os.path.expanduser("~")) / ".hermes" / "plugin-data" / "trimtok"
 
 

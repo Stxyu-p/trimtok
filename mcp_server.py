@@ -26,7 +26,7 @@ if _ROOT not in sys.path:
 import ccr_v2
 from core import VERSION, compress_terminal
 from dedup import compress_tool_result
-from __init__ import RETRIEVE_SCHEMA, _handle_retrieve, _handle_ts_command
+from __init__ import RETRIEVE_SCHEMA, _audit, _handle_retrieve, _handle_ts_command, _usage
 
 SERVER_INFO = {"name": "trimtok", "version": VERSION}
 FALLBACK_PROTOCOL = "2024-11-05"
@@ -109,7 +109,10 @@ def _tool_compress_terminal(args: dict[str, Any]) -> dict[str, Any]:
     command = str(args.get("command") or "")
     session_id = str(args.get("session_id") or "mcp")
     delta_enabled = bool(args.get("delta_enabled", True))
-    min_chars = int(args.get("min_chars", 2048))
+    try:
+        min_chars = max(128, min(1_000_000, int(args.get("min_chars", 2048))))
+    except (TypeError, ValueError):
+        min_chars = 2048
     compressed, stats = compress_terminal(
         command,
         output,
@@ -122,6 +125,8 @@ def _tool_compress_terminal(args: dict[str, Any]) -> dict[str, Any]:
         ref = ccr_v2.put(output)
         if ref and stats.get("digest"):
             compressed = compressed.replace(f"#{stats['digest']}", ref)
+        _audit({"hook": "mcp_terminal", "cmd": command[:120], **stats})
+    _usage({"hook": "terminal", "cmd": command[:120], "shape": stats.get("kind", "mixed"), **stats})
     return {
         "compressed": compressed,
         "ref": ref,
@@ -136,7 +141,10 @@ def _tool_compress_tool(args: dict[str, Any]) -> dict[str, Any]:
     tool_name = str(args.get("tool_name") or "tool")
     session_id = str(args.get("session_id") or "mcp")
     toon_enabled = bool(args.get("toon_enabled", True))
-    min_chars = int(args.get("min_chars", 2048))
+    try:
+        min_chars = max(128, min(1_000_000, int(args.get("min_chars", 2048))))
+    except (TypeError, ValueError):
+        min_chars = 2048
     compressed, stats = compress_tool_result(
         tool_name,
         result,
@@ -149,6 +157,8 @@ def _tool_compress_tool(args: dict[str, Any]) -> dict[str, Any]:
         ref = ccr_v2.put(result)
         if ref and stats.get("digest"):
             compressed = compressed.replace(f"#{stats['digest']}", ref)
+        _audit({"hook": "mcp_tool", "tool": tool_name[:120], **stats})
+    _usage({"hook": "tool", "tool": tool_name[:120], "shape": stats.get("kind", "tool"), **stats})
     return {
         "compressed": compressed,
         "ref": ref,
@@ -209,8 +219,8 @@ def handle(request: dict[str, Any]) -> dict[str, Any]:
         arguments = parameters.get("arguments") if isinstance(parameters.get("arguments"), dict) else {}
         try:
             result = handler(arguments)
-        except ValueError as exc:
-            return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
+        except Exception as exc:
+            return {"content": [{"type": "text", "text": f"{type(exc).__name__}: {exc}"}], "isError": True}
         return {
             "content": [
                 {"type": "text", "text": json.dumps(result, ensure_ascii=False)}
