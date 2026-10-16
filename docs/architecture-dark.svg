@@ -30,7 +30,7 @@
     <text x="20" y="32" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="600" fill="#58a6ff">STAGE 1: TERMINAL</text>
     <text x="20" y="58" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="15" font-weight="600" fill="#e6edf3">Core Reductions</text>
     <text x="20" y="86" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">• ANSI Sequence Stripping</text>
-    <text x="20" y="108" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">• Build Loop Dedup (Collapse)</text>
+    <text x="20" y="108" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">• Command Delta (Cross-Turn)</text>
     <text x="20" y="130" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">• Error Rail Guard (Preserved)</text>
     <text x="20" y="152" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">• Head / Tail Windowing</text>
   </g>
@@ -41,10 +41,10 @@
     <rect width="220" height="4" rx="2" fill="url(#accentGrad)"/>
     <text x="20" y="32" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="600" fill="#3fb950">STAGE 2: TOOL RESULTS</text>
     <text x="20" y="58" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="15" font-weight="600" fill="#e6edf3">Cross-Turn Dedup</text>
-    <text x="20" y="86" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">• 64-char Normalized Index</text>
+    <text x="20" y="86" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">• Scoped Search Grouping</text>
     <text x="20" y="108" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">• Turn-Aware Pointer Fold</text>
     <text x="20" y="130" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">• Search Path Collapsing</text>
-    <text x="20" y="152" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">• Safe JSON Minification</text>
+    <text x="20" y="152" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">• JSON Minify + TOON</text>
   </g>
 
   <!-- Stage 3 / CCR -->
@@ -63,10 +63,10 @@
   <g transform="translate(40, 250)">
     <rect width="800" height="60" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1"/>
     <text x="40" y="36" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="600" fill="#8b949e">PERFORMANCE PROFILE</text>
-    <text x="240" y="36" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="14" font-weight="700" fill="#3fb950">~1.3 ms</text>
+    <text x="240" y="36" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="14" font-weight="700" fill="#3fb950">~1.0 ms</text>
     <text x="300" y="36" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">Terminal Hook</text>
     <text x="430" y="36" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="14" font-weight="700" fill="#3fb950">&lt; 0.1 ms</text>
-    <text x="500" y="36" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">Tool Result Hook</text>
+    <text x="500" y="36" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">Repeat Passthrough</text>
     <text x="630" y="36" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="14" font-weight="700" fill="#3fb950">0</text>
     <text x="650" y="36" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">External Dependencies</text>
   </g>
