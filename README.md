@@ -66,21 +66,6 @@ Against plain forwarding (no compression layer):
 | A failing test line | scrolls away in bulk output | kept verbatim by fault rails, always |
 | Restoring an original | not available | one `trimtok_retrieve` call, paginated and grep-filtered |
 
-```mermaid
-flowchart LR
-    A[Terminal output] --> B[ANSI strip and hygiene]
-    B --> C[Repeat and template fold]
-    C --> D[Command delta vs previous run]
-    H[Tool result] --> I[Hygiene and normalization]
-    I --> J[Cross-turn fold and scoped search]
-    J --> K[JSON minify and TOON tables]
-    D --> E[Budget and quality gates]
-    K --> E
-    E --> F[CCR store and marker]
-    F --> M[Model context]
-    F -. ref .-> R[trimtok_retrieve]
-```
-
 Decision rules:
 
 | Rule | Behavior |
@@ -180,7 +165,7 @@ Settings under `plugins.entries.trimtok.settings` in the Hermes `config.yaml`:
 | `ccr_max_bytes` | int | 52428800 | store byte budget (50 MB) |
 | `ccr_ttl_hours` | int | 24 | original retention window |
 
-Commands:
+### Commands
 
 | Command | What it does |
 | :--- | :--- |
@@ -191,19 +176,29 @@ Commands:
 
 ## Installation
 
-| Platform | Command |
-| :--- | :--- |
-| Windows (PowerShell) | `git clone https://github.com/Stxyu-p/trimtok.git "$env:LOCALAPPDATA\hermes\plugins\trimtok"` |
-| Linux / macOS | `git clone https://github.com/Stxyu-p/trimtok.git ~/.hermes/plugins/trimtok` |
+Clone into the Hermes plugins directory. Windows (PowerShell):
+
+```powershell
+git clone https://github.com/Stxyu-p/trimtok.git "$env:LOCALAPPDATA\hermes\plugins\trimtok"
+```
+
+Linux / macOS:
+
+```bash
+git clone https://github.com/Stxyu-p/trimtok.git ~/.hermes/plugins/trimtok
+```
+
+Enable the plugin:
+
+```bash
+hermes plugins enable trimtok
+```
 
 Quick start:
 
-| Step | Action |
-| :--- | :--- |
-| 1 | Clone the repository into the Hermes plugins directory (table above). |
-| 2 | Enable the plugin: `hermes plugins enable trimtok` |
-| 3 | Use Hermes as usual; heavy outputs compress on their way to the model. |
-| 4 | Restore an original with `trimtok_retrieve` and its `#ref`, or `/trimtok retrieve <ref>`. |
+1. Clone and enable the plugin with the commands above.
+2. Use Hermes as usual; heavy outputs compress on their way to the model.
+3. Restore an original with `trimtok_retrieve` and its `#ref`, or `/trimtok retrieve <ref>`.
 
 ## What is new
 
