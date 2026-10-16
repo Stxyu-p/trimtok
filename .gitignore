@@ -3,12 +3,10 @@ __pycache__/
 *$py.class
 *.so
 .pytest_cache/
+.ruff_cache/
+.venv/
 .coverage
 htmlcov/
 *.log
 .DS_Store
 Thumbs.db
-
-# Thai phase summaries and plans stay local; the repo uses CHANGELOG.md
-SUMMARY_*.md
-PLAN_*.md

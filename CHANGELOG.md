@@ -2,8 +2,6 @@
 
 All notable changes to trimtok are documented here.
 
-Note: earlier releases also shipped Thai phase summaries (`SUMMARY_*.md`). Starting with 0.10.0, this changelog is the single release record.
-
 ## [3.0.0] - 2026-10-16
 
 ### Added
