@@ -114,8 +114,11 @@ class FastCCRStore:
     def _mem_refresh(self, sha12: str, content: str) -> None:
         self._mem[sha12] = content
         self._mem.move_to_end(sha12)
-        if len(self._mem) > self.max_mem_items:
-            self._mem.popitem(last=False)
+        while len(self._mem) > self.max_mem_items:
+            evicted_sha, _ = self._mem.popitem(last=False)
+            evicted_alias = self._sha_alias.pop(evicted_sha, None)
+            if evicted_alias:
+                self._alias_mem.pop(evicted_alias, None)
 
     def _legacy_ref(self, content: str) -> str:
         digest = _legacy.put(content, dir=self.base)

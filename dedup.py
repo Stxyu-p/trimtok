@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json as _json
 import re
+import threading
 import time
 from typing import Any
 
@@ -55,21 +56,23 @@ _TS_SHORT_RE = re.compile(r"(?<![\d:])\d{1,2}:\d{2}:\d{2}(?![\d:])")
 #                  "turns": {turn_id: {"hashes": [raw digests in order],
 #                                      "masked": bool}}}
 _SEEN: dict[str, dict] = {}
+_SEEN_LOCK = threading.RLock()
 
 
 def _seen(session_id: str) -> dict:
     key = session_id or "default"
-    entry = _SEEN.get(key)
-    if entry is None:
-        entry = {
-            "spans": [], "span_chars": 0, "lines": {}, "raw": set(), "turns": {}
-        }
-        _SEEN[key] = entry
-    if "span_chars" not in entry:
-        entry["span_chars"] = sum(len(text) for _, text in entry["spans"])
-    if "turns" not in entry:
-        entry["turns"] = {}
-    return entry
+    with _SEEN_LOCK:
+        entry = _SEEN.get(key)
+        if entry is None:
+            entry = {
+                "spans": [], "span_chars": 0, "lines": {}, "raw": set(), "turns": {}
+            }
+            _SEEN[key] = entry
+        if "span_chars" not in entry:
+            entry["span_chars"] = sum(len(text) for _, text in entry["spans"])
+        if "turns" not in entry:
+            entry["turns"] = {}
+        return entry
 
 
 _MASK_KEEP_TURNS = 2
@@ -82,13 +85,14 @@ def note_turn(text: str, digest: str, session_id: str = "", turn_id: str = "") -
     if not turn_id:
         return
     try:
-        turns = _seen(session_id)["turns"]
-        bucket = turns.get(turn_id)
-        if bucket is None:
-            bucket = {"hashes": [], "masked": False}
-            turns[turn_id] = bucket
-        if digest not in bucket["hashes"]:
-            bucket["hashes"].append(digest)
+        with _SEEN_LOCK:
+            turns = _seen(session_id)["turns"]
+            bucket = turns.get(turn_id)
+            if bucket is None:
+                bucket = {"hashes": [], "masked": False}
+                turns[turn_id] = bucket
+            if digest not in bucket["hashes"]:
+                bucket["hashes"].append(digest)
     except Exception:
         pass
 
@@ -104,31 +108,32 @@ def expire_old_turns(
     Returns expired turn count.
     """
     try:
-        seen = _seen(session_id)
-        turns = seen.get("turns", {})
-        ids = list(turns.keys())
-        if len(ids) <= keep_turns:
-            return 0
-        old_ids = ids[: len(ids) - keep_turns]
-        doomed: set[str] = set()
-        for tid in old_ids:
-            doomed.update(turns.get(tid, {}).get("hashes", []))
-            del turns[tid]
-        if not doomed:
+        with _SEEN_LOCK:
+            seen = _seen(session_id)
+            turns = seen.get("turns", {})
+            ids = list(turns.keys())
+            if len(ids) <= keep_turns:
+                return 0
+            old_ids = ids[: len(ids) - keep_turns]
+            doomed: set[str] = set()
+            for tid in old_ids:
+                doomed.update(turns.get(tid, {}).get("hashes", []))
+                del turns[tid]
+            if not doomed:
+                return len(old_ids)
+            kept_spans = []
+            removed_chars = 0
+            for span_hash, span_text in seen["spans"]:
+                if span_hash in doomed:
+                    removed_chars += len(span_text)
+                else:
+                    kept_spans.append((span_hash, span_text))
+            seen["spans"] = kept_spans
+            seen["span_chars"] = max(0, seen["span_chars"] - removed_chars)
+            for line, owner in list(seen["lines"].items()):
+                if owner in doomed:
+                    del seen["lines"][line]
             return len(old_ids)
-        kept_spans = []
-        removed_chars = 0
-        for span_hash, span_text in seen["spans"]:
-            if span_hash in doomed:
-                removed_chars += len(span_text)
-            else:
-                kept_spans.append((span_hash, span_text))
-        seen["spans"] = kept_spans
-        seen["span_chars"] = max(0, seen["span_chars"] - removed_chars)
-        for line, owner in list(seen["lines"].items()):
-            if owner in doomed:
-                del seen["lines"][line]
-        return len(old_ids)
     except Exception:
         return 0
 
@@ -603,35 +608,37 @@ def remember(text: str, session_id: str = "", owner: str | None = None) -> str:
     """
     if not isinstance(text, str):
         return owner or ""
-    seen = _seen(session_id)
-    corpus = seen["spans"]
     key = owner or hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]
-    if any(eh == key for eh, _ in corpus):
-        return key
     if len(text) > _MAX_SPAN_CHARS:
         return key
-    while corpus and (
-        len(corpus) >= _MAX_SPANS
-        or seen["span_chars"] + len(text) > _MAX_SPAN_CHARS
-    ):
-        old_hash, old_text = corpus.pop(0)
-        seen["span_chars"] = max(0, seen["span_chars"] - len(old_text))
-        _drop_indexed_lines(seen, old_hash)
-    corpus.append((key, text))
-    seen["span_chars"] += len(text)
-    # index every long verbatim line (incl. lines inside JSON string fields)
-    # so later results fold against earlier ones; first occurrence stays verbatim
-    for ln in text.split("\n"):
-        _index_long_line(seen, ln, key)
-    # JSON string fields: index their inner lines too (envelope differs,
-    # content repeats — e.g. SKILL.md loaded twice, once minified once not).
-    # Tolerates a trailing non-JSON tail via _index_json_inners (W-D10).
-    _index_json_inners(seen, text, key)
+    with _SEEN_LOCK:
+        seen = _seen(session_id)
+        corpus = seen["spans"]
+        if any(eh == key for eh, _ in corpus):
+            return key
+        while corpus and (
+            len(corpus) >= _MAX_SPANS
+            or seen["span_chars"] + len(text) > _MAX_SPAN_CHARS
+        ):
+            old_hash, old_text = corpus.pop(0)
+            seen["span_chars"] = max(0, seen["span_chars"] - len(old_text))
+            _drop_indexed_lines(seen, old_hash)
+        corpus.append((key, text))
+        seen["span_chars"] += len(text)
+        # index every long verbatim line (incl. lines inside JSON string fields)
+        # so later results fold against earlier ones; first occurrence stays verbatim
+        for ln in text.split("\n"):
+            _index_long_line(seen, ln, key)
+        # JSON string fields: index their inner lines too (envelope differs,
+        # content repeats — e.g. SKILL.md loaded twice, once minified once not).
+        # Tolerates a trailing non-JSON tail via _index_json_inners (W-D10).
+        _index_json_inners(seen, text, key)
     return key
 
 
 def clear_session(session_id: str = "") -> None:
-    _SEEN.pop(session_id or "default", None)
+    with _SEEN_LOCK:
+        _SEEN.pop(session_id or "default", None)
 
 
 def mask_old_turns(
@@ -650,24 +657,25 @@ def mask_old_turns(
     """
     out: dict[str, str] = {}
     try:
-        seen = _seen(session_id)
-        turns = seen.get("turns", {})
-        ids = list(turns.keys())
-        if current_turn in ids:
-            cutoff = ids.index(current_turn) - keep_turns
-            old_ids = ids[: cutoff + 1] if cutoff >= 0 else []
-        else:
-            old_ids = ids[:-keep_turns] if len(ids) > keep_turns else []
-        for tid in old_ids:
-            bucket = turns.get(tid, {})
-            if bucket.get("masked"):
-                continue
-            for digest in bucket.get("hashes", []):
-                original = (store or {}).get(digest, "")
-                if not original or len(original) < _MASK_MIN_CHARS:
+        with _SEEN_LOCK:
+            seen = _seen(session_id)
+            turns = seen.get("turns", {})
+            ids = list(turns.keys())
+            if current_turn in ids:
+                cutoff = ids.index(current_turn) - keep_turns
+                old_ids = ids[: cutoff + 1] if cutoff >= 0 else []
+            else:
+                old_ids = ids[:-keep_turns] if len(ids) > keep_turns else []
+            for tid in old_ids:
+                bucket = turns.get(tid, {})
+                if bucket.get("masked"):
                     continue
-                out[digest] = mask_summary(original, digest, len(original))
-            bucket["masked"] = True
+                for digest in bucket.get("hashes", []):
+                    original = (store or {}).get(digest, "")
+                    if not original or len(original) < _MASK_MIN_CHARS:
+                        continue
+                    out[digest] = mask_summary(original, digest, len(original))
+                bucket["masked"] = True
     except Exception:
         pass
     return out

@@ -17,6 +17,7 @@ VERSION = "3.0.0"
 
 try:
     from . import delta_engine
+    from .bpe_estimator import fast_json_loads
     from .diff_engine import prune_unified_diff
     from .traceback_pruner import prune_traceback
     from .marker import KEEP_PREFIX as _KEEP_PREFIX
@@ -24,6 +25,7 @@ try:
     from .marker import SENTINEL_RE, SLOT_RE as _SLOT_RE, estimate_tokens, is_exempt, is_important, terminal_head
 except ImportError:  # direct unit-test import
     import delta_engine
+    from bpe_estimator import fast_json_loads
     from diff_engine import prune_unified_diff
     from traceback_pruner import prune_traceback
     from marker import KEEP_PREFIX as _KEEP_PREFIX
@@ -129,14 +131,6 @@ def detect_kind(text: str) -> str:
         return "log"
     if re.search(r"(?m)^[^:\n]{1,120}:\d+:", head):
         return "search"
-    try:
-        from .bpe_estimator import fast_json_loads
-    except ImportError:
-        try:
-            from bpe_estimator import fast_json_loads
-        except ImportError:
-            import json as _json
-            fast_json_loads = _json.loads
     try:
         stripped = head.strip()
         if stripped[:1] in "{[":
@@ -325,9 +319,8 @@ def compress_terminal(
                     "ms": (time.perf_counter() - t0) * 1000,
                 }
         if kind == "diff":
-            text = prune_unified_diff(text, budget=budget)
-        if "Traceback (most recent call last):" in text:
-            text = prune_traceback(text)
+            text = prune_unified_diff(text, budget=0)
+        text = prune_traceback(text)
         lines = text.split("\n")
         # single classification pass; every stage below reuses the flags
         flagged_all = _classify(lines)
@@ -345,8 +338,10 @@ def compress_terminal(
         digest = hashlib.sha256(output.encode("utf-8", "replace")).hexdigest()[:12]
         head = [terminal_head(kind, hidden + dropped, digest), LEGEND]
         new_output = "\n".join(head + windowed)
+        tokens_before = estimate_tokens(output)
+        tokens_after = estimate_tokens(new_output)
         # token-gate: never inflate (both character length and BPE tokens)
-        if len(new_output) >= len(output) or estimate_tokens(new_output) >= estimate_tokens(output):
+        if len(new_output) >= len(output) or tokens_after >= tokens_before:
             return output, {
                 "gate": "reverted_gate", "kind": kind,
                 "before_chars": len(output), "after_chars": len(output),
@@ -368,8 +363,8 @@ def compress_terminal(
                     "gate": "ok", "kind": kind, "digest": digest,
                     "before_chars": len(output), "after_chars": len(new_output),
                     "saved_chars": len(output) - len(new_output),
-                    "est_tokens_before": estimate_tokens(output),
-                    "est_tokens_after": estimate_tokens(new_output),
+                    "est_tokens_before": tokens_before,
+                    "est_tokens_after": tokens_after,
                     "hidden_lines": hidden, "dropped_lines": dropped,
                     "partial": True, "omitted_errors": len(missing),
                     "ms": (time.perf_counter() - t0) * 1000,
@@ -384,8 +379,8 @@ def compress_terminal(
             "gate": "ok", "kind": kind, "digest": digest,
             "before_chars": len(output), "after_chars": len(new_output),
             "saved_chars": len(output) - len(new_output),
-            "est_tokens_before": estimate_tokens(output),
-            "est_tokens_after": estimate_tokens(new_output),
+            "est_tokens_before": tokens_before,
+            "est_tokens_after": tokens_after,
             "hidden_lines": hidden, "dropped_lines": dropped,
             "ms": (time.perf_counter() - t0) * 1000,
         }

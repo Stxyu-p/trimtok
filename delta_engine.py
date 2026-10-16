@@ -28,7 +28,9 @@ Never raises.
 
 from __future__ import annotations
 
+import difflib
 import hashlib
+import threading
 from typing import Any
 
 try:
@@ -46,6 +48,8 @@ except Exception:
 
 MIN_LINES = 12  # smaller outputs never bother
 DEFAULT_THRESHOLD = 0.65
+_FUZZY_LINE_SIM_MIN = 0.82
+_MAX_FUZZY_CANDIDATES = 250
 _MAX_ADDED = 40
 _MAX_REMOVED = 15
 _MAX_STILL = 25
@@ -86,6 +90,17 @@ def _skeleton(line: str) -> str:
     return SLOT_RE.sub("{}", s)
 
 
+def _line_similarity(a: str, b: str) -> float:
+    """Stage-2 normalized Levenshtein similarity via rapidfuzz (or difflib fallback)."""
+    if a == b:
+        return 1.0
+    if not a or not b:
+        return 0.0
+    if _HAVE_RAPIDFUZZ:
+        return float(_Levenshtein.normalized_similarity(a, b))
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
 # Public/internal aliases
 _cmd_family = _normalize_command
 _skeleton_line = _skeleton
@@ -114,14 +129,16 @@ class StatefulDeltaEngine:
     def __init__(self) -> None:
         # (session, cmd) -> (raw_text, lines, unique_fault_lines)
         self._state: dict[tuple[str, str], tuple[str, list[str], list[str]]] = {}
+        self._lock = threading.RLock()
 
     def clear(self, session_id: str = "") -> None:
         sid = str(session_id or "")
-        if not sid:
-            self._state.clear()
-            return
-        for key in [k for k in self._state if k[0] == sid]:
-            self._state.pop(key, None)
+        with self._lock:
+            if not sid:
+                self._state.clear()
+                return
+            for key in [k for k in self._state if k[0] == sid]:
+                self._state.pop(key, None)
 
     def _evict(self, sid: str) -> None:
         keys = [k for k in self._state if k[0] == sid]
@@ -163,9 +180,10 @@ class StatefulDeltaEngine:
             norm_cmd = _normalize_command(command)
             key = (sid, norm_cmd)
             fault_lines = [ln for ln in dict.fromkeys(lines) if is_important(ln)]
-            prev = self._state.pop(key, None)
-            self._state[key] = (text, lines, fault_lines)  # refresh LRU position
-            self._evict(sid)
+            with self._lock:
+                prev = self._state.pop(key, None)
+                self._state[key] = (text, lines, fault_lines)  # refresh LRU position
+                self._evict(sid)
             if prev is None:
                 return None
             prev_text, prev_lines, _prev_faults = prev
@@ -176,11 +194,29 @@ class StatefulDeltaEngine:
             overlap = len(line_set & prev_set)
             sim = overlap / max(len(line_set), 1)
 
-            # Two-Stage Alignment: Fast O(N) skeleton match if exact overlap is low
+            # Stage 1b: Fast O(N) skeleton match if exact overlap is low
             prev_skel = {_skeleton(ln) for ln in prev_lines if len(ln.strip()) >= 8}
             line_skel = {_skeleton(ln) for ln in lines if len(ln.strip()) >= 8}
             skel_sim = len(line_skel & prev_skel) / max(len(line_skel), 1) if line_skel else 0.0
             effective_sim = max(sim, skel_sim)
+
+            # Stage 2: Bounded Rapidfuzz Levenshtein verification for mutated lines
+            fuzzy_matched_cur: set[str] = set()
+            fuzzy_matched_prev: set[str] = set()
+            if effective_sim < threshold and len(line_skel) <= _MAX_FUZZY_CANDIDATES and len(prev_skel) <= _MAX_FUZZY_CANDIDATES:
+                unmatched_cur = [ln for ln in line_set if ln not in prev_set and _skeleton(ln) not in prev_skel and len(ln.strip()) >= 8]
+                unmatched_prev = [ln for ln in prev_set if ln not in line_set and _skeleton(ln) not in line_skel and len(ln.strip()) >= 8]
+                for cln in unmatched_cur:
+                    c_skel = _skeleton(cln)
+                    for pln in unmatched_prev:
+                        if abs(len(cln) - len(pln)) <= max(16, len(cln) // 4):
+                            if _line_similarity(c_skel, _skeleton(pln)) >= _FUZZY_LINE_SIM_MIN:
+                                fuzzy_matched_cur.add(cln)
+                                fuzzy_matched_prev.add(pln)
+                                break
+                if fuzzy_matched_cur:
+                    fuzzy_sim = (len(line_skel & prev_skel) + len(fuzzy_matched_cur)) / max(len(line_skel), 1)
+                    effective_sim = max(effective_sim, fuzzy_sim)
 
             if effective_sim < threshold:
                 return None
@@ -191,16 +227,16 @@ class StatefulDeltaEngine:
                 removed = [ln for ln in prev_lines if ln not in line_set]
                 still = [ln for ln in fault_lines if ln in prev_set]
             else:
-                # Stage 1b: Skeleton / shifted line alignment
+                # Stage 1b / Stage 2: Skeleton & fuzzy line alignment
                 prev_fault_skels = {_skeleton(ln) for ln in _prev_faults}
                 still = []
                 for ln in fault_lines:
-                    if ln in prev_set or _skeleton(ln) in prev_fault_skels:
+                    if ln in prev_set or _skeleton(ln) in prev_fault_skels or ln in fuzzy_matched_cur:
                         still.append(ln)
 
                 added = []
                 for ln in lines:
-                    if ln in prev_set:
+                    if ln in prev_set or ln in fuzzy_matched_cur:
                         continue
                     sk = _skeleton(ln)
                     if sk not in prev_skel:
@@ -210,7 +246,7 @@ class StatefulDeltaEngine:
 
                 removed = [
                     ln for ln in prev_lines
-                    if ln not in line_set and _skeleton(ln) not in line_skel
+                    if ln not in line_set and _skeleton(ln) not in line_skel and ln not in fuzzy_matched_prev
                 ]
 
             prev_ref = _ref_for(prev_text)

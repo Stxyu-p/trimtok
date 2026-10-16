@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 
 _DIFF_GIT_RE = re.compile(r"^diff --git a/.* b/.*")
-_HUNK_HDR_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@.*")
+_HUNK_HDR_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@.*", re.M)
 _FILE_HDR_PREFIXES = ("--- ", "+++ ", "index ", "new file mode", "deleted file mode", "similarity index", "rename from", "rename to")
 
 _MIN_UNCHANGED_RUN = 6
@@ -63,6 +63,16 @@ def prune_unified_diff(text: str, budget: int = 200) -> str:
                 out.append(line)
 
         _flush_unchanged()
+        if budget > 0 and len(out) > budget:
+            head_keep = max(1, budget - max(2, budget // 5))
+            tail_keep = max(1, budget - head_keep)
+            omitted_lines = len(out) - head_keep - tail_keep
+            if omitted_lines > 0:
+                out = (
+                    out[:head_keep]
+                    + [f"  [... {omitted_lines} diff lines omitted ...]"]
+                    + out[-tail_keep:]
+                )
         res = "\n".join(out)
         return res if len(res) < len(text) else text
     except Exception:

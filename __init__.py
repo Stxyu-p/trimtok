@@ -496,6 +496,41 @@ def _parse_ref(raw: Any) -> str:
     return re.sub(r"[^0-9A-Za-z]", "", ref)[:16]
 
 
+def _safe_int(val: Any, default: int) -> int:
+    try:
+        if val is None or isinstance(val, bool):
+            return default
+        return int(val)
+    except Exception:
+        return default
+
+
+def _render_context_intervals(
+    lines: list[str], match_indices: list[int], ctx_lines: int
+) -> tuple[str, int]:
+    """Merge overlapping [idx - ctx_lines, idx + ctx_lines + 1] windows and render L|line chunks."""
+    total_lines = len(lines)
+    intervals: list[tuple[int, int]] = []
+    for idx in match_indices:
+        s = max(0, idx - ctx_lines)
+        e = min(total_lines, idx + ctx_lines + 1)
+        if not intervals:
+            intervals.append((s, e))
+        else:
+            last_s, last_e = intervals[-1]
+            if s <= last_e:
+                intervals[-1] = (last_s, max(last_e, e))
+            else:
+                intervals.append((s, e))
+    chunks: list[str] = []
+    returned_lines = 0
+    for s, e in intervals:
+        chunk_lines = [f"{i + 1}|{lines[i]}" for i in range(s, e)]
+        returned_lines += len(chunk_lines)
+        chunks.append("\n".join(chunk_lines))
+    return "\n[...]\n".join(chunks), returned_lines
+
+
 def _handle_retrieve(args: dict, **kw: Any) -> str:
     ref = _parse_ref((args or {}).get("hash"))
     if not ref:
@@ -548,7 +583,7 @@ def _handle_retrieve(args: dict, **kw: Any) -> str:
 
     section = str((args or {}).get("section") or "").strip().lower()
     if section:
-        ctx_lines = max(0, min(20, int((args or {}).get("context_lines", 3))))
+        ctx_lines = max(0, min(20, _safe_int((args or {}).get("context_lines"), 3)))
         if section == "errors":
             match_indices = [i for i, line in enumerate(lines) if is_important(line)]
             if not match_indices:
@@ -559,25 +594,7 @@ def _handle_retrieve(args: dict, **kw: Any) -> str:
                     "total_lines": total_lines,
                     "lines": "(no error lines detected)",
                 })
-            intervals: list[tuple[int, int]] = []
-            for idx in match_indices:
-                s = max(0, idx - ctx_lines)
-                e = min(total_lines, idx + ctx_lines + 1)
-                if not intervals:
-                    intervals.append((s, e))
-                else:
-                    last_s, last_e = intervals[-1]
-                    if s <= last_e:
-                        intervals[-1] = (last_s, max(last_e, e))
-                    else:
-                        intervals.append((s, e))
-            chunks: list[str] = []
-            returned_lines = 0
-            for s, e in intervals:
-                chunk_lines = [f"{i + 1}|{lines[i]}" for i in range(s, e)]
-                returned_lines += len(chunk_lines)
-                chunks.append("\n".join(chunk_lines))
-            formatted = "\n[...]\n".join(chunks)
+            formatted, returned_lines = _render_context_intervals(lines, match_indices, ctx_lines)
             _usage_retrieve(args, hit=True, ctx=ctx, mode="section_errors",
                             matches=len(match_indices), returned=returned_lines, total=total_lines)
             return _ok({
@@ -603,25 +620,7 @@ def _handle_retrieve(args: dict, **kw: Any) -> str:
                     "total_lines": total_lines,
                     "lines": "(no diff hunks or changes detected)",
                 })
-            intervals = []
-            for idx in diff_indices:
-                s = max(0, idx - ctx_lines)
-                e = min(total_lines, idx + ctx_lines + 1)
-                if not intervals:
-                    intervals.append((s, e))
-                else:
-                    last_s, last_e = intervals[-1]
-                    if s <= last_e:
-                        intervals[-1] = (last_s, max(last_e, e))
-                    else:
-                        intervals.append((s, e))
-            chunks = []
-            returned_lines = 0
-            for s, e in intervals:
-                chunk_lines = [f"{i + 1}|{lines[i]}" for i in range(s, e)]
-                returned_lines += len(chunk_lines)
-                chunks.append("\n".join(chunk_lines))
-            formatted = "\n[...]\n".join(chunks)
+            formatted, returned_lines = _render_context_intervals(lines, diff_indices, ctx_lines)
             _usage_retrieve(args, hit=True, ctx=ctx, mode="section_diff",
                             matches=len(diff_indices), returned=returned_lines, total=total_lines)
             return _ok({
@@ -650,7 +649,7 @@ def _handle_retrieve(args: dict, **kw: Any) -> str:
                 "top_errors": "\n".join(top_errors) if top_errors else "(none)",
             })
         if section == "tail":
-            limit = int((args or {}).get("limit") or 50)
+            limit = _safe_int((args or {}).get("limit"), 50)
             cnt = max(1, min(1000, limit))
             tail_start = max(0, total_lines - cnt)
             tail_slice = [f"{tail_start + i + 1}|{line}" for i, line in enumerate(lines[tail_start:])]
@@ -667,8 +666,8 @@ def _handle_retrieve(args: dict, **kw: Any) -> str:
     offset = (args or {}).get("offset")
     limit = (args or {}).get("limit")
     if offset is not None or limit is not None:
-        start = max(0, int(offset or 1) - 1)
-        cnt = int(limit) if limit is not None else 1000
+        start = max(0, _safe_int(offset, 1) - 1)
+        cnt = _safe_int(limit, 1000)
         end = min(total_lines, start + max(1, cnt))
         sliced = [f"{i + 1}|{lines[i]}" for i in range(start, end)]
         _usage_retrieve(args, hit=True, ctx=ctx, mode="slice",
@@ -798,23 +797,20 @@ def compress_agent_payload(
     pass through. read_file stays verbatim (D5a) via compress_tool_result.
     """
     try:
-        from core import compress_terminal as _ct
-        from dedup import compress_tool_result as _ctr
-    except ImportError:
-        return payload, {"gate": "passthrough_exception"}
-    try:
         if isinstance(payload, str):
             if mode == "terminal":
-                return _ct(kw.get("command", ""), payload)
-            return _ctr(kw.get("tool_name", "agent"), payload,
-                        session_id=str(kw.get("session_id", "")))
+                return compress_terminal(kw.get("command", ""), payload)
+            return compress_tool_result(
+                kw.get("tool_name", "agent"), payload,
+                session_id=str(kw.get("session_id", "")),
+            )
         if isinstance(payload, dict):
             for key in ("content", "output", "stdout", "result"):
                 if isinstance(payload.get(key), str):
                     if mode == "terminal":
-                        new_text, stats = _ct(kw.get("command", ""), payload[key])
+                        new_text, stats = compress_terminal(kw.get("command", ""), payload[key])
                     else:
-                        new_text, stats = _ctr(
+                        new_text, stats = compress_tool_result(
                             str(payload.get("tool_name") or kw.get("tool_name", "agent")),
                             payload[key],
                             session_id=str(payload.get("session_id") or kw.get("session_id", "")),

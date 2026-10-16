@@ -655,7 +655,109 @@ check("sys1-version", VERSION == "3.0.0")
 
 # sys2: no open network ports or sockets opened by trimtok
 import socket
+import threading
+from __init__ import compress_agent_payload
 check("sys2-offline-no-sockets", True)
+
+# sys3: standalone hunk diff without 'diff --git' header (re.M fix) & budget cap
+standalone_diff = (
+    "--- a/config.py\n"
+    "+++ b/config.py\n"
+    "@@ -10,16 +10,16 @@ def load_cfg():\n"
+    + "".join(f"     unchanged_setting_{i} = {i}\n" for i in range(12))
+    + "-    debug = True\n"
+    + "+    debug = False\n"
+    + "".join(f"     trailing_setting_{i} = {i}\n" for i in range(12))
+)
+pruned_standalone = diff_engine.prune_unified_diff(standalone_diff)
+check("sys3-standalone-hunk-diff", "unchanged lines" in pruned_standalone and "+    debug = False" in pruned_standalone)
+budget_capped_diff = diff_engine.prune_unified_diff(standalone_diff * 10, budget=15)
+check("sys4-diff-budget-cap", "diff lines omitted" in budget_capped_diff and len(budget_capped_diff.splitlines()) <= 16)
+
+# sys5: Node/JS traceback pruning end-to-end through compress_terminal
+node_terminal_out = (
+    "npm test running...\n"
+    + node_tb
+    + "\n"
+    + "\n".join(f"  PASS suite/module_{i}.test.ts ({10 + (i % 5)}ms)" for i in range(60))
+)
+o_node_term, s_node_term = compress_terminal("npm test", node_terminal_out, min_chars=500)
+check("sys5-node-traceback-in-compress-terminal", s_node_term.get("gate") == "ok" and "framework frames omitted" in o_node_term)
+
+# sys6: Stage-2 Rapidfuzz Levenshtein fuzzy line alignment in delta_engine
+delta_engine.clear_session("sess_stage2")
+s2_turn1 = "\n".join(f"worker_alpha_{i:02d}: processing batch payload status=READY" for i in range(20)) + "\nERROR: pipeline halted on alpha"
+s2_turn2 = "\n".join(f"worker_beta_{i:02d}: processing batch payload status=READY" for i in range(20)) + "\nERROR: pipeline halted on beta"
+delta_engine.try_delta("sess_stage2", "python worker.py", s2_turn1)
+r_s2 = delta_engine.try_delta("sess_stage2", "python worker.py", s2_turn2)
+check("sys6-stage2-fuzzy-delta", r_s2 is not None and "[tt:delta" in r_s2 and "ERROR: pipeline halted on beta" in r_s2)
+
+# sys7: malformed non-integer offset/limit/context_lines in _handle_retrieve
+with tempfile.TemporaryDirectory() as td:
+    orig_c = _seam(Path(td))
+    try:
+        r_ref = ccr_v2.put("line 1\nERROR: bad thing\nline 3\nline 4\n")
+        bad_args_res = json.loads(_handle_retrieve({
+            "hash": r_ref,
+            "section": "errors",
+            "context_lines": "not-an-int",
+        }))
+        bad_slice_res = json.loads(_handle_retrieve({
+            "hash": r_ref,
+            "offset": "bad",
+            "limit": "bad",
+        }))
+        check("sys7-malformed-int-args-safe", bad_args_res.get("error_matches") == 1 and bad_slice_res.get("returned_lines") == 4)
+
+        # sys8: bounded _alias_mem and _sha_alias on FastCCRStore LRU eviction
+        small_store = ccr_v2.FastCCRStore(Path(td) / "bounded", max_mem_items=8)
+        try:
+            for idx in range(25):
+                small_store.put(f"unique payload content number {idx}")
+            check(
+                "sys8-ccr-v2-bounded-alias-maps",
+                len(small_store._mem) <= 8
+                and len(small_store._sha_alias) <= 8
+                and len(small_store._alias_mem) <= 8,
+                f"mem={len(small_store._mem)}, sha={len(small_store._sha_alias)}, alias={len(small_store._alias_mem)}",
+            )
+        finally:
+            small_store.close()
+    finally:
+        _unseam(orig_c, Path(td))
+
+# sys9: compress_agent_payload works cleanly
+agent_dict, agent_stats = compress_agent_payload(
+    {"tool_name": "grep", "content": "\n".join(f"src/app.py:{i}: match_line_{i}" for i in range(120))},
+    mode="tool",
+    session_id="agent_sess",
+)
+check("sys9-compress-agent-payload", isinstance(agent_dict, dict) and agent_stats.get("gate") == "ok")
+
+# sys10: multi-threaded concurrency stress across delta_engine, dedup, and core
+conc_errors: list[str] = []
+
+
+def _worker(tid: int) -> None:
+    try:
+        for step in range(8):
+            sid = f"conc_sess_{tid % 2}"
+            payload = "\n".join(f"2026-10-16 12:00:{i:02d} [INFO] worker={tid} step={step} item={i} processing ok" for i in range(60))
+            compress_terminal("pytest -q", payload + "\nFAILED test_conc.py::test_race", session_id=sid, delta_enabled=True)
+            compress_tool_result("bash", payload, session_id=sid)
+            if step == 4:
+                dedup.clear_session(sid)
+                delta_engine.clear_session(sid)
+    except Exception as exc:
+        conc_errors.append(str(exc))
+
+
+threads = [threading.Thread(target=_worker, args=(i,)) for i in range(6)]
+for t in threads:
+    t.start()
+for t in threads:
+    t.join()
+check("sys10-multithreaded-concurrency-safe", len(conc_errors) == 0, f"errors={conc_errors}")
 
 print(f"\n==========================================")
 print(f"v3 Upgrade Test Suite Results: fails={check.failed}")

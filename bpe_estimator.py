@@ -39,16 +39,13 @@ except Exception:
 
 def fast_json_loads(data: str | bytes) -> Any:
     """Parse JSON fast using jiter (Rust) when available, falling back to stdlib json.loads.
-    
-    Never raises on invalid data when called safely; caller handles ValueError/json.JSONDecodeError.
+
+    Raises ValueError / json.JSONDecodeError on invalid JSON.
     """
     if _JITER_AVAILABLE:
-        try:
-            if isinstance(data, str):
-                return jiter.from_json(data.encode("utf-8"))
-            return jiter.from_json(data)
-        except Exception:
-            pass
+        if isinstance(data, str):
+            return jiter.from_json(data.encode("utf-8"))
+        return jiter.from_json(data)
     if isinstance(data, bytes):
         return json.loads(data.decode("utf-8", "replace"))
     return json.loads(data)

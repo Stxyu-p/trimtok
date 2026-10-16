@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import os
 import tempfile
+import threading
 import time
 from collections import OrderedDict
 from pathlib import Path
@@ -16,6 +17,7 @@ from pathlib import Path
 _PUT_COUNT = 0
 _MEM_LRU: OrderedDict[tuple[Path, str], tuple[str, float]] = OrderedDict()
 _MAX_MEM_LRU = 512
+_LOCK = threading.Lock()
 
 
 def default_dir() -> Path:
@@ -57,11 +59,15 @@ def put(
             # atomic replacement prevents readers from observing a partial file.
             os.replace(temp_path, path)
             temp_path = None
-        _PUT_COUNT += 1
-        _MEM_LRU[(base, digest)] = (content, time.time())
-        if len(_MEM_LRU) > _MAX_MEM_LRU:
-            _MEM_LRU.popitem(last=False)
-        if _PUT_COUNT % 16 == 0:
+        should_evict = False
+        with _LOCK:
+            _PUT_COUNT += 1
+            _MEM_LRU[(base, digest)] = (content, time.time())
+            _MEM_LRU.move_to_end((base, digest))
+            if len(_MEM_LRU) > _MAX_MEM_LRU:
+                _MEM_LRU.popitem(last=False)
+            should_evict = (_PUT_COUNT % 16 == 0)
+        if should_evict:
             _evict(base, max_entries, max_bytes, ttl_hours)
         return digest
     except Exception:
@@ -99,16 +105,20 @@ def get(
         st = match.stat()
         if _is_expired(st, cutoff):
             match.unlink(missing_ok=True)
-            _MEM_LRU.pop((base, match.stem), None)
+            with _LOCK:
+                _MEM_LRU.pop((base, match.stem), None)
             return None
         key = (base, match.stem)
-        if key in _MEM_LRU and _MEM_LRU[key][1] >= st.st_mtime:
-            _MEM_LRU.move_to_end(key)
-            return _MEM_LRU[key][0]
+        with _LOCK:
+            if key in _MEM_LRU and _MEM_LRU[key][1] >= st.st_mtime:
+                _MEM_LRU.move_to_end(key)
+                return _MEM_LRU[key][0]
         text = match.read_text(encoding="utf-8", errors="replace")
-        _MEM_LRU[key] = (text, st.st_mtime)
-        if len(_MEM_LRU) > _MAX_MEM_LRU:
-            _MEM_LRU.popitem(last=False)
+        with _LOCK:
+            _MEM_LRU[key] = (text, st.st_mtime)
+            _MEM_LRU.move_to_end(key)
+            if len(_MEM_LRU) > _MAX_MEM_LRU:
+                _MEM_LRU.popitem(last=False)
         return text
     except Exception:
         return None
@@ -125,6 +135,8 @@ def purge(*, dir: Path | None = None, before_seconds: float = 0) -> int:
         for p in base.glob("*.txt"):
             if before_seconds <= 0 or (now - p.stat().st_mtime) > before_seconds:
                 p.unlink(missing_ok=True)
+                with _LOCK:
+                    _MEM_LRU.pop((base, p.stem), None)
                 purged += 1
         return purged
     except Exception:
