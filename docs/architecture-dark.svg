@@ -1,73 +1,88 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 340" width="100%" height="100%">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 424" width="100%" height="100%">
   <defs>
-    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#0d1117"/>
-      <stop offset="100%" stop-color="#161b22"/>
-    </linearGradient>
-    <linearGradient id="cardGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#21262d"/>
-      <stop offset="100%" stop-color="#161b22"/>
-    </linearGradient>
-    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#238636"/>
-      <stop offset="100%" stop-color="#2ea043"/>
-    </linearGradient>
-    <linearGradient id="blueGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#1f6feb"/>
-      <stop offset="100%" stop-color="#388bfd"/>
-    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5" stroke-opacity="0.55"/>
+    </pattern>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
   </defs>
 
-  <rect width="880" height="340" rx="12" fill="url(#bgGrad)" stroke="#30363d" stroke-width="1"/>
+  <rect x="0.5" y="0.5" width="959" height="423" rx="12" fill="#020617" stroke="#1e293b" stroke-width="1"/>
+  <rect x="1" y="1" width="958" height="422" rx="11" fill="url(#grid)"/>
 
-  <!-- Pipeline Top Flow Line -->
-  <line x1="160" y1="80" x2="720" y2="80" stroke="#30363d" stroke-dasharray="4 4" stroke-width="2"/>
+  <text x="32" y="34" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="12" letter-spacing="0.5" fill="#94a3b8">trimtok · context compression pipeline</text>
+  <text x="928" y="34" text-anchor="end" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#64748b">v0.10.0 · stdlib only · fail-open</text>
 
-  <!-- Stage 1 -->
-  <g transform="translate(40, 40)">
-    <rect width="220" height="180" rx="8" fill="url(#cardGrad)" stroke="#30363d" stroke-width="1"/>
-    <rect width="220" height="4" rx="2" fill="url(#blueGrad)"/>
-    <text x="20" y="32" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="600" fill="#58a6ff">STAGE 1: TERMINAL</text>
-    <text x="20" y="58" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="15" font-weight="600" fill="#e6edf3">Core Reductions</text>
-    <text x="20" y="86" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">• ANSI Sequence Stripping</text>
-    <text x="20" y="108" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">• Command Delta (Cross-Turn)</text>
-    <text x="20" y="130" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">• Error Rail Guard (Preserved)</text>
-    <text x="20" y="152" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">• Head / Tail Windowing</text>
+  <!-- flow connectors (drawn early, behind cards) -->
+  <line x1="277" y1="154" x2="296" y2="154" stroke="#475569" stroke-width="1.2" stroke-dasharray="4 4" marker-end="url(#arr)"/>
+  <line x1="545" y1="154" x2="564" y2="154" stroke="#475569" stroke-width="1.2" stroke-dasharray="4 4" marker-end="url(#arr)"/>
+  <line x1="480" y1="256" x2="480" y2="284" stroke="#475569" stroke-width="1.2" stroke-dasharray="4 4" marker-end="url(#arr)"/>
+
+  <!-- STAGE 1 · TERMINAL -->
+  <g>
+    <rect x="32" y="52" width="245" height="204" rx="8" fill="#0f172a"/>
+    <rect x="32" y="52" width="245" height="204" rx="8" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+    <text x="50" y="82" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#22d3ee">STAGE 1 · TERMINAL</text>
+    <text x="50" y="110" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="14" font-weight="600" fill="#e2e8f0">Terminal Reductions</text>
+    <text x="50" y="140" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• ANSI strip + hygiene</text>
+    <text x="50" y="160" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• repeat &amp; template fold</text>
+    <text x="50" y="180" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• fault rails · EN / TH / 5xx</text>
+    <text x="50" y="200" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• budgets + head / tail</text>
+    <rect x="46" y="210" width="217" height="34" rx="6" fill="rgba(251,146,60,0.18)" stroke="#fb923c" stroke-width="1"/>
+    <text x="58" y="225" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#fdba74">command delta · cross-turn</text>
+    <text x="58" y="238" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#fdba74">sim ≥ 0.65 → still-failing</text>
   </g>
 
-  <!-- Stage 2 -->
-  <g transform="translate(300, 40)">
-    <rect width="220" height="180" rx="8" fill="url(#cardGrad)" stroke="#30363d" stroke-width="1"/>
-    <rect width="220" height="4" rx="2" fill="url(#accentGrad)"/>
-    <text x="20" y="32" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="600" fill="#3fb950">STAGE 2: TOOL RESULTS</text>
-    <text x="20" y="58" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="15" font-weight="600" fill="#e6edf3">Cross-Turn Dedup</text>
-    <text x="20" y="86" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">• Scoped Search Grouping</text>
-    <text x="20" y="108" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">• Turn-Aware Pointer Fold</text>
-    <text x="20" y="130" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">• Search Path Collapsing</text>
-    <text x="20" y="152" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">• JSON Minify + TOON</text>
+  <!-- STAGE 2 · TOOL RESULTS -->
+  <g>
+    <rect x="300" y="52" width="245" height="204" rx="8" fill="#0f172a"/>
+    <rect x="300" y="52" width="245" height="204" rx="8" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+    <text x="318" y="82" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#34d399">STAGE 2 · TOOL RESULTS</text>
+    <text x="318" y="110" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="14" font-weight="600" fill="#e2e8f0">Dedup &amp; Re-Encode</text>
+    <text x="318" y="140" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• hygiene + normalization</text>
+    <text x="318" y="160" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• cross-turn fold + shingle</text>
+    <text x="318" y="180" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• scoped search grouping</text>
+    <text x="318" y="200" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• HEAD_TAIL stubs</text>
+    <rect x="314" y="210" width="217" height="34" rx="6" fill="rgba(6,78,59,0.35)" stroke="#34d399" stroke-width="1"/>
+    <text x="326" y="225" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#6ee7b7">JSON minify · TOON tables</text>
+    <text x="326" y="238" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#6ee7b7">lossless round-trip verified</text>
   </g>
 
-  <!-- Stage 3 / CCR -->
-  <g transform="translate(560, 40)">
-    <rect width="280" height="180" rx="8" fill="url(#cardGrad)" stroke="#30363d" stroke-width="1"/>
-    <rect width="280" height="4" rx="2" fill="#d29922"/>
-    <text x="20" y="32" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="600" fill="#e3b341">SAFETY RAIL: CCR</text>
-    <text x="20" y="58" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="15" font-weight="600" fill="#e6edf3">Content-Addressed Store</text>
-    <text x="20" y="86" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">• 12-char SHA-256 Hashing</text>
-    <text x="20" y="108" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">• Exact O(1) Local Disk Lookup</text>
-    <text x="20" y="130" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">• On-demand Retrieval Tool</text>
-    <text x="20" y="152" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">• Automatic LRU &amp; TTL Eviction</text>
+  <!-- SAFETY RAIL · CCR -->
+  <g>
+    <rect x="568" y="52" width="360" height="204" rx="8" fill="#0f172a"/>
+    <rect x="568" y="52" width="360" height="204" rx="8" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+    <text x="586" y="82" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#a78bfa">SAFETY RAIL · CCR</text>
+    <text x="586" y="110" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="14" font-weight="600" fill="#e2e8f0">Content-Addressed Store</text>
+    <text x="586" y="140" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• SHA-256 hash + short #ref aliases</text>
+    <text x="586" y="160" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• SQLite index + local files</text>
+    <text x="586" y="180" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• trimtok_retrieve · paginated + grep</text>
+    <text x="586" y="200" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" fill="#94a3b8">• LRU + TTL eviction · 50 MB cap</text>
+    <rect x="582" y="210" width="332" height="34" rx="6" fill="rgba(76,29,149,0.3)" stroke="#a78bfa" stroke-width="1"/>
+    <text x="594" y="231" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#c4b5fd">exact roundtrip · every byte recoverable</text>
   </g>
 
-  <!-- Bottom Metric Banner -->
-  <g transform="translate(40, 250)">
-    <rect width="800" height="60" rx="6" fill="#161b22" stroke="#30363d" stroke-width="1"/>
-    <text x="40" y="36" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="600" fill="#8b949e">PERFORMANCE PROFILE</text>
-    <text x="240" y="36" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="14" font-weight="700" fill="#3fb950">~1.0 ms</text>
-    <text x="300" y="36" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">Terminal Hook</text>
-    <text x="430" y="36" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="14" font-weight="700" fill="#3fb950">&lt; 0.1 ms</text>
-    <text x="500" y="36" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">Repeat Passthrough</text>
-    <text x="630" y="36" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="14" font-weight="700" fill="#3fb950">0</text>
-    <text x="650" y="36" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif" font-size="12" fill="#8b949e">External Dependencies</text>
+  <!-- GATES strip -->
+  <g>
+    <rect x="32" y="288" width="896" height="44" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1"/>
+    <circle cx="50" cy="310" r="3" fill="#fbbf24"/>
+    <text x="62" y="314" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10.5" fill="#94a3b8">GATES · min size 2 KB · quality gate · never-inflate revert</text>
+    <circle cx="560" cy="310" r="3" fill="#fb7185"/>
+    <text x="572" y="314" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10.5" fill="#94a3b8">FAIL-OPEN · guard 50 ms → original passthrough</text>
+  </g>
+
+  <!-- PERFORMANCE band -->
+  <g>
+    <rect x="32" y="344" width="896" height="58" rx="8" fill="#0f172a" stroke="#1e293b" stroke-width="1"/>
+    <text x="48" y="378" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="11" font-weight="600" fill="#64748b">PERFORMANCE</text>
+    <text x="200" y="378" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="12.5" font-weight="700" fill="#34d399">~1.0 ms</text>
+    <text x="262" y="378" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#64748b">terminal hook</text>
+    <text x="390" y="378" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="12.5" font-weight="700" fill="#34d399">0.6 ms</text>
+    <text x="444" y="378" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#64748b">delta step</text>
+    <text x="560" y="378" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="12.5" font-weight="700" fill="#34d399">&lt; 0.1 ms</text>
+    <text x="624" y="378" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#64748b">repeat path</text>
+    <text x="750" y="378" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="12.5" font-weight="700" fill="#34d399">0</text>
+    <text x="764" y="378" font-family="ui-monospace,'JetBrains Mono','Cascadia Mono',Consolas,Menlo,monospace" font-size="10" fill="#64748b">external deps</text>
   </g>
 </svg>
