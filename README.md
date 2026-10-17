@@ -1,7 +1,7 @@
 <h1 align="center">trimtok</h1>
 
 <p align="center">
-  <strong>Local, deterministic context compressor for Hermes Agent.<br/>88.3% fewer characters across stress benchmarks — zero intelligence lost, every byte recoverable.</strong>
+  <strong>Universal, local, deterministic context compressor for AI Agent CLIs & IDEs.<br/>88.3% fewer characters across stress benchmarks — zero intelligence lost, every byte recoverable.</strong>
 </p>
 
 <p align="center">
@@ -257,7 +257,99 @@ Configure under `plugins.entries.trimtok.settings` in your Hermes `config.yaml`:
 
 ## Installation
 
-### 1. Clone into Hermes Plugins Directory
+### 1. Universal One-Command Auto-Install (Recommended)
+
+Install `trimtok` and automatically register it into every supported AI agent CLI and IDE on your system with zero manual configuration:
+
+```bash
+pip install trimtok
+trimtok install
+```
+
+`trimtok install` detects and atomically registers MCP tools into:
+- **Claude Code** (`~/.claude.json` via official `claude mcp add-json`)
+- **Claude Desktop** (`claude_desktop_config.json` on Windows, macOS, and Linux)
+- **Gemini CLI** (`~/.gemini/settings.json`)
+- **Google Antigravity & IDE** (`~/.gemini/config/mcp_config.json`, `~/.gemini/antigravity/mcp_config.json`)
+- **Codex CLI** (`~/.codex/config.toml` with atomic TOML validation)
+- **OpenCode** (`~/.config/opencode/opencode.json`)
+- **VS Code / GitHub Copilot** (`mcp.json` user settings)
+- **Cursor** (`~/.cursor/mcp.json`)
+- **Windsurf** (`~/.codeium/windsurf/mcp_config.json`)
+- **Cline** (`cline_mcp_settings.json`)
+
+All configuration edits create an automatic pre-install backup (`.pre-mcp-install.bak`) and fail-open gracefully without interrupting running sessions.
+
+#### Inspect Detected Clients
+
+Verify registration status across all detected agent harnesses:
+
+```bash
+trimtok clients
+```
+
+Output:
+```text
+  claude-code      Claude Code        registered      ~/.claude.json
+  claude-desktop   Claude Desktop     registered      AppData/Roaming/Claude/claude_desktop_config.json
+  gemini-cli       Gemini CLI         registered      ~/.gemini/settings.json
+  antigravity      Antigravity        registered      ~/.gemini/config/mcp_config.json
+  antigravity-ide  Antigravity IDE    registered      ~/.gemini/antigravity/mcp_config.json
+  codex            Codex CLI          registered      ~/.codex/config.toml
+  opencode         OpenCode           registered      ~/.config/opencode/opencode.json
+  vscode           VS Code (Copilot)  registered      AppData/Roaming/Code/User/mcp.json
+```
+
+#### Clean Uninstallation
+
+To unregister `trimtok` cleanly from all configured client files:
+
+```bash
+trimtok uninstall
+# or test safely first:
+trimtok uninstall --dry-run
+```
+
+---
+
+### 2. Standalone CLI & Utilities
+
+`trimtok` can also be used directly from your terminal or shell pipelines:
+
+```bash
+# View compression counts, saved characters, and CCR storage health
+trimtok status
+
+# View detailed telemetry breakdown and hit rates
+trimtok usage
+
+# Compress a file or standard input stream
+cat test.log | trimtok compress
+trimtok compress --file big_output.txt
+
+# Retrieve an uncompressed original snapshot from CCR
+trimtok retrieve "#c1"
+trimtok retrieve "<sha256-hash>" --section errors
+
+# Purge cached snapshots and reset CCR store
+trimtok purge
+```
+
+---
+
+### 3. Optional High-Speed Accelerators (Recommended)
+
+`trimtok` runs with zero external dependencies using its built-in Python stdlib fallbacks. For sub-millisecond Rust BPE tokenization, `jiter` JSON parsing, and C++ Levenshtein delta alignment, install the optional accelerators into your Python environment:
+
+```bash
+pip install tiktoken jiter rapidfuzz
+```
+
+---
+
+### 4. Hermes Agent Native Plugin
+
+If using [Hermes Agent](https://github.com/NousResearch/hermes-agent), clone directly into your Hermes plugins directory:
 
 **Windows (PowerShell):**
 
@@ -271,15 +363,7 @@ git clone https://github.com/Stxyu-p/trimtok.git "$env:LOCALAPPDATA\hermes\plugi
 git clone https://github.com/Stxyu-p/trimtok.git ~/.hermes/plugins/trimtok
 ```
 
-### 2. Optional High-Speed Accelerators (Recommended)
-
-`trimtok` runs with zero external dependencies using its built-in Python stdlib fallbacks. For sub-millisecond Rust BPE tokenization, `jiter` JSON parsing, and C++ Levenshtein delta alignment, install the optional accelerators into your Python environment:
-
-```bash
-pip install tiktoken jiter rapidfuzz
-```
-
-### 3. Enable in Hermes Agent
+Enable the plugin:
 
 ```bash
 hermes plugins enable trimtok

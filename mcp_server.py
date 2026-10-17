@@ -23,10 +23,16 @@ _ROOT = os.path.dirname(os.path.abspath(__file__))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-import ccr_v2
-from core import VERSION, compress_terminal
-from dedup import compress_tool_result
-from __init__ import RETRIEVE_SCHEMA, _audit, _handle_retrieve, _handle_ts_command, _usage
+try:
+    from . import ccr_v2
+    from .core import VERSION, compress_terminal
+    from .dedup import compress_tool_result
+    from .__init__ import RETRIEVE_SCHEMA, _audit, _handle_retrieve, _handle_ts_command, _usage
+except ImportError:
+    import ccr_v2  # type: ignore
+    from core import VERSION, compress_terminal  # type: ignore
+    from dedup import compress_tool_result  # type: ignore
+    from __init__ import RETRIEVE_SCHEMA, _audit, _handle_retrieve, _handle_ts_command, _usage  # type: ignore
 
 SERVER_INFO = {"name": "trimtok", "version": VERSION}
 FALLBACK_PROTOCOL = "2024-11-05"

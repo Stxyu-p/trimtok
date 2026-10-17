@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trimtok"
+version = "3.0.0"
+description = "Deterministic, lossless-retrievable context compression for autonomous AI agents and MCP clients"
+readme = "README.md"
+authors = [
+    { name = "P Choke & SORA" }
+]
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = []
+keywords = ["mcp", "ai-agents", "context-compression", "token-optimization", "cli", "sqlite"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.optional-dependencies]
+fast = [
+    "tiktoken>=0.7.0",
+    "rapidfuzz>=3.9.0",
+    "jiter>=0.5.0",
+]
+
+[project.scripts]
+trimtok = "trimtok.__main__:main"
+trimtok-mcp = "trimtok.mcp_server:main"
+
+[tool.setuptools]
+packages = ["trimtok"]
+package-dir = { "trimtok" = "." }

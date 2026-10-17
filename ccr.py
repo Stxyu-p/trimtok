@@ -21,6 +21,12 @@ _LOCK = threading.Lock()
 
 
 def default_dir() -> Path:
+    """Where CCR originals, audit and usage logs live.
+
+    Order: TRIMTOK_DATA_DIR > Hermes (env/runtime/installed on disk, so both
+    hosts share one store and #refs resolve everywhere) > ~/.trimtok.
+    A machine without Hermes never gets a stray ~/.hermes directory.
+    """
     if os.environ.get("TRIMTOK_DATA_DIR"):
         return Path(os.environ["TRIMTOK_DATA_DIR"]).expanduser()
     if os.environ.get("HERMES_HOME"):
@@ -29,12 +35,16 @@ def default_dir() -> Path:
         from hermes_constants import get_hermes_home  # type: ignore
         return get_hermes_home() / "plugin-data" / "trimtok"
     except Exception:
-        local_app_data = os.environ.get("LOCALAPPDATA")
-        if local_app_data:
-            win_hermes = Path(local_app_data) / "hermes"
-            if win_hermes.is_dir():
-                return win_hermes / "plugin-data" / "trimtok"
-        return Path(os.path.expanduser("~")) / ".hermes" / "plugin-data" / "trimtok"
+        pass
+    home = Path(os.path.expanduser("~"))
+    candidates = []
+    if os.environ.get("LOCALAPPDATA"):
+        candidates.append(Path(os.environ["LOCALAPPDATA"]) / "hermes")
+    candidates.append(home / ".hermes")
+    for hermes_home in candidates:
+        if hermes_home.is_dir():
+            return hermes_home / "plugin-data" / "trimtok"
+    return home / ".trimtok"
 
 
 def put(
