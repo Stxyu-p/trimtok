@@ -2,6 +2,19 @@
 
 All notable changes to trimtok are documented here.
 
+## [4.0.0] - 2026-10-18
+
+### Added
+- **Universal Stdio MCP Server & Multi-Client Installer (`mcp_server.py`, `mcp_install.py`, `__main__.py`)**:
+  - Exposes `trimtok_compress_terminal`, `trimtok_compress_tool`, `trimtok_retrieve`, and `trimtok_status` over newline-delimited JSON-RPC 2.0 (`msgspec`-accelerated when available).
+  - One-command `trimtok install` / `trimtok clients` / `trimtok uninstall` auto-registers across Claude Code, Claude Desktop, Gemini CLI, Antigravity, Antigravity IDE, OpenAI Codex CLI, OpenCode, and VS Code (GitHub Copilot).
+- **Direct On-Disk `file_path` Compression (`mcp_server.py`)**:
+  - `trimtok_compress_terminal` and `trimtok_compress_tool` now accept an optional `file_path` argument to read, compress/skeletonize, and cache large log files, JSON payloads, or source code directly from disk without loading raw bytes into the LLM context window first.
+- **Zero-Willpower Agent Habit & MCP Instructions (`SERVER_INSTRUCTIONS`)**:
+  - Returns `instructions` in the MCP `initialize` handshake and automatically provisions `~/.gemini/antigravity-cli/mcp/trimtok/instructions.md` plus `~/.skill-proof/skills/trimtok/SKILL.md` during `trimtok install`.
+- **AST Code Skeletonization & Zstandard CCR v3 (`code_skeleton.py`, `ccr.py`)**:
+  - Structural AST folding for large source files alongside TOON v2 tabular JSON encoding and SQLite WAL + Zstandard blob storage.
+
 ## [3.0.0] - 2026-10-16
 
 ### Added

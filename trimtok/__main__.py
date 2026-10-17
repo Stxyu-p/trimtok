@@ -40,7 +40,7 @@ def _server_spec() -> ServerSpec:
 
 
 def _sync_antigravity_schema_cache() -> None:
-    """Populate ~/.gemini/antigravity-cli/mcp/trimtok/*.json if Antigravity CLI is present."""
+    """Populate ~/.gemini/antigravity-cli/mcp/trimtok/*.json and instructions.md if Antigravity CLI is present."""
     try:
         ag_mcp = Path.home() / ".gemini" / "antigravity-cli" / "mcp"
         if not ag_mcp.parent.is_dir():
@@ -56,25 +56,30 @@ def _sync_antigravity_schema_cache() -> None:
             (target / f"{tool['name']}.json").write_text(
                 json.dumps(schema, ensure_ascii=False), encoding="utf-8"
             )
+        if getattr(mcp_server, "SERVER_INSTRUCTIONS", None):
+            (target / "instructions.md").write_text(
+                mcp_server.SERVER_INSTRUCTIONS.strip() + "\n", encoding="utf-8"
+            )
     except Exception:
         pass
 
 
 def _sync_global_skill() -> None:
-    """Install SKILL.md into ~/.agents/skills/trimtok and ~/.gemini/config/skills/trimtok if present."""
+    """Install SKILL.md into ~/.skill-proof/skills/trimtok and client skill directories if present."""
     skill_md = (
         "---\n"
         "name: trimtok\n"
         "description: >-\n"
-        "  Deterministic context compressor (Trimtok v4.0.0) for terminal outputs, tool results,\n"
+        "  Deterministic context compressor (Trimtok) for terminal outputs, tool results,\n"
         "  deep tracebacks, unified git diffs, AST code skeletons, and JSON payloads (TOON v2), backed by a two-tier\n"
         "  SQLite WAL Content-Controlled Retrieval (CCR) cache with section-based retrieval.\n"
         "---\n\n"
-        "# Trimtok v4.0.0 — Context Compression & Section Retrieval\n\n"
+        "# Trimtok — Context Compression & Section Retrieval\n\n"
         "Use `trimtok_compress_terminal`, `trimtok_compress_tool`, `trimtok_retrieve`, and `trimtok_status` "
-        "to compress noisy outputs and retrieve exact sections (`errors`, `diff`, `summary`, `tail`).\n"
+        "to compress noisy outputs or large files on disk (`file_path`) and retrieve exact sections (`errors`, `diff`, `summary`, `tail`).\n"
     )
     for root in (
+        Path.home() / ".skill-proof" / "skills",
         Path.home() / ".agents" / "skills",
         Path.home() / ".gemini" / "config" / "skills",
     ):

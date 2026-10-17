@@ -36,45 +36,58 @@ except ImportError:
 
 SERVER_INFO = {"name": "trimtok", "version": VERSION}
 FALLBACK_PROTOCOL = "2024-11-05"
+SERVER_INSTRUCTIONS = (
+    "Trimtok v4.0.0 — Deterministic Context Compressor & Lossless CCR Cache.\n\n"
+    "## Mandatory Agent Habit (When to Use Trimtok)\n"
+    "1. **Noisy Terminal / Test / Build Logs (>2 KB):** Call `trimtok_compress_terminal` (pass `output` or `file_path`) "
+    "to compress repetitive logs while preserving 100% of errors, tracebacks, and unified git diffs.\n"
+    "2. **Large Tool Outputs / Source Files / JSON Payloads (>2 KB):** Call `trimtok_compress_tool` (pass `result` or `file_path`) "
+    "to apply lossless TOON v2 tabular JSON encoding, scoped search grouping, or AST code skeletonization without flooding your context window.\n"
+    "3. **Lossless Section Retrieval:** Every compressed response stores the raw original in the SQLite WAL CCR cache and returns a `ref` (`#cN` or hex digest). "
+    "Call `trimtok_retrieve` with `hash` + optional `section` (`errors`, `diff`, `summary`, `tail`), `grep`, or `offset`/`limit` whenever you need exact omitted lines."
+)
 
 TOOLS = [
     {
         "name": "trimtok_compress_terminal",
         "description": (
             "Compress noisy terminal or shell output deterministically while preserving 100% "
-            "of errors, tracebacks, and git diff changes. Stores the raw original in CCR "
-            "so any omitted lines can be retrieved via trimtok_retrieve."
+            "of errors, tracebacks, and git diff changes. Pass `output` directly or `file_path` to compress a log file on disk. "
+            "Stores the raw original in CCR so any omitted lines can be retrieved via trimtok_retrieve."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "command": {"type": "string", "description": "Shell command that produced the output"},
-                "output": {"type": "string", "description": "Raw terminal stdout/stderr text"},
+                "output": {"type": "string", "description": "Raw terminal stdout/stderr text (optional if file_path is set)"},
+                "file_path": {"type": "string", "description": "Optional path to a log/output file on disk to read and compress directly"},
                 "session_id": {"type": "string", "description": "Optional session identifier for cross-turn delta"},
                 "delta_enabled": {"type": "boolean", "description": "Enable cross-turn command delta (default true)"},
                 "min_chars": {"type": "integer", "description": "Minimum character threshold (default 2048)"},
             },
-            "required": ["output"],
+            "required": [],
             "additionalProperties": False,
         },
     },
     {
         "name": "trimtok_compress_tool",
         "description": (
-            "Compress structured tool results (JSON arrays/objects via lossless TOON v2, "
+            "Compress structured tool results or large files on disk (JSON arrays/objects via lossless TOON v2, "
             "multi-file grep/search hits via scoped search grouping, AST code skeletonization, and cross-turn repeated spans). "
+            "Pass `result` directly or `file_path` to skeletonize/compress a file on disk without loading raw text into context. "
             "Stores the raw original in CCR for lossless retrieval."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "tool_name": {"type": "string", "description": "Name of the tool that produced the result"},
-                "result": {"type": "string", "description": "Raw tool output text or JSON string"},
+                "result": {"type": "string", "description": "Raw tool output text or JSON string (optional if file_path is set)"},
+                "file_path": {"type": "string", "description": "Optional path to a source/JSON/data file on disk to read and compress directly"},
                 "session_id": {"type": "string", "description": "Optional session identifier for cross-turn folding"},
                 "toon_enabled": {"type": "boolean", "description": "Enable TOON v2 tabular JSON encoding (default true)"},
                 "min_chars": {"type": "integer", "description": "Minimum character threshold (default 2048)"},
             },
-            "required": ["result"],
+            "required": [],
             "additionalProperties": False,
         },
     },
@@ -108,11 +121,25 @@ class MethodNotFound(Exception):
     pass
 
 
+def _read_file_arg(file_path: Any) -> tuple[str, str]:
+    if not isinstance(file_path, str) or not file_path.strip():
+        raise ValueError("file_path must be a non-empty string")
+    resolved = os.path.abspath(os.path.expanduser(file_path.strip()))
+    if not os.path.isfile(resolved):
+        raise FileNotFoundError(f"file not found: {resolved}")
+    with open(resolved, "r", encoding="utf-8", errors="replace") as fh:
+        return fh.read(), resolved
+
+
 def _tool_compress_terminal(args: dict[str, Any]) -> dict[str, Any]:
     output = args.get("output")
+    file_path = args.get("file_path")
+    source_file = None
+    if output is None and file_path is not None:
+        output, source_file = _read_file_arg(file_path)
     if not isinstance(output, str):
-        raise ValueError("output must be a string")
-    command = str(args.get("command") or "")
+        raise ValueError("output or file_path must be provided")
+    command = str(args.get("command") or (f"cat {os.path.basename(source_file)}" if source_file else ""))
     session_id = str(args.get("session_id") or "mcp")
     delta_enabled = bool(args.get("delta_enabled", True))
     try:
@@ -133,18 +160,26 @@ def _tool_compress_terminal(args: dict[str, Any]) -> dict[str, Any]:
             compressed = compressed.replace(f"#{stats['digest']}", ref)
         _audit({"hook": "mcp_terminal", "cmd": command[:120], **stats})
     _usage({"hook": "terminal", "cmd": command[:120], "shape": stats.get("kind", "mixed"), **stats})
-    return {
+    resp: dict[str, Any] = {
         "compressed": compressed,
         "ref": ref,
         "stats": stats,
     }
+    if source_file:
+        resp["source_file"] = source_file
+    return resp
 
 
 def _tool_compress_tool(args: dict[str, Any]) -> dict[str, Any]:
     result = args.get("result")
+    file_path = args.get("file_path")
+    source_file = None
+    if result is None and file_path is not None:
+        result, source_file = _read_file_arg(file_path)
     if not isinstance(result, str):
-        raise ValueError("result must be a string")
-    tool_name = str(args.get("tool_name") or "tool")
+        raise ValueError("result or file_path must be provided")
+    default_tool = f"Read:{os.path.basename(source_file)}" if source_file else "tool"
+    tool_name = str(args.get("tool_name") or default_tool)
     session_id = str(args.get("session_id") or "mcp")
     toon_enabled = bool(args.get("toon_enabled", True))
     try:
@@ -165,11 +200,14 @@ def _tool_compress_tool(args: dict[str, Any]) -> dict[str, Any]:
             compressed = compressed.replace(f"#{stats['digest']}", ref)
         _audit({"hook": "mcp_tool", "tool": tool_name[:120], **stats})
     _usage({"hook": "tool", "tool": tool_name[:120], "shape": stats.get("kind", "tool"), **stats})
-    return {
+    resp: dict[str, Any] = {
         "compressed": compressed,
         "ref": ref,
         "stats": stats,
     }
+    if source_file:
+        resp["source_file"] = source_file
+    return resp
 
 
 def _tool_retrieve(args: dict[str, Any]) -> dict[str, Any]:
@@ -212,6 +250,7 @@ def handle(request: dict[str, Any]) -> dict[str, Any]:
             "protocolVersion": protocol,
             "capabilities": {"tools": {}},
             "serverInfo": SERVER_INFO,
+            "instructions": SERVER_INSTRUCTIONS,
         }
     if method == "ping":
         return {}
