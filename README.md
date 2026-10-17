@@ -2,41 +2,48 @@
 
 # trimtok
 
-**Deterministic, Lossless-Retrievable Context Compression for Autonomous AI Agents**
+**Universal, Local, Deterministic Context Compressor for AI Coding Agents & IDEs**
 
 <p><em>88.3% fewer characters across heavy engineering workloads — zero intelligence lost, every byte recoverable in sub-millisecond time.</em></p>
 
 <p>
-  <a href="https://github.com/Stxyu-p/trimtok"><img src="https://img.shields.io/badge/version-v4.0.0-0284c7?style=flat-square" alt="Version v4.0.0" /></a>
-  <a href="#performance"><img src="docs/badges/latency.svg" alt="Latency" /></a>
-  <a href="#safety-rail-ccr-v2-sqlite-wal--zstd"><img src="docs/badges/safety.svg" alt="Fail-open" /></a>
-  <a href="#quick-start"><img src="docs/badges/ecosystem.svg" alt="Hermes & MCP" /></a>
+  <a href="#performance--benchmarks"><img src="docs/badges/latency.svg" alt="Latency" /></a>
+  <a href="#core-engineering-guarantees"><img src="docs/badges/dependencies.svg" alt="100% Local & Offline" /></a>
+  <a href="#content-addressed-context-recovery-ccr"><img src="docs/badges/safety.svg" alt="Fail-open" /></a>
+  <a href="#quick-start"><img src="docs/badges/ecosystem.svg" alt="MCP · CLI · Hermes" /></a>
   <a href="LICENSE"><img src="docs/badges/license.svg" alt="License" /></a>
 </p>
 
 <p>
-  <a href="#overview">Overview</a> ·
-  <a href="#the-global-agent-trinity-recommended-combo">Global Trinity Combo</a> ·
+  <a href="#why-trimtok">Why trimtok</a> ·
+  <a href="#visual-before--after-showcase">Before / After</a> ·
   <a href="#quick-start">Quick Start</a> ·
-  <a href="#live-compression-examples">Live Examples</a> ·
+  <a href="#how-the-dual-stage-pipeline-works">How It Works</a> ·
+  <a href="#content-addressed-context-recovery-ccr">CCR Recovery</a> ·
   <a href="#architecture--modules">Architecture</a> ·
-  <a href="#safety-rail-ccr-v2-sqlite-wal--zstd">CCR Recovery</a> ·
-  <a href="#performance">Performance</a>
+  <a href="#performance--benchmarks">Performance</a> ·
+  <a href="#configuration--cli-reference">Configuration</a> ·
+  <a href="#recommended-ecosystem-combo">Trinity Combo</a>
 </p>
 
 </div>
 
 ---
 
-## Overview
+## Why trimtok?
 
-**trimtok v4.0.0** intercepts noisy terminal outputs, repetitive test logs, deep stack traces, large `git diff` blocks, and bulky JSON/source-code tool results *before* they consume your model's context window.
+Autonomous coding agents burn 60%–85% of their context window on **high-volume, low-entropy noise**: 2,000-line passing `pytest` runs, deep framework stack frames (`site-packages`, `node_modules`), unchanged `git diff` context lines, repetitive `grep` matches, and deeply nested JSON tool responses.
 
-It runs **100% locally and offline** with strict fail-open guarantees and a global content-addressed recovery cache (`~/.trimtok`):
+Naive truncation (`head -n 50` or character slicing) destroys critical failure signals hidden in the middle of logs. Summarizing via a secondary LLM adds seconds of latency and risks hallucinating line numbers or error codes.
 
-1. **Terminal Pipeline (`Stage 1`):** Strips ANSI/spinner noise, collapses intermediate framework stack frames (`site-packages`, `node_modules`), condenses unchanged `git diff` context while keeping file headers and `@@` hunk scopes, folds exact and Drain-template repeats, and turns repeated test/build runs into a compact cross-turn delta.
-2. **Tool & Code Pipeline (`Stage 2`):** Deduplicates repeated spans across turns, groups multi-file `grep` hits under enclosing `def`/`class` headers, skeletonizes large source files via **AST Code Skeletonization** (preserving signatures, types, and docstrings while folding function bodies), and transcodes nested JSON payloads into lossless **TOON v2** columnar tables verified by an in-memory round-trip check.
-3. **Zstandard + SQLite WAL Recovery (`CCR v2`):** Every compressed output stores its exact, unmodified original in a single-file SQLite WAL + Zstandard store (`trimtok_ccr_v2.sqlite3`), addressable by a short Base62 `#c1` alias with instant section slicing (`errors`, `diff`, `summary`, `tail`), regex grep, or full restoration.
+**trimtok** solves this deterministically, 100% locally and offline, in **~1–2 ms**:
+
+- **Stage 1 — Terminal Pipeline (`compress_terminal`):** Strips ANSI/spinner artifacts, prunes intermediate framework stack frames while preserving entrypoints and crash sites, condenses unchanged `git diff` context while keeping file headers and `@@` hunk scopes, folds exact and Drain-template log repeats, and turns repeated test/build commands into a compact **Cross-Turn Stateful Delta**.
+- **Stage 2 — Tool & Code Pipeline (`compress_tool_result`):** Deduplicates repeated spans across turns, groups multi-file `grep` hits under enclosing `def`/`class` scopes, condenses large source files via **AST Code Skeletonization** (keeping imports, signatures, type annotations, and docstrings while folding function bodies), and transcodes nested JSON payloads into lossless **Hierarchical TOON Tables** verified by an in-memory round-trip check.
+- **Safety Rail — Content-Addressed Context Recovery (`CCR`):** Every compressed payload stores its exact, unmodified original in a global SQLite WAL + Zstandard store (`~/.trimtok`), addressable by a short Base62 `#c1` alias with instant section slicing (`errors`, `diff`, `summary`, `tail`), safe regex grep, or full restoration.
+
+> [!IMPORTANT]
+> **Zero Intelligence Loss Invariant:** Every error, exception, traceback crash site, compiler diagnostic, HTTP 5xx status, and Thai/English failure line is locked by fault polarity rails (`is_important`) and is **never** dropped or folded away. If any transformation fails to strictly reduce both character count and BPE token count, `trimtok` immediately reverts to the untouched original string.
 
 <p align="center">
   <img src="docs/architecture-dark.svg" alt="trimtok architecture" width="100%" />
@@ -44,48 +51,133 @@ It runs **100% locally and offline** with strict fail-open guarantees and a glob
 
 ---
 
-## The Global Agent Trinity (Recommended Combo)
+## Visual Before & After Showcase
 
-For the complete local-first AI engineering stack, pair **trimtok** with [**MemCore**](https://github.com/Stxyu-p/memcore) and [**Skill Proof**](https://github.com/Stxyu-p/skill-proof). Together, they unify every AI coding client on your machine (**Claude Code, Cursor, Antigravity, Gemini CLI, Codex, VS Code Copilot, Windsurf, OpenCode, Cline, and Hermes**) around three shared global hubs:
+### 1. Cross-Turn Stateful Command Delta (`delta_engine.py`)
+When an agent runs `pytest` a second time after editing code (even with shifted line numbers, updated timings, or flag changes like `pytest -v` vs `pytest -q`):
 
-```mermaid
-flowchart LR
-    User(["Developer Task"]) --> SP["Skill Proof v1.0.0<br/>~/.skill-proof/skills<br/>(Deterministic Skill Routing)"]
-    SP --> MC["MemCore v2.0.0<br/>~/.memcore<br/>(Governed Bitemporal Memory)"]
-    MC --> Agent["Any AI Coding Agent<br/>(Claude / Cursor / Antigravity / Codex / Hermes)"]
-    Agent --> TT["Trimtok v4.0.0<br/>~/.trimtok<br/>(88.3% Context Compression + CCR #c1)"]
-    TT --> Agent
-    Agent -->|"Verified Facts & Decisions"| MC
+<table>
+<tr>
+<th width="50%">Raw Terminal Output (56,108 chars)</th>
+<th width="50%">trimtok Compressed Output (312 chars — 99.4% saved)</th>
+</tr>
+<tr>
+<td>
+
+```text
+============================= test session starts =============================
+platform win32 -- Python 3.12.4, pytest-8.3.2, pluggy-1.5.0
+rootdir: /workspace/app
+collected 201 items
+
+tests/test_auth.py ............................                         [ 13%]
+tests/test_db.py ...................................................... [ 40%]
+tests/test_api.py ..................................................... [ 67%]
+... (1,950 lines of passing test output & noisy INFO logs) ...
+================================== FAILURES ===================================
+__________________________________ test_boom __________________________________
+    def test_boom():
+>       assert compute_status() == 1
+E       AssertionError: expected 1 got 2
+=========================== short test summary info ===========================
+FAILED tests/test_1000.py::test_boom - AssertionError: expected 1 got 2
+======================== 1 failed, 200 passed in 43.2s ========================
 ```
 
-| Layer | Engine | Global Hub | What You Gain When Installed Together |
-| :--- | :--- | :--- | :--- |
-| **1. Skill Routing** | [**Skill Proof v1.0.0**](https://github.com/Stxyu-p/skill-proof) | `~/.skill-proof/skills` | **One Skill Vault, Zero Prompt Bloat:** Deduplicates all `SKILL.md` playbooks into one global vault and selects the exact skill in `< 1 ms` with zero routing LLM calls. |
-| **2. Context Shield** | [**Trimtok v4.0.0**](https://github.com/Stxyu-p/trimtok) | `~/.trimtok` | **88.3% Less Context Noise:** Compresses terminal logs, tracebacks, diffs, AST code bodies, and JSON tool outputs while keeping every byte retrievable via `#c1` aliases. |
-| **3. Governed Memory** | [**MemCore v2.0.0**](https://github.com/Stxyu-p/memcore) | `~/.memcore` | **One Shared Brain Across All Clients:** Hybrid FTS5 + `sqlite-vec` SIMD + `model2vec` recall with hard trust boundaries, source-hash staleness detection, and tombstone guards. |
+</td>
+<td>
 
-### One-Command Trinity Setup
+```text
+[tt:delta cmd="pytest -q" sim=99% +#1 -#1 !#1 #c2 #c1]
+[tt:legend] Delta vs previous run of the same command: + added, - resolved/removed, ! still failing; refs = full snapshots via trimtok_retrieve.
+--- STILL FAILING / ACTIVE ERRORS (1) ---
+! FAILED test_1000.py::test_boom - AssertionError: expected 1 got 2
+--- ADDED / CHANGED IN THIS TURN (+1) ---
++ ===== 1 failed, 200 passed in 43.2s =====
+--- RESOLVED / REMOVED (-1) ---
+- ===== 1 failed, 200 passed in 42.1s =====
+```
 
-```bash
-# 1. Install all three engines with high-speed local accelerators
-pip install trimtok memcore skill-proof
+</td>
+</tr>
+</table>
 
-# 2. Register stdio MCP servers across all detected AI coding clients & IDEs
-trimtok install
-memcore install
-skill-proof install
+### 2. Lossless Hierarchical TOON JSON Transcoding (`toon_codec.py`)
+Verbose JSON arrays and API responses are unnested via dot-notation, common URL/path prefixes are factored into `@prefix`, and every table is decoded in-memory to verify recursive strict equality (`_strict_eq`) before emission:
 
-# 3. Consolidate dispersed agent skills into the global vault (~/.skill-proof/skills)
-skill-proof vault migrate
+<table>
+<tr>
+<th width="50%">Raw JSON Tool Payload</th>
+<th width="50%">Lossless TOON Table (74.3% fewer tokens)</th>
+</tr>
+<tr>
+<td>
+
+```json
+{
+  "meta": {"status": "success"},
+  "data": {
+    "results": [
+      {
+        "id": 0,
+        "title": "Item 0",
+        "url": "https://example.com/items/0",
+        "tags": ["dev", "lead"]
+      },
+      {
+        "id": 1,
+        "title": "Item 1",
+        "url": "https://example.com/items/1",
+        "tags": ["qa"]
+      },
+      {
+        "id": 2,
+        "title": "Item 2",
+        "url": "https://example.com/items/2",
+        "tags": ["pm", "ops"]
+      }
+    ]
+  }
+}
+```
+
+</td>
+<td>
+
+```text
+[tt:legend] TOON table (lossless): "@prefix(A)=base" = shared path shorthand; "@rows[N]{f1,f2}:" header, then N rows, cells split by "|" (quoted = literal).
+@prefix(~/)=https://example.com/items/
+@meta:{"status":"success"}
+@data.results[3]{id,title,url,tags}:
+0|Item 0|~/0|["dev","lead"]
+1|Item 1|~/1|["qa"]
+2|Item 2|~/2|["pm","ops"]
+```
+
+</td>
+</tr>
+</table>
+
+### 3. Structured Traceback Pruning & AST Code Skeletonization (`pruners.py`)
+Deep stack traces collapse intermediate library frames (`site-packages`, `node_modules`) while keeping 100% of the entrypoint, user project frames, crash frame, and exception line. Large source files keep class/function signatures, type annotations, and docstrings while folding long implementation bodies:
+
+```text
+Traceback (most recent call last):
+  File "/app/main.py", line 25, in handle_request
+    result = pipeline.process(data)
+  [... 14 framework frames in site-packages/starlette & fastapi omitted ...]
+  File "/app/pipeline.py", line 58, in process
+    return 100 / count
+ZeroDivisionError: division by zero
 ```
 
 ---
 
 ## Quick Start
 
-### 1. Universal Auto-Install (MCP + CLI)
+### 1. Universal One-Command Auto-Install (Recommended)
 
-Register `trimtok` into every supported AI agent CLI and IDE on your machine with one command:
+Install `trimtok` and automatically register its stdio MCP server across every supported AI agent CLI and IDE on your machine:
 
 ```bash
 pip install trimtok
@@ -93,23 +185,37 @@ trimtok install
 ```
 
 `trimtok install` detects and atomically updates:
-- **Claude Code** (`~/.claude.json`) & **Claude Desktop** (`claude_desktop_config.json`)
+- **Claude Code** (`~/.claude.json` via `claude mcp add-json`) & **Claude Desktop** (`claude_desktop_config.json`)
 - **Google Antigravity & Antigravity IDE** (`~/.gemini/config/mcp_config.json`, `~/.gemini/antigravity/mcp_config.json`)
-- **Gemini CLI** (`~/.gemini/settings.json`) & **Codex CLI** (`~/.codex/config.toml`)
+- **Gemini CLI** (`~/.gemini/settings.json`) & **Codex CLI** (`~/.codex/config.toml` with TOML validation)
 - **Cursor** (`~/.cursor/mcp.json`), **Windsurf**, **VS Code (Copilot)**, **OpenCode**, and **Cline**
 
-Inspect client registration or run standalone from the terminal:
+> [!TIP]
+> Every client config edit creates an automatic backup (`.pre-mcp-install.bak`) and preserves all existing MCP servers. Run `trimtok clients` anytime to inspect registration status across your machine.
+
+### 2. Standalone CLI Usage
 
 ```bash
-trimtok clients                         # Check registration status across all IDEs/CLIs
-trimtok status                          # Inspect total savings and CCR SQLite WAL cache stats
-trimtok usage                           # View compression breakdown by command/tool shape
-cat build.log | trimtok compress        # Compress a noisy log stream from stdin
-trimtok retrieve "#c1" --section errors # Slice only error windows from a cached original
-trimtok purge                           # Clear cached originals and vacuum SQLite store
+# Inspect compression savings and global CCR cache health (~/.trimtok)
+trimtok status
+
+# View telemetry breakdown by command shape and retrieval hit rates
+trimtok usage
+
+# Compress any noisy log or file directly from shell pipelines
+cat build.log | trimtok compress
+trimtok compress --file pytest_output.txt
+
+# Retrieve uncompressed originals or targeted sections by #cN alias
+trimtok retrieve "#c1"
+trimtok retrieve "#c1" --section errors
+trimtok retrieve "#c1" --section diff
+
+# Purge expired or all cached originals and vacuum SQLite store
+trimtok purge
 ```
 
-### 2. Hermes Agent Native Plugin
+### 3. Hermes Agent Native Plugin
 
 ```bash
 # Linux / macOS
@@ -123,98 +229,183 @@ hermes plugins enable trimtok
 
 ---
 
-## Live Compression Examples
+## How the Dual-Stage Pipeline Works
 
-### 1. Two-Stage Fuzzy Command Delta (`trimtok/delta_engine.py`)
-Running `pytest` a second time in the same session (even with shifted line numbers, updated durations, or flag changes like `pytest -v` vs `pytest -q`):
+```mermaid
+flowchart TD
+    In(["Raw Terminal / Tool Output"]) --> SizeGate{"Size >= min_chars<br/>(default 2 KB)?"}
+    SizeGate -- "No" --> Pass["Passthrough Untouched"]
+    SizeGate -- "Yes" --> Verbatim{"Verbatim Reference Tool?<br/>(e.g. read_file)"}
+    Verbatim -- "Yes" --> IndexOnly["Index Spans for Future Turns<br/>& Return Verbatim"]
+    Verbatim -- "No" --> StageRoute{"Pipeline Stage"}
 
-```text
-[tt:delta cmd="pytest -q" sim=99% +#1 -#1 !#1 #c2 #c1]
-[tt:legend] Delta vs previous run of the same command: + added, - resolved/removed, ! still failing; refs = full snapshots via trimtok_retrieve.
---- STILL FAILING / ACTIVE ERRORS (1) ---
-! FAILED test_1000.py::test_boom - AssertionError: expected 1 got 2
---- ADDED / CHANGED IN THIS TURN (+1) ---
-+ ===== 1 failed, 200 passed in 43.2s =====
---- RESOLVED / REMOVED (-1) ---
-- ===== 1 failed, 200 passed in 42.1s =====
+    StageRoute -- "Terminal Output" --> S1["Stage 1: Terminal Pipeline<br/>• Strip ANSI & spinners<br/>• Prune framework tracebacks<br/>• Fold unchanged git diff context<br/>• Drain template & exact repeat fold<br/>• 2-Stage Fuzzy Command Delta"]
+    StageRoute -- "Tool / JSON / Code" --> S2["Stage 2: Tool Pipeline<br/>• Scoped grep grouping by def/class<br/>• AST Code Skeletonization<br/>• Cross-turn span & 3-gram dedup<br/>• Lossless TOON JSON transcoding"]
+
+    S1 --> Gates{"Safety & Quality Gates<br/>1. 100% Fault Lines Preserved?<br/>2. BPE Tokens Strictly Reduced?<br/>3. Within guard_ms Deadline?"}
+    S2 --> Gates
+
+    Gates -- "Any Gate Fails" --> Pass
+    Gates -- "All Gates Pass" --> CCR["Store Original in ~/.trimtok<br/>(SQLite WAL + Zstandard)<br/>& Emit Compressed + #cN Ref"]
 ```
 
-### 2. Lossless Hierarchical TOON v2 Table (`trimtok/toon_codec.py`)
-Nested JSON tool payloads unnest via dot-notation with shared URL/path prefixes and compact inline JSON cells, verified by a strict in-memory round-trip check (`_strict_eq`):
+### Core Engineering Guarantees
 
-```text
-[tt:legend] TOON table (lossless): "@prefix(A)=base" = shared path shorthand; "@rows[N]{f1,f2}:" header, then N rows, cells split by "|" (quoted = literal).
-@prefix(~/)=https://example.com/items/
-@meta:{"status":"success"}
-@data.results[3]{id,title,url,tags}:
-0|Item 0|~/0|["dev","lead"]
-1|Item 1|~/1|["qa"]
-2|Item 2|~/2|["pm","ops"]
-```
+| Guarantee | Mechanism |
+| :--- | :--- |
+| **Zero Intelligence Loss** | Error, exception, traceback crash site, HTTP 5xx, and Thai/English failure lines (`signals.py`) are locked by fault rails and never folded or dropped. |
+| **BPE Non-Inflation Gate** | Every candidate output is checked via `estimate_bpe_tokens()`. If compression does not strictly reduce both character count and token count, `trimtok` returns the original input. |
+| **Verbatim File-Edit Safety** | Direct file-reading tools (`read_file`, `view_file`) are indexed into the session corpus to compress *future* duplicate search results, but their own output is returned 100% verbatim so code-editing tools never operate on line stubs. |
+| **Lossless TOON Round-Trip** | `toon_codec.py` decodes every generated columnar table back into Python objects in memory and verifies strict recursive type-and-value equality (`_strict_eq`) before emitting. |
+| **Fail-Open Deadline Guard** | A monotonic `Deadline` timer (`guard_ms`, default `50 ms`) bounds every stage. Any timeout or unexpected exception immediately returns the untouched original text. |
+| **Cross-Turn Freshness Masking** | `post_llm_call` automatically ages out fold pointers older than `mask_keep_turns` (default `2` turns) so the agent never references stale turn stubs. |
 
-### 3. AST Code Skeletonization & Traceback Pruning (`trimtok/pruners.py`)
-Large Python/JS/TS/Go/Rust files and deep stack traces are condensed structurally without losing signatures, docstrings, entrypoints, or crash frames:
+---
 
-```text
-Traceback (most recent call last):
-  File "/app/main.py", line 25, in handle_request
-    result = pipeline.process(data)
-  [... 3 framework frames omitted ...]
-  File "/app/pipeline.py", line 58, in process
-    return 100 / count
-ZeroDivisionError: division by zero
-```
+## Content-Addressed Context Recovery (CCR)
+
+Whenever `trimtok` compresses an output, the full unmodified original is persisted in the global **CCR Store** (`~/.trimtok/trimtok_ccr_v2.sqlite3`) using SQLite WAL mode and Zstandard payload compression.
+
+### `trimtok_retrieve` Modes (MCP & CLI)
+
+| Retrieval Mode | MCP Arguments | What It Returns |
+| :--- | :--- | :--- |
+| **Section: Errors** | `{"hash": "#c1", "section": "errors", "context_lines": 3}` | Scans original via `is_important()`, merges overlapping `±context_lines` windows, and returns `line_no\|text` fault chunks. |
+| **Section: Diff** | `{"hash": "#c1", "section": "diff", "context_lines": 3}` | Extracts unified diff file headers, `@@` hunk scopes, and `+`/`-` changes with surrounding context. |
+| **Section: Summary** | `{"hash": "#c1", "section": "summary"}` | Returns total line/char counts, error line count, first 15 lines, last 25 lines, and top 20 error lines. |
+| **Section: Tail** | `{"hash": "#c1", "section": "tail", "limit": 50}` | Returns the last `limit` lines (default `50`, max `1,000`) with 1-indexed line numbers. |
+| **Safe Regex Grep** | `{"hash": "#c1", "grep": "ConnectionRefused\|503"}` | Case-insensitive bounded regex search across the uncompressed original (`line_no\|text`). |
+| **Line Pagination** | `{"hash": "#c1", "offset": 100, "limit": 80}` | Slices lines `100..179` (`1-indexed`) with line numbers. |
+| **Full Restore** | `{"hash": "#c1"}` | Restores the complete uncompressed `original_content`. |
 
 ---
 
 ## Architecture & Modules
 
-`trimtok v4.0.0` is organized as a clean Python package (`trimtok/`) with top-level compatibility shims so both `import trimtok` and legacy plugin imports work seamlessly:
-
 | Module | Role | Key Responsibilities |
 | :--- | :--- | :--- |
-| `trimtok/core.py` | **Stage 1: Terminal Pipeline** | Output classification, traceback/diff pruning, ANSI stripping, exact & Drain template folding, BPE non-inflation gate, fault quality gate. |
-| `trimtok/dedup.py` | **Stage 2: Tool Pipeline** | Volatile token normalization, JSON minification, AST code skeletonization, cross-turn span/line folding, 3-gram shingle near-dedup, TOON v2 transcoding. |
-| `trimtok/pruners.py` | **Structural Pruners** | Unified module housing Python/Node traceback pruning, semantic `git diff` context folding, scoped search grouping, and `ast` code skeletonization. |
-| `trimtok/signals.py` | **Fault Rails & BPE Gate** | English/Thai failure polarity rails (`is_important`), `[tt:...]` marker grammar, `tiktoken` BPE estimator with 64 KB fast sampling, and fail-open `Deadline` guard. |
-| `trimtok/toon_codec.py` | **Lossless TOON v2 Codec** | Multi-level dot-notation unnesting, `@prefix` extraction, inline compact JSON cells, and strict recursive round-trip verification (`_strict_eq`). |
-| `trimtok/delta_engine.py` | **Stateful Command Delta** | Command family normalization, 2-stage line alignment ($O(N)$ skeleton + `rapidfuzz`), `STILL FAILING` canary rail, and bounded per-session LRU state. |
-| `trimtok/ccr.py` | **SQLite WAL + Zstd CCR v2** | Single-file `FastCCRStore` (`trimtok_ccr_v2.sqlite3`) with atomic `BEGIN IMMEDIATE` Base62 `#cN` alias generation, Zstandard compression, and TTL eviction. |
+| `trimtok/core.py` | **Stage 1: Terminal Pipeline** | Output classification, traceback/diff pruning, ANSI/spinner stripping, exact & Drain template folding, command budgets, BPE non-inflation gate, and fault quality gate. |
+| `trimtok/dedup.py` | **Stage 2: Tool Pipeline** | Volatile token normalization, JSON minification, AST code skeletonization, cross-turn span/line folding, 3-gram shingle near-dedup, `HEAD_TAIL` windowing, and TOON transcoding. |
+| `trimtok/pruners.py` | **Structural Pruners** | Unified module housing Python/Node stack-trace pruning, semantic `git diff` context folding, scoped search (`def`/`class`) grouping, and `ast` code skeletonization. |
+| `trimtok/signals.py` | **Fault Rails, BPE & Guard** | English/Thai failure polarity detector (`is_important`), `[tt:...]` marker grammar, `tiktoken` BPE estimator with 64 KB fast sampling, and fail-open `Deadline` guard. |
+| `trimtok/toon_codec.py` | **Lossless TOON Codec** | Multi-level dot-notation wrapper unnesting, shared path `@prefix` extraction, inline compact JSON cells (`<= 120 chars`), and in-memory `_strict_eq()` verification. |
+| `trimtok/delta_engine.py` | **Stateful Command Delta** | Safe command family normalization, 2-stage line alignment ($O(N)$ skeleton + `rapidfuzz`), `STILL FAILING` canary rail, and bounded per-session LRU state. |
+| `trimtok/ccr.py` | **SQLite WAL + Zstd CCR Store** | Single-file `FastCCRStore` with atomic `BEGIN IMMEDIATE` Base62 `#cN` alias generation, Zstandard compression, cross-instance persistence, and TTL eviction. |
 | `trimtok/mcp_server.py` | **Stdio MCP Server** | Exposes `trimtok_compress_terminal`, `trimtok_compress_tool`, `trimtok_retrieve`, and `trimtok_status` over `msgspec`-accelerated JSON-RPC 2.0. |
 | `trimtok/mcp_install.py` | **Universal Client Installer** | Atomically registers/unregisters `trimtok` across 11 AI agent CLIs and IDEs with automatic `.pre-mcp-install.bak` backups. |
 
 ---
 
-## Safety Rail: CCR v2 (SQLite WAL + Zstd)
+## Performance & Benchmarks
 
-Every compressed output stores its full, unmodified original in the Content-Addressed Context Recovery (**CCR v2**) store.
+### Latency Benchmarks (`python tests/test_benchmark.py`)
 
-| Mode | Example `trimtok_retrieve` Arguments | Behavior |
-| :--- | :--- | :--- |
-| **Section: Errors** | `{"hash": "#c1", "section": "errors", "context_lines": 3}` | Extracts all fault/error lines via `is_important()` with merged `±context_lines` windows. |
-| **Section: Diff** | `{"hash": "#c1", "section": "diff", "context_lines": 3}` | Extracts unified diff headers, `@@` hunk headers, and `+`/`-` changes. |
-| **Section: Summary** | `{"hash": "#c1", "section": "summary"}` | Returns line/char counts, error count, head (15 lines), tail (25 lines), and top 20 error lines. |
-| **Section: Tail** | `{"hash": "#c1", "section": "tail", "limit": 50}` | Returns the last `limit` lines (`1-indexed`) with line numbers. |
-| **Regex Grep** | `{"hash": "#c1", "grep": "ConnectionRefused\|503"}` | Safe bounded regex search across the uncompressed original (`line_no\|text`). |
-| **Line Pagination** | `{"hash": "#c1", "offset": 100, "limit": 80}` | Slices lines `100..179` (`1-indexed`) with line numbers. |
-| **Full Restore** | `{"hash": "#c1"}` | Returns the complete uncompressed `original_content`. |
+| Execution Path | Workload Scenario | Measured Median | P95 | Budget |
+| :--- | :--- | ---: | ---: | ---: |
+| `compress_terminal` | 4.4 KB repeated build log | **1.62 ms** | 3.53 ms | `< 10.0 ms` |
+| `compress_tool_result` (first-seen) | Pretty JSON + TOON round-trip verify | **10.29 ms** | 15.10 ms | `< 25.0 ms` |
+| `compress_tool_result` (repeat) | Exact-repeat passthrough | **0.08 ms** | 0.20 ms | `< 10.0 ms` |
+| `compress_tool_result` (cross-turn) | 60 shared lines folded against session index | **2.65 ms** | 5.52 ms | `< 10.0 ms` |
+| `fast_json_loads` | 1,000 JSON objects (~100 KB) | **0.70 ms** | — | `< 15.0 ms` |
+| `estimate_bpe_tokens` | ~96 KB text (with 64 KB fast sampling) | **0.66 ms** | — | `< 20.0 ms` |
+| `try_delta` (2-stage fuzzy) | 200-line command output with shifted lines | **1.35 ms** | — | `< 5.0 ms` |
+| `ccr.put` / `ccr.get` | SQLite WAL + Zstd write / warm `#c1` read | **0.22 ms / 0.011 ms** | 0.42 ms / 0.012 ms | `< 5.0 ms` |
+
+<details>
+<summary><strong>📊 Click to expand: Full 34-Case Heavy Stress Suite Breakdown (88.3% Total Reduction)</strong></summary>
+
+<br/>
+
+Verified via `python tests/stress_heavy.py`:
+
+| Workload Scenario | Before → After | Reduction |
+| :--- | :--- | ---: |
+| 1 MB repeated tool output (`D12`) | `1,000,000 → 159 chars` | **100.0%** |
+| 500 KB repeated terminal log (`T14`) | `500,000 → 250 chars` | **100.0%** |
+| 5,000-line heartbeat log (`T1`) | `234,999 → 224 chars` | **99.9%** |
+| 2,000-line `pytest` output + 1 failure (`T2`) | `56,108 → 312 chars` | **99.4%** |
+| 5-turn repeated `pytest` loop with Delta (`D16`) | `210,725 → 3,136 chars` | **98.5%** |
+| Cross-turn search vs prior `read_file` (`D5b`) | `47,500 → 1,070 chars` | **97.7%** |
+| 2,000-line Thai + English mixed log (`T11`) | `58,422 → 1,734 chars` | **97.0%** |
+| Scoped multi-file grep search (`D14`) | `42,783 → 1,639 chars` | **96.2%** |
+| 800-file `git diff` output (`T4`) | `46,760 → 2,110 chars` | **95.5%** |
+| 3,000-line error-dense log (`T9`) | `141,779 → 9,214 chars` | **93.5%** |
+| 4,800-line deep stack traceback (`T12`) | `94,656 → 11,230 chars` | **88.1%** |
+| 1,000-row JSON array via TOON (`D15b`) | `101,885 → 26,147 chars` | **74.3%** |
+| Realistic 5-turn mixed session (`SIM`) | `105,839 → 39,904 chars` | **62.3%** |
+| **All 34 stress cases combined** | **`3,559,894 → 417,581 chars`** | **88.3%** (~785k tokens saved) |
+
+</details>
 
 ---
 
-## Performance
+## Configuration & CLI Reference
 
-Verified across the 34-case heavy stress suite (`python tests/stress_heavy.py`) and latency benchmark harness (`python tests/test_benchmark.py`):
+### MCP Tools Exposed (`trimtok.mcp_server`)
 
-| Workload / Benchmark | Result | Budget / Target |
-| :--- | ---: | ---: |
-| **34-case heavy stress suite (`3.56M → 417K chars`)** | **88.3% reduction** (~785k tokens saved) | `> 75.0%` |
-| **1 MB repeated tool / 500 KB repeated terminal log** | **99.9% – 100.0% reduction** | `> 95.0%` |
-| **`compress_terminal` (4.4 KB repeated build log)** | **1.62 ms** median | `< 10.0 ms` |
-| **`compress_tool_result` (JSON + TOON v2 verify)** | **10.29 ms** median | `< 25.0 ms` |
-| **`try_delta` (2-stage fuzzy alignment, 200 lines)** | **1.35 ms** median | `< 5.0 ms` |
-| **`ccr.put` (SQLite WAL + Zstd) / `ccr.get` (warm `#c1`)** | **0.22 ms / 0.011 ms** | `< 5.0 ms` |
+| MCP Tool | Description |
+| :--- | :--- |
+| **`trimtok_compress_terminal`** | Compress noisy shell/terminal output while preserving 100% of errors, tracebacks, and diff hunks; stores original in CCR (`#c1`). |
+| **`trimtok_compress_tool`** | Compress structured tool/JSON/search/code outputs via TOON tables, scoped search grouping, AST skeletonization, and cross-turn span folding. |
+| **`trimtok_retrieve`** | Retrieve uncompressed original content or targeted sections (`errors`, `diff`, `summary`, `tail`, regex `grep`, or line pagination) by `#c1` ref. |
+| **`trimtok_status`** | Inspect token savings, CCR cache stats, or purge expired entries. |
 
-### Verification Suite
+<details>
+<summary><strong>⚙️ Click to expand: Full Configuration Schema & Hermes Settings</strong></summary>
+
+<br/>
+
+| Setting | Type | Default | Description |
+| :--- | :---: | :---: | :--- |
+| `enabled` | `bool` | `true` | Master switch for all hooks (`false` = passthrough). |
+| `guard_ms` | `float` | `50` | Fail-open deadline budget in milliseconds (`1–1000`). |
+| `min_chars` | `int` | `2048` | Minimum character length before compression runs. |
+| `max_lines` | `int` | `120` | Default terminal line-window budget when no command-specific budget applies. |
+| `phase2_enabled` | `bool` | `true` | Enables `transform_tool_result` cross-turn deduplication. |
+| `toon_enabled` | `bool` | `true` | Enables lossless JSON-to-TOON columnar table transcoding. |
+| `delta_enabled` | `bool` | `true` | Enables cross-turn stateful command delta compression. |
+| `delta_threshold` | `float` | `0.65` | Minimum line/skeleton overlap ratio (`0.5–1.0`) required to emit a command delta. |
+| `exclude_commands` | `list[str]` | `[]` | Command prefixes (e.g., `["git log", "docker inspect"]`) that bypass terminal compression. |
+| `exclude_tools` | `list[str]` | `[]` | Tool names that bypass tool-result compression. |
+| `mask_enabled` | `bool` | `true` | Enables `post_llm_call` freshness masking of old turn pointers. |
+| `mask_keep_turns` | `int` | `2` | Number of recent turns kept active before fold pointers expire (`0–32`). |
+| `ccr_max_entries` | `int` | `1000` | Maximum cached originals in CCR before LRU eviction (`10–100000`). |
+| `ccr_max_bytes` | `int` | `52428800` | Maximum total disk budget in bytes (`50 MB` default). |
+| `ccr_ttl_hours` | `int` | `24` | Retention TTL in hours for cached originals (`1–720`). |
+
+</details>
+
+---
+
+## Recommended Ecosystem Combo
+
+While **trimtok** works standalone as your context compression shield, pairing it with [**MemCore**](https://github.com/Stxyu-p/memcore) and [**Skill Proof**](https://github.com/Stxyu-p/skill-proof) completes the **Global Agent Trinity** — connecting every AI coding client on your machine (**Claude Code, Cursor, Antigravity, Gemini CLI, Codex, VS Code Copilot, Windsurf, OpenCode, Cline, and Hermes**) to three unified local hubs:
+
+```mermaid
+flowchart LR
+    Task(["Developer Request"]) --> SP["Skill Proof<br/>~/.skill-proof/skills<br/>(Deterministic Skill Router)"]
+    SP --> MC["MemCore<br/>~/.memcore<br/>(Governed Bitemporal Memory)"]
+    MC --> Agent["Any AI Coding Agent"]
+    Agent --> TT["trimtok<br/>~/.trimtok<br/>(88.3% Context Compression + CCR #c1)"]
+    TT --> Agent
+```
+
+| Pillar | Repository | Global Hub | What Installing All 3 Gives You |
+| :--- | :--- | :--- | :--- |
+| **Context Shield** | **[trimtok](https://github.com/Stxyu-p/trimtok)** | `~/.trimtok` | Cuts terminal, traceback, diff, AST code, and JSON token bloat by **88.3%** with instant `#c1` lossless recovery. |
+| **Governed Memory** | **[MemCore](https://github.com/Stxyu-p/memcore)** | `~/.memcore` | Gives every IDE and CLI **one shared bitemporal brain** (`FTS5` + `sqlite-vec` SIMD + `model2vec`) with hard trust labels and source-file staleness tracking. |
+| **Skill Vault & Router** | **[Skill Proof](https://github.com/Stxyu-p/skill-proof)** | `~/.skill-proof/skills` | Consolidates all dispersed `SKILL.md` playbooks into **one deduplicated global vault** and routes tasks in `< 1 ms` with zero routing LLM calls. |
+
+```bash
+# Install & link the complete Global Agent Trinity across all your IDEs and CLIs
+pip install trimtok memcore skill-proof
+trimtok install && memcore init && memcore install && skill-proof install
+skill-proof vault migrate
+```
+
+---
+
+## Verification & License
 
 ```bash
 pytest -q
@@ -225,9 +416,5 @@ python tests/test_torture.py
 python tests/test_benchmark.py
 python tests/stress_heavy.py
 ```
-
----
-
-## License
 
 Distributed under the [MIT License](LICENSE). Designed and maintained by **P Choke & SORA**.
