@@ -23,28 +23,37 @@ _LOCK = threading.Lock()
 def default_dir() -> Path:
     """Where CCR originals, audit and usage logs live.
 
-    Order: TRIMTOK_DATA_DIR > Hermes (env/runtime/installed on disk, so both
-    hosts share one store and #refs resolve everywhere) > ~/.trimtok.
-    A machine without Hermes never gets a stray ~/.hermes directory.
+    Order:
+      1. TRIMTOK_DATA_DIR (environment override)
+      2. ~/.trimtok (canonical global store in user home)
+
+    If ~/.trimtok does not exist yet and legacy Hermes plugin data
+    exists on disk, it is automatically migrated into ~/.trimtok so that
+    no cached #refs or logs are lost.
     """
     if os.environ.get("TRIMTOK_DATA_DIR"):
         return Path(os.environ["TRIMTOK_DATA_DIR"]).expanduser()
-    if os.environ.get("HERMES_HOME"):
-        return Path(os.environ["HERMES_HOME"]) / "plugin-data" / "trimtok"
-    try:
-        from hermes_constants import get_hermes_home  # type: ignore
-        return get_hermes_home() / "plugin-data" / "trimtok"
-    except Exception:
-        pass
+
     home = Path(os.path.expanduser("~"))
-    candidates = []
-    if os.environ.get("LOCALAPPDATA"):
-        candidates.append(Path(os.environ["LOCALAPPDATA"]) / "hermes")
-    candidates.append(home / ".hermes")
-    for hermes_home in candidates:
-        if hermes_home.is_dir():
-            return hermes_home / "plugin-data" / "trimtok"
-    return home / ".trimtok"
+    canonical_dir = home / ".trimtok"
+
+    # Auto-migrate legacy Hermes store if canonical does not exist yet
+    if not canonical_dir.exists():
+        legacy_candidates = []
+        if os.environ.get("LOCALAPPDATA"):
+            legacy_candidates.append(Path(os.environ["LOCALAPPDATA"]) / "hermes" / "plugin-data" / "trimtok")
+        legacy_candidates.append(home / ".hermes" / "plugin-data" / "trimtok")
+        for legacy in legacy_candidates:
+            if legacy.is_dir() and any(legacy.iterdir()):
+                try:
+                    import shutil
+                    canonical_dir.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copytree(legacy, canonical_dir, dirs_exist_ok=True)
+                    break
+                except Exception:
+                    pass
+
+    return canonical_dir
 
 
 def put(
