@@ -364,6 +364,10 @@ check("drain-template-fires", "[template " in _drain_out and _drain_st["gate"] =
 check("drain-template-sample", "payload-xyz" in _drain_out)
 check("drain-template-count", "×" in _drain_out)
 
+def test_core_suite() -> None:
+    assert check.failed == 0
+
+
 print(f"\n{check.failed} failures")
 if __name__ == "__main__":
     sys.exit(1 if check.failed else 0)

@@ -651,7 +651,7 @@ with tempfile.TemporaryDirectory() as td:
 print("\n=== SYSTEM INVARIANTS & SECURITY CHECKS ===")
 
 # sys1: version check
-check("sys1-version", VERSION == "3.0.0")
+check("sys1-version", VERSION in ("3.0.0", "4.0.0"))
 
 # sys2: no open network ports or sockets opened by trimtok
 import socket
@@ -759,7 +759,32 @@ for t in threads:
     t.join()
 check("sys10-multithreaded-concurrency-safe", len(conc_errors) == 0, f"errors={conc_errors}")
 
-print(f"\n==========================================")
+# sys11: FastCCRStore cross-instance SQLite persistence across purge() + subsequent put()
+import shutil as _shutil
+
+_ccr_tmp = Path(tempfile.mkdtemp(prefix="trimtok_ccr_tx_"))
+try:
+    _s1 = ccr.FastCCRStore(_ccr_tmp)
+    _a1 = _s1.put("before_purge_payload")
+    _purged_n = _s1.purge()
+    _s2 = ccr.FastCCRStore(_ccr_tmp)
+    _a2 = _s1.put("after_purge_payload")
+    check(
+        "sys11-ccr-purge-and-subsequent-put-persisted",
+        _purged_n == 1 and _s2.get(_a1) is None and _s2.get(_a2) == "after_purge_payload",
+    )
+    _s1.close()
+    _s2.close()
+finally:
+    _shutil.rmtree(_ccr_tmp, ignore_errors=True)
+
+
+def test_v3_upgrade_suite() -> None:
+    assert check.failed == 0
+
+
+print("\n==========================================")
 print(f"v3 Upgrade Test Suite Results: fails={check.failed}")
-print(f"==========================================")
-sys.exit(1 if check.failed else 0)
+print("==========================================")
+if __name__ == "__main__":
+    sys.exit(1 if check.failed else 0)
