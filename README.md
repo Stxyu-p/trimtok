@@ -7,6 +7,7 @@
 <p><em>88.3% fewer characters across heavy engineering workloads — zero intelligence lost, every byte recoverable in sub-millisecond time.</em></p>
 
 <p>
+  <a href="https://pypi.org/project/trimtok/"><img src="https://img.shields.io/pypi/v/trimtok?style=flat-square&color=blue" alt="PyPI" /></a>
   <a href="#performance--benchmarks"><img src="docs/badges/latency.svg" alt="Latency" /></a>
   <a href="#core-engineering-guarantees"><img src="docs/badges/dependencies.svg" alt="100% Local & Offline" /></a>
   <a href="#content-addressed-context-recovery-ccr"><img src="docs/badges/safety.svg" alt="Fail-open" /></a>
@@ -398,7 +399,7 @@ flowchart LR
 
 ```bash
 # Install & link the complete Global Agent Trinity across all your IDEs and CLIs
-pip install trimtok memcore skill-proof
+pip install trimtok memcore-omnix skill-proof-router
 trimtok install && memcore init && memcore install && skill-proof install
 skill-proof vault migrate
 ```
