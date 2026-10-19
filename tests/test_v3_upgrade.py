@@ -651,7 +651,7 @@ with tempfile.TemporaryDirectory() as td:
 print("\n=== SYSTEM INVARIANTS & SECURITY CHECKS ===")
 
 # sys1: version check
-check("sys1-version", VERSION in ("3.0.0", "4.0.0"))
+check("sys1-version", VERSION in ("3.0.0", "4.0.0", "4.1.0"))
 
 # sys2: no open network ports or sockets opened by trimtok
 import socket

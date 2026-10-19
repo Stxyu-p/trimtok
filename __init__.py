@@ -24,3 +24,9 @@ else:
     import trimtok as _mod
 
     sys.modules[__name__] = _mod
+
+# A host that loads this file under a namespaced module name keeps a reference
+# to THIS module object and looks for register() on it (the Hermes plugin
+# loader does getattr(module, "register")); swapping sys.modules above does not
+# update that reference, so re-export the canonical entry point here.
+register = _mod.register

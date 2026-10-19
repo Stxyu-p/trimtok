@@ -13,7 +13,7 @@ import time
 from functools import lru_cache
 from typing import Any
 
-VERSION = "4.0.0"
+VERSION = "4.1.0"
 
 try:
     from . import delta_engine

@@ -51,8 +51,11 @@ def main() -> int:
         assert all(len(hooks[name]) == 1 for name in expected_hooks)
         assert "trimtok_retrieve" in host.registered_tools
 
-        home = Path(os.environ["HERMES_HOME"]).resolve()
-        ccr_dir = (home / "plugin-data" / "trimtok").resolve()
+        # v4 stores the CCR database in TRIMTOK_DATA_DIR or ~/.trimtok; the
+        # legacy Hermes plugin-data directory is only auto-migrated on first use.
+        store_root = Path(
+            os.environ.get("TRIMTOK_DATA_DIR") or (Path.home() / ".trimtok")
+        ).resolve()
         retrieve_tools = [
             entry.handler
             for entry in registry._snapshot_entries()
@@ -111,8 +114,7 @@ def main() -> int:
 
         hooks["post_llm_call"][0](session_id=session_id, turn_id="2")
         hooks["on_session_end"][0](session_id=session_id)
-        assert ccr_dir.is_relative_to(home)
-        assert ccr_dir.is_dir()
+        assert store_root.is_dir()
 
         # Phase 4: a repeated command in one session collapses to a delta view,
         # and a fault that persists stays visible under STILL FAILING (the
@@ -158,7 +160,7 @@ def main() -> int:
             f"{len(tool_output)} chars and retrieval restored the original"
         )
         print("PASS: session lifecycle and post_llm_call hooks ran without errors")
-        print(f"PASS: CCR stayed inside temporary HERMES_HOME: {ccr_dir}")
+        print(f"PASS: CCR store root resolved and created: {store_root}")
 
     return 0
 

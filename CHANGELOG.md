@@ -2,6 +2,12 @@
 
 All notable changes to trimtok are documented here.
 
+## [4.1.0] - 2026-10-20
+
+### Added
+- **PyPI Release Workflow** (`.github/workflows/release.yml`): automated build, twine verification, and Trusted Publishing to PyPI on GitHub release.
+- **Hermes Plugin Entry Point Fix** (`__init__.py`): re-exported `register` attribute on the root module object so host loaders that maintain namespaced module references can locate `register` directly.
+
 ## [4.0.0] - 2026-10-18
 
 ### Added
