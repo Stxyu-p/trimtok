@@ -492,23 +492,39 @@ def smart_skeletonize_code(
             continue
         # Skip folding nested functions inside a parent that is itself folded.
         first_stmt = node.body[0]
+        first_fold_stmt = first_stmt
         body_start = first_stmt.lineno  # 1-indexed
-        body_end = node.end_lineno or body_start
 
-        # If the first statement is a docstring, keep the docstring lines.
+        # If the first statement is a docstring, keep the docstring lines and start
+        # folding right after it -- the range must stay contiguous or the retrieval
+        # coordinates in the marker no longer match the file.
         if (
             isinstance(first_stmt, ast.Expr)
             and isinstance(getattr(first_stmt, "value", None), ast.Constant)
             and isinstance(first_stmt.value.value, str)
         ):
-            doc_end = getattr(first_stmt, "end_lineno", first_stmt.lineno) or first_stmt.lineno
-            if len(node.body) == 1:
+            if len(node.body) <= 1:
                 continue  # docstring only -> nothing to fold
+            doc_end = getattr(first_stmt, "end_lineno", first_stmt.lineno) or first_stmt.lineno
+            first_fold_stmt = node.body[1]
             body_start = doc_end + 1
+
+        # A nested decorated def has its decorator on the line ABOVE stmt.lineno,
+        # so folding from stmt.lineno would leave "@decorator" above the `pass`
+        # -> SyntaxError. Start the fold at the decorator instead.
+        decs = getattr(first_fold_stmt, "decorator_list", None)
+        if decs:
+            body_start = min(body_start, min(getattr(d, "lineno", first_fold_stmt.lineno) for d in decs))
+
+        body_end = node.end_lineno or body_start
 
         # If the last statement is a short return/raise, keep it (return-type clarity).
         last_stmt = node.body[-1]
-        if isinstance(last_stmt, (ast.Return, ast.Raise)) and hasattr(last_stmt, "lineno"):
+        if (
+            last_stmt is not first_fold_stmt
+            and isinstance(last_stmt, (ast.Return, ast.Raise))
+            and hasattr(last_stmt, "lineno")
+        ):
             last_span = (getattr(last_stmt, "end_lineno", last_stmt.lineno) or last_stmt.lineno) - last_stmt.lineno + 1
             if last_span <= 2 and last_stmt.lineno > body_start:
                 body_end = last_stmt.lineno - 1
@@ -517,10 +533,16 @@ def smart_skeletonize_code(
         if span_lines < min_body_lines:
             continue
 
-        # Indentation of the first folded body line.
-        raw_first = lines[body_start - 1] if 1 <= body_start <= total_lines else "    "
-        indent_len = len(raw_first) - len(raw_first.lstrip(" \t"))
-        indent = raw_first[:indent_len] if indent_len > 0 else "    "
+        # Indent from the first folded STATEMENT's own line. Reading it from the
+        # line after a docstring hit the blank line -> indent 0 -> the `pass`
+        # dedented out of the method -> IndentationError.
+        stmt_line = lines[first_fold_stmt.lineno - 1] if 1 <= first_fold_stmt.lineno <= total_lines else ""
+        indent_len = len(stmt_line) - len(stmt_line.lstrip(" \t"))
+        if indent_len > 0:
+            indent = stmt_line[:indent_len]
+        else:
+            indent = " " * (getattr(first_fold_stmt, "col_offset", None)
+                            or getattr(node, "col_offset", 0) + 4)
         fold_ranges.append((body_start, body_end, indent, node.name))
 
     if not fold_ranges:

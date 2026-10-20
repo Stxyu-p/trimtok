@@ -462,7 +462,9 @@ def _on_tool_result(
         "tool": str(tool_name or "tool"),
         "kind": "tool_result",
     })
-    if out is not None:
+    if out is not None or stats.get("gate") == "passthrough_reference":
+        # note_turn even for a verbatim read: expire_old_turns ages the file
+        # cache by turn, and a read that is never noted never expires.
         note_turn(result, str(stats.get("digest", "")), session_id=sid, turn_id=turn)
     return out
 

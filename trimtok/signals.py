@@ -255,9 +255,12 @@ def adaptive_terminal_head(
     ref = digest if digest.startswith("#") else f"#{digest}"
     tier = force_tier
     if tier is None:
-        if raw_len <= 4096 and gross_saved_chars < 240:
+        # Driven by the SAVING, not by the payload size: a 10 KB payload that only
+        # saved 100 chars must not carry a 165-char header (that is the band that
+        # produced the reverted_gate failures).
+        if gross_saved_chars < 240:
             tier = 1
-        elif raw_len <= 8192 and gross_saved_chars < 450:
+        elif gross_saved_chars < 450:
             tier = 2
         else:
             tier = 3
@@ -291,9 +294,11 @@ def adaptive_tool_head(
     ref = digest if digest.startswith("#") else f"#{digest}"
     tier = force_tier
     if tier is None:
-        if raw_len <= 4096 or saved_chars < 240:
+        # Saving-driven, like adaptive_terminal_head: a small saving must not
+        # carry a header bigger than the saving.
+        if saved_chars < 240:
             tier = 1
-        elif raw_len <= 8192:
+        elif saved_chars < 450:
             tier = 2
         else:
             tier = 3
@@ -301,10 +306,10 @@ def adaptive_tool_head(
     if tier <= 0:
         return ""
     if tier == 1:
-        return f"[tt:{ref} -{saved_chars}c]"
+        return f"[tt:{ref} -{saved_chars}c]"                                        # ~18 chars
     if tier == 2:
-        return f"[tt:fold -{saved_chars}c {ref} | retrieve(hash=\"{ref}\")]"
-    return tool_head(saved_chars, digest.lstrip("#"))
+        return tool_head(saved_chars, digest.lstrip("#"))                           # ~45 chars
+    return f"[tt:tool kind=result saved={saved_chars} {ref} | retrieve(hash=\"{ref}\")]"  # ~68 chars
 
 
 def seen_lines(count: int, ref: str) -> str:

@@ -13,7 +13,7 @@ import time
 from functools import lru_cache
 from typing import Any
 
-VERSION = "4.2.0"
+VERSION = "4.2.1"
 
 try:
     from . import delta_engine
@@ -285,26 +285,60 @@ def compress_terminal(
     try:
         if not isinstance(output, str):
             return output, {"gate": "passthrough_non_str", "ms": 0.0}
+        if session_id and command:
+            # A shell command that rewrites files invalidates the cached body for
+            # the path it touched -- otherwise the next read_file would claim the
+            # file is "unchanged" when it is not.
+            try:
+                from .dedup import invalidate_shell_mutations
+            except (ImportError, ValueError):
+                from trimtok.dedup import invalidate_shell_mutations
+            try:
+                invalidate_shell_mutations(command, session_id)
+            except Exception:
+                pass
         if len(output) < min_chars:
             # v4.2 Tier 0 for the 512..min_chars band: ANSI + hygiene are lossless,
             # so ship the cleaned text with no header at all instead of passing the
             # raw bytes through (telemetry: 1,306 calls sat in 1K-2K with 0 saving).
-            if len(output) >= 512:
+            if len(output) >= 512 and not SENTINEL_RE.search(output[:512]):
                 try:
-                    try:
-                        from .dedup import hygiene
-                    except (ImportError, ValueError):
-                        from trimtok.dedup import hygiene
-                    clean, _h = hygiene(strip_ansi(output).rstrip())
+                    kind_small = detect_kind(output)
+                    clean = strip_ansi(output)
+                    if kind_small != "diff":
+                        # A unified diff carries " " on its blank context lines --
+                        # hygiene would strip that space and corrupt the diff.
+                        try:
+                            from .dedup import hygiene
+                        except (ImportError, ValueError):
+                            from trimtok.dedup import hygiene
+                        clean, _ = hygiene(clean.rstrip())
                     folded_small, hidden_small = _fold_repeats(_classify(clean.split("\n")), deadline)
-                    if hidden_small == 0:
-                        cand = "\n".join(ln for ln, _ in folded_small)
-                        tb, ta = estimate_tokens(output), estimate_tokens(cand)
-                        if len(cand) < len(output) and ta < tb:
-                            return cand, {
-                                "gate": "ok", "kind": detect_kind(output), "lossless_tier0": True,
-                                "before_chars": len(output), "after_chars": len(cand),
-                                "saved_chars": len(output) - len(cand),
+                    if hidden_small >= 3:
+                        # Repeated lines: fold them and mark the omission.
+                        digest_s = hashlib.sha256(output.encode("utf-8", "replace")).hexdigest()[:12]
+                        body_s = "\n".join(ln for ln, _ in folded_small)
+                        head_s = adaptive_terminal_head(
+                            kind_small, hidden_small, digest_s, len(output),
+                            len(output) - len(body_s), LEGEND, force_tier=1)
+                        cand_s = "\n".join(head_s + [body_s]) if head_s else body_s
+                        tb, ta = estimate_tokens(output), estimate_tokens(cand_s)
+                        if len(cand_s) + 40 <= len(output) and ta < tb:
+                            return cand_s, {
+                                "gate": "ok", "kind": kind_small, "digest": digest_s,
+                                "before_chars": len(output), "after_chars": len(cand_s),
+                                "saved_chars": len(output) - len(cand_s),
+                                "est_tokens_before": tb, "est_tokens_after": ta,
+                                "hidden_lines": hidden_small, "dropped_lines": 0,
+                                "ms": (time.perf_counter() - t0) * 1000,
+                            }
+                    if len(clean) < len(output):
+                        tb, ta = estimate_tokens(output), estimate_tokens(clean)
+                        if ta < tb:
+                            return clean, {
+                                "gate": "ok", "kind": kind_small, "lossless_tier0": True,
+                                "before_chars": len(output), "after_chars": len(clean),
+                                "saved_chars": len(output) - len(clean),
                                 "est_tokens_before": tb, "est_tokens_after": ta,
                                 "hidden_lines": 0, "dropped_lines": 0,
                                 "ms": (time.perf_counter() - t0) * 1000,

@@ -2,6 +2,56 @@
 
 All notable changes to trimtok are documented here.
 
+## [4.2.1] - 2026-10-21
+
+Argon 4 reviewed the v4.2 diff in the original planning thread and returned
+**REQUEST CHANGES** with five blockers. All five are fixed here, and each fix has
+a regression test (`tests/test_v42_argon_fixes.py`) that was verified to fail
+against the pre-fix code.
+
+### Fixed
+- **Syntax corruption in the AST skeletonizer** (`trimtok/pruners.py`) - a method
+  whose docstring was followed by a blank line read its indentation from that
+  blank line and emitted `pass` at the wrong depth (`IndentationError`), and a
+  nested decorated `def` left its `@decorator` above the `pass` (`SyntaxError`).
+  The indentation now comes from the first folded statement, a nested decorator
+  is folded with its `def`, and the fold range stays contiguous so the retrieval
+  coordinates in the marker still match the file.
+- **A re-read after a cold skeleton no longer lies** (`trimtok/dedup.py`) - the
+  first read of a file over 12 KB returns a skeleton; the next read used to answer
+  "identical to prior read in active context" with an outline even though the
+  agent had never seen the body. The cache now records that only a skeleton was
+  delivered, and a repeat read returns the real file.
+- **A unified diff is no longer corrupted** (`trimtok/core.py`, `trimtok/dedup.py`) -
+  `hygiene()` stripped the single space that a diff context line carries, and the
+  512-2047 char band skipped the clean path whenever the payload had repeated
+  lines. Diff payloads now skip `hygiene()` entirely, and a payload with repeated
+  lines is folded and marked instead of being dropped to a passthrough.
+- **The adaptive tool header is wired in** (`trimtok/dedup.py`, `trimtok/signals.py`) -
+  `compress_tool_result` used the fixed v4.1 header with no token gate and no
+  rescue. It now scales the header by the saving, gates on real token counts, and
+  downgrades to the nano header before reverting. The tier order was also
+  corrected: Tier 2 was longer than Tier 3.
+- **Shell mutations invalidate the cached body** (`trimtok/core.py`) -
+  `invalidate_shell_mutations` was written but never called, so a `git checkout`
+  or `sed -i` left a stale "file unchanged" entry behind.
+- **Cached file bodies now expire with their turn** (`trimtok/dedup.py`,
+  `trimtok/__init__.py`) - `expire_old_turns` marked the fold index but not the
+  file cache, and a verbatim read was never noted, so a file could be served as
+  "unchanged" long after it had left the context window.
+- **The delta header now advertises a retrievable ref** (`trimtok/dedup.py`) -
+  `#prev_ref` pointed at content that was never written to the CCR, so
+  `trimtok_retrieve` on it failed with "Not found or expired".
+
+### Added
+- `tests/test_v42_argon_fixes.py` - eight regression tests, one per blocker plus
+  the contract checks that must keep holding.
+
+### Changed
+- The read-file delta path is limited to files of at most 1500 lines; above that
+  the file is skeletonized instead, because `SequenceMatcher` on lines does not
+  fit the guard budget.
+
 ## [4.2.0] - 2026-10-20
 
 ### Added

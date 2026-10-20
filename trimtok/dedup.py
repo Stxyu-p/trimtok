@@ -150,6 +150,12 @@ def expire_old_turns(
             for line, owner in list(seen["lines"].items()):
                 if owner in doomed:
                     del seen["lines"][line]
+            # A cached file body whose turn expired must not be served later as
+            # "identical to prior read in active context" -- the agent can no
+            # longer see that body in its context window.
+            for fmeta in seen.get("files", {}).values():
+                if isinstance(fmeta, dict) and fmeta.get("digest") in doomed:
+                    fmeta["expired"] = True
             return len(old_ids)
     except Exception:
         return 0
@@ -804,7 +810,19 @@ def _handle_read_file_v42(
     prev_entry = file_cache.get(cache_key)
 
     # Case A: the same file is read again with identical content.
-    if prev_entry is not None and prev_entry.get("digest") == digest and not prev_entry.get("expired", False):
+    if (
+        prev_entry is not None
+        and prev_entry.get("digest") == digest
+        and not prev_entry.get("expired", False)
+    ):
+        if prev_entry.get("skeleton_only"):
+            # The previous turn delivered a SKELETON, not the file -- the agent has
+            # never seen this body. "identical to prior read in active context"
+            # would be a lie, so hand over the real file instead of an outline.
+            return result, {
+                "gate": "passthrough_reference", "digest": digest,
+                "ms": (time.perf_counter() - t0) * 1000,
+            }
         prev_entry["reads"] = prev_entry.get("reads", 1) + 1
         outline = _build_file_outline(result)
         stub = (
@@ -831,8 +849,23 @@ def _handle_read_file_v42(
     if norm_path and prev_entry is not None and prev_entry.get("digest") != digest:
         prev_text = prev_entry.get("text", "")
         prev_digest = prev_entry.get("digest", "")
-        if prev_text:
-            delta_view, d_saved = _build_read_delta(prev_text, result, digest, prev_digest)
+        # SequenceMatcher is O(n*m) on lines -- skip the delta for big files
+        # (it would blow the guard budget) and fall through to the skeleton path.
+        if prev_text and len(result.split("\n")) <= 1500:
+            # The header advertises #prev_ref, so the previous body has to be
+            # retrievable by that ref -> store it in the CCR now.
+            prev_ref = prev_digest
+            try:
+                from .ccr import put as ccr_put
+            except (ImportError, ValueError):
+                from trimtok.ccr import put as ccr_put
+            try:
+                stored = ccr_put(prev_text)
+                if stored:
+                    prev_ref = stored.lstrip("#")
+            except Exception:
+                pass
+            delta_view, d_saved = _build_read_delta(prev_text, result, digest, prev_ref)
             file_cache[cache_key] = {"digest": digest, "text": result, "reads": 1, "expired": False}
             if d_saved > 0 and estimate_tokens(delta_view) < estimate_tokens(result):
                 return delta_view, {
@@ -861,6 +894,8 @@ def _handle_read_file_v42(
             head = adaptive_tool_head(sk_saved, digest, len(result))
             candidate = f"{head}\n{sk_text}" if head else sk_text
             if len(candidate) < len(result) and estimate_tokens(candidate) < estimate_tokens(result):
+                # What the agent sees this turn is a skeleton, not the file body.
+                file_cache[cache_key]["skeleton_only"] = True
                 return candidate, {
                     "gate": "ok",
                     "kind": "file_skeleton",
@@ -890,11 +925,16 @@ def micro_minify_tool(result: str, session_id: str, t0: float) -> tuple[str, dic
     char-based estimate is both safe and honest here.
     """
     digest = hashlib.sha256(result.encode("utf-8", "replace")).hexdigest()[:12]
-    text, h_saved = hygiene(result)
+    # A unified diff carries " " on its blank context lines -- hygiene would strip
+    # that space and corrupt the diff.
+    if "diff --git" in result[:512] or "\n@@ -" in result[:512]:
+        text, h_saved = result, 0
+    else:
+        text, h_saved = hygiene(result)
     text, m_saved = minify_json(text)
-    remember(text, session_id, owner=digest)
     total_saved = len(result) - len(text)
     if total_saved >= 4 and len(text) < len(result):
+        remember(text, session_id, owner=digest)
         return text, {
             "gate": "ok",
             "digest": digest,
@@ -1016,20 +1056,43 @@ def compress_tool_result(
                 "ms": (time.perf_counter() - t0) * 1000,
             }
         digest = _rh
+        is_lossless_only = (
+            v_saved == 0 and ss_saved == 0 and f_saved == 0 and i_saved == 0
+            and dt_saved == 0 and ht_saved == 0 and sk_saved == 0 and not toon_used
+        )
         if ht_saved > 0:
             head = headtail_head(ht_head, ht_tail, ht_omitted, digest)
         else:
-            head = tool_head(len(result) - len(folded), digest)
-        new_result = head + "\n" + folded
-        if len(new_result) >= len(result):
-            return result, {"gate": "reverted_gate", "before_chars": len(result),
-                            "ms": (time.perf_counter() - t0) * 1000}
+            head = adaptive_tool_head(
+                len(result) - len(folded), digest, len(result),
+                is_lossless_only=is_lossless_only,
+            )
+        new_result = f"{head}\n{folded}" if head else folded
+        tok_before = estimate_tokens(result)
+        tok_after = estimate_tokens(new_result)
+        if len(new_result) >= len(result) or tok_after >= tok_before:
+            # Cascade Gate Rescue: a header that costs more than it saves is
+            # reverted wholesale today. Try the nano header first.
+            if not is_lossless_only and ht_saved == 0:
+                nano_head = adaptive_tool_head(
+                    len(result) - len(folded), digest, len(result), force_tier=1)
+                nano_cand = f"{nano_head}\n{folded}" if nano_head else folded
+                nano_tok = estimate_tokens(nano_cand)
+                if len(nano_cand) < len(result) and nano_tok < tok_before:
+                    new_result, tok_after = nano_cand, nano_tok
+            if len(new_result) >= len(result) or tok_after >= tok_before:
+                failed_hashes.add(_rh)
+                return result, {
+                    "gate": "reverted_gate", "before_chars": len(result),
+                    "ms": (time.perf_counter() - t0) * 1000,
+                }
         return new_result, {
             "gate": "ok", "digest": digest,
+            "lossless_tier0": bool(is_lossless_only and not head),
             "before_chars": len(result), "after_chars": len(new_result),
             "saved_chars": len(result) - len(new_result),
-            "est_tokens_before": estimate_tokens(result),
-            "est_tokens_after": estimate_tokens(new_result),
+            "est_tokens_before": tok_before,
+            "est_tokens_after": tok_after,
             "hygiene_saved": h_saved, "volatile_saved": v_saved,
             "minify_saved": m_saved, "toon_saved": t_saved,
             "toon_used": toon_used,

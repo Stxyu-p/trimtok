@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Universal CLI for Trimtok v4.2.0.
+"""Universal CLI for Trimtok v4.2.1.
 
 Usage:
   trimtok install [--client <name>] [--dry-run] [--print]   # Auto-register MCP server in all detected agent CLIs/IDEs

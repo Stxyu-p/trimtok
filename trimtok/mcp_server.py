@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal stdio MCP server exposing Trimtok v4.2.0 to any MCP-capable agent host.
+"""Minimal stdio MCP server exposing Trimtok v4.2.1 to any MCP-capable agent host.
 
 Speaks newline-delimited JSON-RPC 2.0 on stdin/stdout. Tools:
   trimtok_compress_terminal — compress terminal/shell output (windowing, diff, traceback, delta)
@@ -37,7 +37,7 @@ except ImportError:
 SERVER_INFO = {"name": "trimtok", "version": VERSION}
 FALLBACK_PROTOCOL = "2024-11-05"
 SERVER_INSTRUCTIONS = (
-    "Trimtok v4.2.0 — Deterministic Context Compressor & Lossless CCR Cache.\n\n"
+    "Trimtok v4.2.1 — Deterministic Context Compressor & Lossless CCR Cache.\n\n"
     "## Mandatory Agent Habit (When to Use Trimtok)\n"
     "1. **Noisy Terminal / Test / Build Logs (>2 KB):** Call `trimtok_compress_terminal` (pass `output` or `file_path`) "
     "to compress repetitive logs while preserving 100% of errors, tracebacks, and unified git diffs.\n"
@@ -101,7 +101,7 @@ TOOLS = [
     },
     {
         "name": "trimtok_status",
-        "description": "Inspect Trimtok v4.2.0 compression stats, CCR cache size, or purge expired entries.",
+        "description": "Inspect Trimtok v4.2.1 compression stats, CCR cache size, or purge expired entries.",
         "inputSchema": {
             "type": "object",
             "properties": {
