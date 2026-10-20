@@ -6,8 +6,10 @@ Never raises.
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json as _json
+import os
 import re
 import threading
 import time
@@ -19,6 +21,7 @@ try:
         LEGEND_TOON as _TOON_LEGEND,
         SENTINEL_RE,
         SLOT_RE as _SLOT_RE,
+        adaptive_tool_head,
         estimate_bpe_gain,
         estimate_tokens,
         fast_json_loads,
@@ -32,7 +35,7 @@ try:
         template_head,
         tool_head,
     )
-    from .pruners import group_search_hits, skeletonize_code
+    from .pruners import group_search_hits, skeletonize_code, smart_skeletonize_code
     from .toon_codec import fold_json_to_toon
 except ImportError:
     from signals import (
@@ -40,6 +43,7 @@ except ImportError:
         LEGEND_TOON as _TOON_LEGEND,
         SENTINEL_RE,
         SLOT_RE as _SLOT_RE,
+        adaptive_tool_head,
         estimate_bpe_gain,
         estimate_tokens,
         fast_json_loads,
@@ -53,7 +57,7 @@ except ImportError:
         template_head,
         tool_head,
     )
-    from pruners import group_search_hits, skeletonize_code
+    from pruners import group_search_hits, skeletonize_code, smart_skeletonize_code
     from toon_codec import fold_json_to_toon
 
 _MIN_SPAN_LINES = 5
@@ -638,10 +642,280 @@ def minify_json(text: str) -> tuple[str, int]:
         return text, 0
 
 
+# ---------------------------------------------------------------------------
+# 5. v4.2: Stateful Read-File Engine, Micro-Minify, raw_hashes fix
+# ---------------------------------------------------------------------------
+_MICRO_MIN_CHARS = 512
+_COLD_READ_SKELETON_MIN_CHARS = 12_000  # files <= 12KB: cold read stays verbatim (patch safety)
+_READ_DELTA_CONTEXT_LINES = 12          # real lines shown +/- 12 around an edited region
+_MAX_FILE_CACHE = 64                    # per-session cached file bodies (memory bound)
+_MUTATING_TOOLS = frozenset({
+    "patch", "edit_file", "write_file", "replace_in_file",
+    "multi_edit", "apply_patch", "create_file", "str_replace_editor",
+})
+
+# Shell commands that can change files on disk -> the cached file body is stale.
+_MUTATING_SHELL_RE = re.compile(
+    r"(?i)(?:\bgit\s+(?:checkout|reset|restore|switch|clean|stash\s+(?:pop|apply|drop))\b"
+    r"|\bsed\s+-i\b|\btruncate\b|\btee\b|\b(?:cp|mv|rm)\s+-\w|\bcat\b[^|;]*>)"
+)
+
+
+def invalidate_shell_mutations(command: str, session_id: str = "") -> int:
+    """Drop cached file bodies when a shell command may have changed files.
+
+    Conservative by design: the whole per-session file cache is dropped, so the
+    next read is a cold verbatim read.  That is a small token cost, never a
+    correctness risk.
+    """
+    if not command or not _MUTATING_SHELL_RE.search(command):
+        return 0
+    try:
+        with _SEEN_LOCK:
+            seen = _seen(session_id or "default")
+            files = seen.get("files") or {}
+            n = len(files)
+            if n:
+                seen["files"] = {}
+            return n
+    except Exception:
+        return 0
+
+
+def _extract_file_args(args: Any) -> tuple[str, int | None, int | None]:
+    """Extract normalized (file_path, offset, limit) from tool arguments."""
+    if isinstance(args, str) and args.strip().startswith("{"):
+        try:
+            args = fast_json_loads(args)
+        except Exception:
+            return "", None, None
+    if not isinstance(args, dict):
+        return "", None, None
+    raw_path = (
+        args.get("path")
+        or args.get("file_path")
+        or args.get("target_file")
+        or args.get("filename")
+        or ""
+    )
+    norm_path = os.path.normcase(os.path.normpath(str(raw_path).strip())) if raw_path else ""
+    offset = args.get("offset") or args.get("start_line")
+    limit = args.get("limit") or args.get("num_lines") or args.get("end_line")
+    try:
+        offset_i = int(offset) if offset is not None else None
+    except Exception:
+        offset_i = None
+    try:
+        limit_i = int(limit) if limit is not None else None
+    except Exception:
+        limit_i = None
+    return norm_path, offset_i, limit_i
+
+
+def _build_file_outline(text: str, max_items: int = 35) -> str:
+    """Fast O(N) structural outline (classes/functions with 1-indexed line numbers)."""
+    items: list[str] = []
+    for idx, line in enumerate(text.split("\n"), 1):
+        s = line.lstrip()
+        if s.startswith(("def ", "async def ", "class ", "interface ", "func ", "fn ", "pub fn ", "export function ")):
+            sig = s.split("{")[0].strip()
+            if sig.endswith(":"):
+                sig = sig[:-1].strip()
+            items.append(f"  L{idx}: {sig[:90]}")
+            if len(items) >= max_items:
+                items.append("  ...")
+                break
+    return "\n".join(items) if items else f"  (total {text.count(chr(10)) + 1} lines)"
+
+
+def _build_read_delta(
+    prev_text: str,
+    cur_text: str,
+    cur_ref: str,
+    prev_ref: str,
+    ctx_lines: int = _READ_DELTA_CONTEXT_LINES,
+) -> tuple[str, int]:
+    """Build line-numbered contextual diff view when a previously read file is modified."""
+    prev_lines = prev_text.split("\n")
+    cur_lines = cur_text.split("\n")
+    matcher = difflib.SequenceMatcher(None, prev_lines, cur_lines, autojunk=False)
+    changed_cur_indices: list[int] = []
+    for tag, _i1, _i2, j1, j2 in matcher.get_opcodes():
+        if tag != "equal":
+            changed_cur_indices.extend(range(j1, max(j1 + 1, j2)))
+
+    if not changed_cur_indices:
+        return cur_text, 0
+
+    total = len(cur_lines)
+    intervals: list[tuple[int, int]] = []
+    for idx in changed_cur_indices:
+        s = max(0, idx - ctx_lines)
+        e = min(total, idx + ctx_lines + 1)
+        if intervals and s <= intervals[-1][1]:
+            intervals[-1] = (intervals[-1][0], max(intervals[-1][1], e))
+        else:
+            intervals.append((s, e))
+
+    chunks: list[str] = [
+        f"[tt:file_delta #{cur_ref} vs #{prev_ref} | {total}L total, showing modified hunks +/-{ctx_lines}L]"
+    ]
+    prev_end = 0
+    for s, e in intervals:
+        if s > prev_end:
+            chunks.append(f"[... L{prev_end + 1}-L{s} ({s - prev_end} unchanged lines in #{cur_ref}) ...]")
+        for ln_idx in range(s, e):
+            chunks.append(f"{ln_idx + 1}|{cur_lines[ln_idx]}")
+        prev_end = e
+    if prev_end < total:
+        chunks.append(f"[... L{prev_end + 1}-L{total} ({total - prev_end} unchanged lines in #{cur_ref}) ...]")
+
+    delta_str = "\n".join(chunks)
+    saved = len(cur_text) - len(delta_str)
+    if saved <= 120:
+        return cur_text, 0
+    return delta_str, saved
+
+
+def _handle_read_file_v42(
+    result: str,
+    session_id: str,
+    args: Any,
+    min_chars: int,
+    t0: float,
+) -> tuple[str, dict]:
+    """3-Tier Stateful Handler for read_file with 100% Patch Safety."""
+    norm_path, offset, limit = _extract_file_args(args)
+    digest = hashlib.sha256(result.encode("utf-8", "replace")).hexdigest()[:12]
+    clean_text, _ = hygiene(result)
+    remember(clean_text, session_id, owner=digest)
+
+    # Rule 0: an explicit offset/limit slice (or a file below min_chars) is
+    # returned verbatim so that a subsequent patch is never handed a mangled body.
+    if offset is not None or limit is not None or len(result) < min_chars:
+        return result, {
+            "gate": "passthrough_reference", "digest": digest,
+            "ms": (time.perf_counter() - t0) * 1000,
+        }
+
+    seen = _seen(session_id)
+    file_cache: dict[str, dict] = seen.setdefault("files", {})
+    cache_key = norm_path or f"__anon_{digest}"
+    prev_entry = file_cache.get(cache_key)
+
+    # Case A: the same file is read again with identical content.
+    if prev_entry is not None and prev_entry.get("digest") == digest and not prev_entry.get("expired", False):
+        prev_entry["reads"] = prev_entry.get("reads", 1) + 1
+        outline = _build_file_outline(result)
+        stub = (
+            f"[tt:file_unchanged #{digest} path=\"{norm_path or 'file'}\" "
+            f"({len(result)} chars, {result.count(chr(10)) + 1}L) — identical to prior read in active context]\n"
+            f"Outline (read_file offset/limit for exact lines):\n"
+            f"{outline}"
+        )
+        if len(stub) < len(result) and estimate_tokens(stub) < estimate_tokens(result):
+            return stub, {
+                "gate": "ok",
+                "kind": "file_cache_hit",
+                "digest": digest,
+                "before_chars": len(result),
+                "after_chars": len(stub),
+                "saved_chars": len(result) - len(stub),
+                "est_tokens_before": estimate_tokens(result),
+                "est_tokens_after": estimate_tokens(stub),
+                "fold_saved": len(result) - len(stub),
+                "ms": (time.perf_counter() - t0) * 1000,
+            }
+
+    # Case B: the file was modified since the last read -> contextual delta.
+    if norm_path and prev_entry is not None and prev_entry.get("digest") != digest:
+        prev_text = prev_entry.get("text", "")
+        prev_digest = prev_entry.get("digest", "")
+        if prev_text:
+            delta_view, d_saved = _build_read_delta(prev_text, result, digest, prev_digest)
+            file_cache[cache_key] = {"digest": digest, "text": result, "reads": 1, "expired": False}
+            if d_saved > 0 and estimate_tokens(delta_view) < estimate_tokens(result):
+                return delta_view, {
+                    "gate": "ok",
+                    "kind": "file_delta",
+                    "digest": digest,
+                    "before_chars": len(result),
+                    "after_chars": len(delta_view),
+                    "saved_chars": d_saved,
+                    "est_tokens_before": estimate_tokens(result),
+                    "est_tokens_after": estimate_tokens(delta_view),
+                    "fold_saved": d_saved,
+                    "ms": (time.perf_counter() - t0) * 1000,
+                }
+
+    # Record the state of this read (first read or a read we did not fold).
+    if len(file_cache) >= _MAX_FILE_CACHE:
+        for _old_key in list(file_cache.keys())[: len(file_cache) - _MAX_FILE_CACHE + 1]:
+            file_cache.pop(_old_key, None)
+    file_cache[cache_key] = {"digest": digest, "text": result, "reads": 1, "expired": False}
+
+    # Case C: cold first read of a large file -> line-anchored AST skeleton.
+    if len(result) >= _COLD_READ_SKELETON_MIN_CHARS:
+        sk_text, sk_saved, fn_count = smart_skeletonize_code(result, ref=f"#{digest}")
+        if sk_saved > 200 and fn_count > 0:
+            head = adaptive_tool_head(sk_saved, digest, len(result))
+            candidate = f"{head}\n{sk_text}" if head else sk_text
+            if len(candidate) < len(result) and estimate_tokens(candidate) < estimate_tokens(result):
+                return candidate, {
+                    "gate": "ok",
+                    "kind": "file_skeleton",
+                    "digest": digest,
+                    "before_chars": len(result),
+                    "after_chars": len(candidate),
+                    "saved_chars": len(result) - len(candidate),
+                    "est_tokens_before": estimate_tokens(result),
+                    "est_tokens_after": estimate_tokens(candidate),
+                    "skeleton_saved": sk_saved,
+                    "ms": (time.perf_counter() - t0) * 1000,
+                }
+
+    # Cold first read of a 2KB-12KB file: verbatim so the agent can patch safely.
+    return result, {
+        "gate": "passthrough_reference", "digest": digest,
+        "ms": (time.perf_counter() - t0) * 1000,
+    }
+
+
+def micro_minify_tool(result: str, session_id: str, t0: float) -> tuple[str, dict]:
+    """Zero-risk fast lane for 512..2047 char tool outputs (Tier 0 headerless).
+
+    Deliberately avoids estimate_tokens(): that is a real BPE pass (~0.19 ms per
+    1.6 KB) and this lane's whole point is to be near-free on every tool result
+    (plan target p95 < 0.25 ms). hygiene/minify_json only remove characters, so a
+    char-based estimate is both safe and honest here.
+    """
+    digest = hashlib.sha256(result.encode("utf-8", "replace")).hexdigest()[:12]
+    text, h_saved = hygiene(result)
+    text, m_saved = minify_json(text)
+    remember(text, session_id, owner=digest)
+    total_saved = len(result) - len(text)
+    if total_saved >= 4 and len(text) < len(result):
+        return text, {
+            "gate": "ok",
+            "digest": digest,
+            "lossless_tier0": True,  # nothing semantic was removed -> no CCR write needed
+            "before_chars": len(result),
+            "after_chars": len(text),
+            "saved_chars": total_saved,
+            "est_tokens_before": len(result) // 4,
+            "est_tokens_after": len(text) // 4,
+            "hygiene_saved": h_saved,
+            "minify_saved": m_saved,
+            "ms": (time.perf_counter() - t0) * 1000,
+        }
+    return result, {"gate": "passthrough_small", "ms": (time.perf_counter() - t0) * 1000}
+
+
 def compress_tool_result(
     tool_name: str,
     result: str,
     *,
+    args: Any = None,
     session_id: str = "",
     min_chars: int = 2048,
     toon_enabled: bool = True,
@@ -654,21 +928,30 @@ def compress_tool_result(
             return result, {"gate": "passthrough_non_str", "ms": 0.0}
         if SENTINEL_RE.search(result[:2000]):
             return result, {"gate": "passthrough_sentinel", "ms": 0.0}
-        if len(result) < min_chars:
-            return result, {"gate": "passthrough_small", "ms": 0.0}
-        if tool_name == "read_file":
+        # A mutating tool invalidates the cached body for the path it touched:
+        # the next read of that path must be treated as a fresh cold read.
+        if tool_name in _MUTATING_TOOLS:
             try:
-                _rt, _ = hygiene(result)
-                _rt, _ = normalize_volatile(_rt)
-                _rt, _ = minify_json(_rt)
-                _rd = hashlib.sha256(result.encode("utf-8", "replace")).hexdigest()[:12]
-                remember(_rt, session_id, owner=_rd)
+                mut_path, _, _ = _extract_file_args(args)
+                if mut_path:
+                    with _SEEN_LOCK:
+                        _seen(session_id or "default").setdefault("files", {}).pop(mut_path, None)
             except Exception:
                 pass
-            return result, {"gate": "passthrough_reference", "ms": 0.0}
+        if tool_name == "read_file":
+            return _handle_read_file_v42(result, session_id, args, min_chars, t0)
+        if len(result) < min_chars:
+            if len(result) >= _MICRO_MIN_CHARS:
+                return micro_minify_tool(result, session_id, t0)
+            return result, {"gate": "passthrough_small", "ms": 0.0}
         _rh = hashlib.sha256(result.encode("utf-8", "replace")).hexdigest()[:12]
-        raw_hashes = _seen(session_id or "default")["raw"]
-        if _rh in raw_hashes:
+        seen_state = _seen(session_id or "default")
+        failed_hashes = seen_state.setdefault("failed_raw", set())
+        # Only a hash that previously FAILED (reverted_gate) and has no span in
+        # the fold index may be skipped; a result that was compressed
+        # successfully before must flow into fold_spans() again so it can be
+        # folded down to a pointer instead of shipping in full.
+        if _rh in failed_hashes and not any(h == _rh for h, _ in seen_state["spans"]):
             return result, {"gate": "passthrough_repeat", "ms": 0.0}
         if deadline is not None:
             deadline.check()
@@ -727,13 +1010,12 @@ def compress_tool_result(
             except Exception:
                 pass
         if len(folded) >= len(result):
-            raw_hashes.add(_rh)
+            failed_hashes.add(_rh)
             return result, {
                 "gate": "reverted_gate", "before_chars": len(result),
                 "ms": (time.perf_counter() - t0) * 1000,
             }
         digest = _rh
-        raw_hashes.add(_rh)
         if ht_saved > 0:
             head = headtail_head(ht_head, ht_tail, ht_omitted, digest)
         else:
@@ -761,6 +1043,9 @@ def compress_tool_result(
     except TimeoutError:
         return result, {"gate": "passthrough_timeout",
                         "ms": (time.perf_counter() - t0) * 1000}
-    except Exception:
+    except Exception as _e:
+        # Surface the cause: a swallowed exception here silently disables ALL
+        # tool-result compression, which is invisible in telemetry without this.
         return result, {"gate": "passthrough_exception",
+                        "error": f"{type(_e).__name__}: {_e}"[:300],
                         "ms": (time.perf_counter() - t0) * 1000}

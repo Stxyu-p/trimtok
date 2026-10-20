@@ -13,7 +13,7 @@ import time
 from functools import lru_cache
 from typing import Any
 
-VERSION = "4.1.0"
+VERSION = "4.2.0"
 
 try:
     from . import delta_engine
@@ -27,6 +27,7 @@ try:
         is_exempt,
         is_important,
         strip_ansi,
+        adaptive_terminal_head,
         terminal_head,
     )
     from .pruners import prune_traceback, prune_unified_diff
@@ -42,6 +43,7 @@ except (ImportError, ValueError):
         is_exempt,
         is_important,
         strip_ansi,
+        adaptive_terminal_head,
         terminal_head,
     )
     from trimtok.pruners import prune_traceback, prune_unified_diff
@@ -284,6 +286,31 @@ def compress_terminal(
         if not isinstance(output, str):
             return output, {"gate": "passthrough_non_str", "ms": 0.0}
         if len(output) < min_chars:
+            # v4.2 Tier 0 for the 512..min_chars band: ANSI + hygiene are lossless,
+            # so ship the cleaned text with no header at all instead of passing the
+            # raw bytes through (telemetry: 1,306 calls sat in 1K-2K with 0 saving).
+            if len(output) >= 512:
+                try:
+                    try:
+                        from .dedup import hygiene
+                    except (ImportError, ValueError):
+                        from trimtok.dedup import hygiene
+                    clean, _h = hygiene(strip_ansi(output).rstrip())
+                    folded_small, hidden_small = _fold_repeats(_classify(clean.split("\n")), deadline)
+                    if hidden_small == 0:
+                        cand = "\n".join(ln for ln, _ in folded_small)
+                        tb, ta = estimate_tokens(output), estimate_tokens(cand)
+                        if len(cand) < len(output) and ta < tb:
+                            return cand, {
+                                "gate": "ok", "kind": detect_kind(output), "lossless_tier0": True,
+                                "before_chars": len(output), "after_chars": len(cand),
+                                "saved_chars": len(output) - len(cand),
+                                "est_tokens_before": tb, "est_tokens_after": ta,
+                                "hidden_lines": 0, "dropped_lines": 0,
+                                "ms": (time.perf_counter() - t0) * 1000,
+                            }
+                except Exception:
+                    pass
             return output, {"gate": "passthrough_small", "ms": 0.0}
         if SENTINEL_RE.search(output[:2000]):
             return output, {"gate": "passthrough_sentinel", "ms": 0.0}
@@ -322,16 +349,43 @@ def compress_terminal(
         ]
         windowed, dropped = _window(kept, budget)
         digest = hashlib.sha256(output.encode("utf-8", "replace")).hexdigest()[:12]
-        head = [terminal_head(kind, hidden + dropped, digest), LEGEND]
-        new_output = "\n".join(head + windowed)
+        omitted_total = hidden + dropped
+        gross_saved = len(output) - sum(len(x) + 1 for x in windowed)
         tokens_before = estimate_tokens(output)
+        head = adaptive_terminal_head(kind, omitted_total, digest, len(output), gross_saved, LEGEND)
+        new_output = "\n".join(head + windowed) if head else "\n".join(windowed)
         tokens_after = estimate_tokens(new_output)
         if len(new_output) >= len(output) or tokens_after >= tokens_before:
-            return output, {
-                "gate": "reverted_gate", "kind": kind,
-                "before_chars": len(output), "after_chars": len(output),
-                "saved_chars": 0, "ms": (time.perf_counter() - t0) * 1000,
-            }
+            # v4.2 cascade rescue: a header that eats the saving IS the 2KB-4KB
+            # reverted_gate band (558 telemetry events). Try the nano header, then
+            # lossless-only ANSI/hygiene strip, before giving up on the payload.
+            #
+            # ponytail: no retry budget / no loop -- two fixed fallbacks, because a
+            # third tier has never paid for its own header in the telemetry.
+            if omitted_total > 0:
+                nano = adaptive_terminal_head(
+                    kind, omitted_total, digest, len(output), gross_saved, LEGEND, force_tier=1)
+                nano_out = "\n".join(nano + windowed) if nano else "\n".join(windowed)
+                nano_tok = estimate_tokens(nano_out)
+                if len(nano_out) < len(output) and nano_tok < tokens_before:
+                    new_output, tokens_after = nano_out, nano_tok
+            if len(new_output) >= len(output) or tokens_after >= tokens_before:
+                clean_only = strip_ansi(output).rstrip()
+                clean_tok = estimate_tokens(clean_only)
+                if len(clean_only) + 12 <= len(output) and clean_tok < tokens_before:
+                    return clean_only, {
+                        "gate": "ok", "kind": kind, "lossless_tier0": True,
+                        "before_chars": len(output), "after_chars": len(clean_only),
+                        "saved_chars": len(output) - len(clean_only),
+                        "est_tokens_before": tokens_before, "est_tokens_after": clean_tok,
+                        "hidden_lines": 0, "dropped_lines": 0,
+                        "ms": (time.perf_counter() - t0) * 1000,
+                    }
+                return output, {
+                    "gate": "reverted_gate", "kind": kind,
+                    "before_chars": len(output), "after_chars": len(output),
+                    "saved_chars": 0, "ms": (time.perf_counter() - t0) * 1000,
+                }
         in_err = {ln.strip()[:160] for ln, imp in flagged_all if imp}
         out_txt = "\n".join(windowed)
         missing = [e for e in in_err if e and e not in out_txt and not e.startswith(_KEEP_PREFIX)]

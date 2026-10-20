@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import re
 from typing import Any
 
@@ -447,3 +448,117 @@ def skeletonize_code(code: str, max_body_lines: int = 5) -> str:
 
     res = "\n".join(out)
     return res if len(res) < len(code) else code
+
+
+# ---------------------------------------------------------------------------
+# 5. Line-Anchored Smart AST Skeletonizer (v4.2)
+# ---------------------------------------------------------------------------
+_MIN_FOLD_BODY_LINES = 15  # functions of 15 lines or fewer are never folded
+
+
+def smart_skeletonize_code(
+    text: str,
+    ref: str = "",
+    *,
+    min_body_lines: int = _MIN_FOLD_BODY_LINES,
+) -> tuple[str, int, int]:
+    """Line-anchored AST code skeletonizer with Zero Loss of Signatures/Types.
+
+    Preserves 100% of:
+      - Imports, module constants, global assignments, type definitions
+      - Class/Function decorators, full multi-line signatures & type annotations
+      - First line of docstrings
+      - Short functions/methods (<= min_body_lines)
+      - Final return/yield/raise statement of folded functions (for return-type clarity)
+    Replaces only the interior implementation body of long functions with an exact
+    1-indexed line-range marker so the agent can call read_file(offset=..., limit=...).
+
+    Returns: (skeleton_text, saved_chars, folded_functions_count)
+    """
+    try:
+        tree = ast.parse(text)
+    except Exception:
+        return text, 0, 0
+
+    lines = text.split("\n")
+    total_lines = len(lines)
+    # Ranges to fold: (fold_start_1idx, fold_end_1idx, indent_str, func_name)
+    fold_ranges: list[tuple[int, int, str, str]] = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not getattr(node, "body", None) or not hasattr(node, "end_lineno"):
+            continue
+        # Skip folding nested functions inside a parent that is itself folded.
+        first_stmt = node.body[0]
+        body_start = first_stmt.lineno  # 1-indexed
+        body_end = node.end_lineno or body_start
+
+        # If the first statement is a docstring, keep the docstring lines.
+        if (
+            isinstance(first_stmt, ast.Expr)
+            and isinstance(getattr(first_stmt, "value", None), ast.Constant)
+            and isinstance(first_stmt.value.value, str)
+        ):
+            doc_end = getattr(first_stmt, "end_lineno", first_stmt.lineno) or first_stmt.lineno
+            if len(node.body) == 1:
+                continue  # docstring only -> nothing to fold
+            body_start = doc_end + 1
+
+        # If the last statement is a short return/raise, keep it (return-type clarity).
+        last_stmt = node.body[-1]
+        if isinstance(last_stmt, (ast.Return, ast.Raise)) and hasattr(last_stmt, "lineno"):
+            last_span = (getattr(last_stmt, "end_lineno", last_stmt.lineno) or last_stmt.lineno) - last_stmt.lineno + 1
+            if last_span <= 2 and last_stmt.lineno > body_start:
+                body_end = last_stmt.lineno - 1
+
+        span_lines = body_end - body_start + 1
+        if span_lines < min_body_lines:
+            continue
+
+        # Indentation of the first folded body line.
+        raw_first = lines[body_start - 1] if 1 <= body_start <= total_lines else "    "
+        indent_len = len(raw_first) - len(raw_first.lstrip(" \t"))
+        indent = raw_first[:indent_len] if indent_len > 0 else "    "
+        fold_ranges.append((body_start, body_end, indent, node.name))
+
+    if not fold_ranges:
+        return text, 0, 0
+
+    # Sort and drop overlapping ranges (keep the outermost).
+    fold_ranges.sort(key=lambda r: (r[0], -(r[1] - r[0])))
+    merged_ranges: list[tuple[int, int, str, str]] = []
+    last_end = 0
+    for s, e, ind, fn in fold_ranges:
+        if s <= last_end:
+            continue
+        merged_ranges.append((s, e, ind, fn))
+        last_end = e
+
+    ref_tag = f" {ref}" if ref else ""
+    out: list[str] = []
+    cur = 1  # 1-indexed line pointer
+    for s, e, ind, fn in merged_ranges:
+        while cur < s and cur <= total_lines:
+            out.append(lines[cur - 1])
+            cur += 1
+        omitted = e - s + 1
+        # The marker must remain a valid Python statement: a bare comment line
+        # would be an IndentationError when it is the only statement of a body.
+        marker = (
+            f"{ind}pass  # [tt:body L{s}-L{e} ({omitted}L of {fn}){ref_tag} "
+            f"-> use read_file(offset={s}, limit={omitted}) or trimtok_retrieve]"
+        )
+        out.append(marker)
+        cur = e + 1
+
+    while cur <= total_lines:
+        out.append(lines[cur - 1])
+        cur += 1
+
+    new_text = "\n".join(out)
+    saved = len(text) - len(new_text)
+    if saved <= 0:
+        return text, 0, 0
+    return new_text, saved, len(merged_ranges)

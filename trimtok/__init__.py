@@ -364,6 +364,19 @@ def _finalize(
 ) -> str | None:
     if stats.get("gate") != "ok":
         return None
+    if stats.get("lossless_tier0"):
+        # v4.2 Tier 0: nothing was removed, so there is nothing to retrieve --
+        # skip the SQLite CCR write entirely and ship the cleaned text.
+        _audit({
+            **audit_base,
+            "before_chars": stats.get("before_chars"),
+            "after_chars": stats.get("after_chars"),
+            "saved_chars": stats.get("saved_chars"),
+            "gate": "ok",
+            "hash": "tier0_lossless",
+            "ms": round(float(stats.get("ms", 0.0)), 2),
+        }, ctx=ctx)
+        return compressed
     stored = _store_original(raw, compressed, str(stats.get("digest", "")), ctx)
     if stored is None:
         return None
@@ -438,6 +451,7 @@ def _on_tool_result(
     new_result, stats = compress_tool_result(
         str(tool_name or ""),
         result,
+        args=args,
         session_id=sid,
         min_chars=_int_cfg(ctx, "min_chars", 2048, 0, 10_000_000),
         toon_enabled=_bool_cfg(ctx, "toon_enabled", True),

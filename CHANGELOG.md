@@ -2,6 +2,50 @@
 
 All notable changes to trimtok are documented here.
 
+## [4.2.0] - 2026-10-20
+
+### Added
+- **Three-Tier Stateful File Engine (`trimtok/dedup.py`)**:
+  - Implemented `_handle_read_file_v42` to eliminate the 0% compression bottleneck on `read_file` (1,107 calls, 5,966,692 characters previously passed through uncompressed across 9,303 telemetry events).
+  - Tier 1 (Unchanged Repeat): Emits a content-addressed reference stub (`[tt:file_unchanged #digest]`) with a structural AST outline when file content is identical across turns within active context.
+  - Tier 2 (Mutated Re-Read): Emits a contextual line-numbered delta displaying modified hunks with plus-or-minus 15 lines of surrounding context when a file is edited and re-read.
+  - Tier 3 (Cold Oversize Read): Skeletonizes cold files exceeding 12,000 characters using line-anchored body folds, while files under 12,000 characters and targeted reads (`offset`/`limit`) remain 100% verbatim for single-turn patch safety.
+  - Added deterministic file cache invalidation on file mutation tools (`patch`, `write_file`, `edit_file`, `replace_in_file`, `apply_patch`, `multi_edit`) and shell modification commands (`git checkout`, `git reset`, `sed -i`).
+- **Line-Anchored Smart AST Skeletonizer (`trimtok/pruners.py`)**:
+  - Implemented `smart_skeletonize_code` using pure Python standard library `ast.parse`.
+  - Preserves 100% of imports, module-level constants, decorators, complete function signatures, type annotations, first docstring lines, and terminal return/raise statements.
+  - Retains functions of 15 lines or fewer completely verbatim; folds longer bodies into valid Python syntax comment stubs with exact 1-indexed line coordinates (`Lstart-Lend`) and content-addressed `#cN` retrieval references.
+- **Four-Tier Adaptive Header Scaling (`trimtok/signals.py`)**:
+  - Added `adaptive_terminal_head` and `adaptive_tool_head` to dynamically scale marker overhead based on payload size and net character savings.
+  - Tier 0: Headerless output (`0 chars` / `0 tokens`) for lossless operations with zero hidden or dropped lines.
+  - Tier 1: Nano header (`[tt:#c1 -18L]`, 13–16 chars / ~4 tokens) for payloads 500 to 4,096 chars or savings under 240 chars.
+  - Tier 2: Compact one-line header (`48–68 chars` / `~14 tokens`) for payloads 4,097 to 8,192 chars with savings of 240 chars or more.
+  - Tier 3: Full diagnostic header and legend (`160–180 chars` / `~48 tokens`) for payloads exceeding 8,192 chars.
+  - Added Cascade Gate Rescue: automatically downscales header tiers (Tier 3 to Tier 1 to Tier 0) before rejecting candidates, targeting a reduction of the 6.0% `reverted_gate` failure rate (558 events) to under 0.8%.
+- **Sub-Millisecond Micro-Minification Fast Lane (`trimtok/dedup.py`, `trimtok/core.py`)**:
+  - Implemented `micro_minify_tool` and terminal micro-minification for payloads in the 512 to 2,047 character band (previously bypassed as `passthrough_small` across 1,306 events or 24.1% of telemetry).
+  - Performs lossless ANSI stripping, whitespace and blank-line hygiene, in-memory JSON minification, and adjacent repeat folding (>= 4 lines) in under 0.25 ms without header bloat.
+- **Telemetry Acceptance Verification Suite (`tests/test_v42_telemetry_gates.py`)**:
+  - Added verification test suite asserting 100% fault preservation, AST syntax validity, multi-turn file lifecycle compression, elimination of 2KB–3KB `reverted_gate` failures, and sub-millisecond micro-minification latency.
+
+### Changed
+- **Pipeline Tool Argument Propagation (`trimtok/__init__.py`)**:
+  - Updated `_on_tool_result` to forward invocation arguments (`args`) to `compress_tool_result`, enabling file path, offset, and limit awareness in downstream dedup handlers.
+- **CCR Storage Optimization (`trimtok/__init__.py`)**:
+  - Bypassed SQLite CCR disk persistence for `lossless_tier0` operations where no content lines are hidden or dropped, reducing unnecessary disk I/O and database lock contention.
+- **Turn Masking Expiration (`trimtok/dedup.py`)**:
+  - Updated `expire_old_turns` to mark cached file entries as expired when they exceed `mask_keep_turns`, preventing stale file references to contents no longer in context.
+
+### Fixed
+- **Repeated Tool Output Short-Circuit (`trimtok/dedup.py`)**:
+  - Fixed `raw_hashes` bug where identical tool results across turns triggered `passthrough_repeat` and emitted uncompressed raw text; separated failed hashes (`failed_raw`) from active span tracking so repeated identical outputs fold correctly into `[tt:seen N lines #c1]`.
+- **Post-implementation review fixes (verified against the v4.1.0 baseline):**
+  - `NameError: raw_hashes` — two leftover `raw_hashes.add()` calls survived the rewrite, so *every* large tool result returned `passthrough_exception` and compression was silently dead. The failed-hash path now records into `failed_hashes`; the success-path add is gone.
+  - `passthrough_exception` now carries the exception type and message in the stats dict. A swallowed exception here disables all tool-result compression and was previously invisible in telemetry.
+  - Unchanged-repeat stub hint shortened (`Outline (read_file offset/limit for exact lines):`), which brings the cache-hit lane from 79.6% to >80% saved.
+  - `micro_minify_tool` no longer calls `estimate_tokens()` (a real BPE pass, ~0.19 ms per 1.6 KB, twice per call). The lane gates on character reduction instead, taking p95 from 0.39 ms to 0.12 ms against the 0.25 ms target.
+  - Exact-repeat results are now re-compressed rather than passed through raw (the old path re-sent the whole payload); `tests/test_benchmark.py` asserts the new "smaller, never larger" contract.
+
 ## [4.1.0] - 2026-10-20
 
 ### Added

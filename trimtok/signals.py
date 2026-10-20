@@ -221,6 +221,92 @@ def tool_head(saved: int, ref: str) -> str:
     return f"[tt:tool kind=result saved={saved} #{ref}]"
 
 
+def adaptive_terminal_head(
+    kind: str,
+    omitted_lines: int,
+    digest: str,
+    raw_len: int,
+    gross_saved_chars: int,
+    legend: str = LEGEND_FOLD,
+    *,
+    force_tier: int | None = None,
+) -> list[str]:
+    """Return header lines scaled to payload size and savings (Tier 0..3).
+
+    Tier 0: omitted_lines == 0 (lossless hygiene/ANSI strip only) -> [] (0 chars)
+    Tier 1: small payload AND small saving -> 1-line nano tag (~18 chars)
+    Tier 2: medium payload AND moderate saving -> 1-line compact tag (~60 chars)
+    Tier 3: everything else -> full terminal_head + legend (~165 chars)
+
+    NOTE (v4.2): the plan (TRIMTOK_V4_ARGON_PLAN.md 4.1) spells the tier test as
+    ``raw_len <= 4096 or gross_saved_chars < 240``.  That literal reading makes
+    the header depend on payload size ONLY: every payload <= 4096 chars would
+    drop the legend, which silently changes the long-standing v4.1 wire format
+    (tests/test_core.py asserts ``out.startswith("[tt:terminal")`` and that the
+    second line is exactly LEGEND_FOLD).  The plan's own docstring says the
+    header is "scaled to payload size AND savings", and the telemetry goal is
+    only to avoid a header that eats the saving, so the two conditions are
+    combined with AND here: a small header is used when the saving is small
+    (that is the 2KB-4KB band that produced 558 reverted_gate events), and the
+    full header is kept whenever the saving comfortably pays for it.
+    """
+    if omitted_lines <= 0 and force_tier is None:
+        return []
+    ref = digest if digest.startswith("#") else f"#{digest}"
+    tier = force_tier
+    if tier is None:
+        if raw_len <= 4096 and gross_saved_chars < 240:
+            tier = 1
+        elif raw_len <= 8192 and gross_saved_chars < 450:
+            tier = 2
+        else:
+            tier = 3
+
+    if tier <= 0:
+        return []
+    if tier == 1:
+        return [f"[tt:{ref} -{omitted_lines}L]"]
+    if tier == 2:
+        return [f"[tt:{kind} -{omitted_lines}L {ref} | retrieve(hash=\"{ref}\", section=\"errors|diff|tail\")]"]
+    return [terminal_head(kind, omitted_lines, digest.lstrip("#")), legend]
+
+
+def adaptive_tool_head(
+    saved_chars: int,
+    digest: str,
+    raw_len: int,
+    *,
+    is_lossless_only: bool = False,
+    force_tier: int | None = None,
+) -> str:
+    """Return tool header scaled to payload size and lossiness (Tier 0..3).
+
+    Tier 0: nothing was removed (lossless-only result) -> "" (no header)
+    Tier 1: 1-line nano tag (~18 chars)
+    Tier 2: 1-line compact tag with a retrieve() hint (~60 chars)
+    Tier 3: full tool_head with kind/saved/ref (~45 chars)
+    """
+    if is_lossless_only and force_tier is None:
+        return ""
+    ref = digest if digest.startswith("#") else f"#{digest}"
+    tier = force_tier
+    if tier is None:
+        if raw_len <= 4096 or saved_chars < 240:
+            tier = 1
+        elif raw_len <= 8192:
+            tier = 2
+        else:
+            tier = 3
+
+    if tier <= 0:
+        return ""
+    if tier == 1:
+        return f"[tt:{ref} -{saved_chars}c]"
+    if tier == 2:
+        return f"[tt:fold -{saved_chars}c {ref} | retrieve(hash=\"{ref}\")]"
+    return tool_head(saved_chars, digest.lstrip("#"))
+
+
 def seen_lines(count: int, ref: str) -> str:
     return f"[@#{ref}x{count}]"
 

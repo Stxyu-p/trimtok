@@ -21,6 +21,7 @@
   <a href="#quick-start">Quick Start</a> ·
   <a href="#how-the-dual-stage-pipeline-works">How It Works</a> ·
   <a href="#content-addressed-context-recovery-ccr">CCR Recovery</a> ·
+  <a href="#v42-stateful-file--adaptive-context-engine">v4.2 Engine</a> ·
   <a href="#architecture--modules">Architecture</a> ·
   <a href="#performance--benchmarks">Performance</a> ·
   <a href="#configuration--cli-reference">Configuration</a> ·
@@ -256,7 +257,7 @@ flowchart TD
 | :--- | :--- |
 | **Zero Intelligence Loss** | Error, exception, traceback crash site, HTTP 5xx, and Thai/English failure lines (`signals.py`) are locked by fault rails and never folded or dropped. |
 | **BPE Non-Inflation Gate** | Every candidate output is checked via `estimate_bpe_tokens()`. If compression does not strictly reduce both character count and token count, `trimtok` returns the original input. |
-| **Verbatim File-Edit Safety** | Direct file-reading tools (`read_file`, `view_file`) are indexed into the session corpus to compress *future* duplicate search results, but their own output is returned 100% verbatim so code-editing tools never operate on line stubs. |
+| **Stateful File-Edit Safety** | Direct file reads (`read_file`) maintain patch safety via a 3-tier stateful engine: targeted slices and cold reads under 12 KB remain 100% verbatim, while re-reads emit structural outlines or contextual line-anchored deltas with exact line coordinates. |
 | **Lossless TOON Round-Trip** | `toon_codec.py` decodes every generated columnar table back into Python objects in memory and verifies strict recursive type-and-value equality (`_strict_eq`) before emitting. |
 | **Fail-Open Deadline Guard** | A monotonic `Deadline` timer (`guard_ms`, default `50 ms`) bounds every stage. Any timeout or unexpected exception immediately returns the untouched original text. |
 | **Cross-Turn Freshness Masking** | `post_llm_call` automatically ages out fold pointers older than `mask_keep_turns` (default `2` turns) so the agent never references stale turn stubs. |
@@ -281,14 +282,68 @@ Whenever `trimtok` compresses an output, the full unmodified original is persist
 
 ---
 
+## v4.2 Stateful File & Adaptive Context Engine
+
+Trimtok v4.2 resolves three structural bottlenecks identified across 9,303 production telemetry events: uncompressed `read_file` payloads (1,107 calls, 5,966,692 characters at 0.0% reduction), false-positive gate reversions (`reverted_gate` occurring 558 times at a 6.0% failure rate), and uncompressed payloads in the 1 KB to 2 KB range (`passthrough_small` accounting for 1,306 events or 24.1% of telemetry).
+
+### 1. Three-Tier Stateful File Engine (`_handle_read_file_v42`)
+
+Previous architectures passed direct file reads through verbatim to avoid breaking downstream file-editing tools (`patch`, `edit_file`). The v4.2 engine implements stateful, content-addressed session tracking across three tiers with deterministic cache invalidation:
+
+| Tier | Lifecycle State | Compression Mechanism | Intelligence Guarantee |
+| :--- | :--- | :--- | :--- |
+| **Rule 0: Targeted Slice & Small File** | Targeted slice (`offset` or `limit` specified) or cold file `< 2,048 chars`. | Returns 100% verbatim content (`passthrough_reference`). | Full line continuity for targeted inspection and small script modifications. |
+| **Tier 1: Unchanged Repeat Read** | File re-read with identical content (matching 12-character SHA-256 digest within active session turns). | Emits `[tt:file_unchanged #digest path="..." (chars, lines)]` accompanied by a structural AST outline. | Full outline exposed; exact lines recoverable via `read_file(offset, limit)` or `trimtok_retrieve(hash="#digest", offset, limit)`. |
+| **Tier 2: Mutated Re-Read** | File re-read following an edit (matching file path, differing digest). | Emits a contextual line-numbered delta showing modified code with plus-or-minus 15 lines of real surrounding context, folding unchanged spans. | Exact 1-indexed line numbers (`L1..LN`) preserved around all modified hunks; downstream patch tools retain necessary match anchors. |
+| **Tier 3: Cold Oversize Read** | Cold first read of files `>= 12,000 chars` (cold files between 2,048 and 11,999 chars are emitted verbatim for single-turn patch safety). | Folds function and class bodies exceeding 15 lines into line-anchored syntax stubs via `smart_skeletonize_code`. | Imports, constants, decorators, complete signatures, type hints, docstring opening lines, and terminal return/raise statements are preserved verbatim. |
+
+Cache entries invalidate deterministically when file-modifying tools (`patch`, `write_file`, `edit_file`, `replace_in_file`, `apply_patch`, `multi_edit`) execute against a tracked path, or when shell modification commands (`git checkout`, `git reset`, `sed -i`) are observed in the terminal pipeline. Expired turn entries are pruned when exceeding `mask_keep_turns`.
+
+### 2. Adaptive Header Scaling & Cascade Gate Rescue (`adaptive_terminal_head`, `adaptive_tool_head`)
+
+In earlier releases, static header and legend overhead (~160 to 180 characters, ~45 to 55 tokens) exceeded the character reduction achieved on small to medium outputs, causing 558 `reverted_gate` rollbacks. The v4.2 engine scales marker overhead dynamically across four tiers:
+
+| Tier | Condition | Header Format & Overhead | SQLite Storage |
+| :--- | :--- | :--- | :--- |
+| **Tier 0: Headerless Lossless** | Lossless hygiene, ANSI stripping, or JSON minification with zero hidden or dropped lines. | No header emitted (`0 chars` / `0 tokens`). | Skipped (eliminates disk I/O; complete payload preserved in output). |
+| **Tier 1: Nano Header** | Payloads 500 to 4,096 chars, or gross savings under 240 chars. | `[tt:#c1 -18L]` or `[tt:#c1 -320c]` (`13–16 chars` / `~4 tokens`). | Cached in CCR for retrieval via `#c1`. |
+| **Tier 2: Compact One-Line** | Payloads 4,097 to 8,192 chars with gross savings of 240 chars or more. | `[tt:kind -45L #c1 \| retrieve(hash="#c1", section="errors\|diff\|tail")]` (`48–68 chars` / `~14 tokens`). | Cached in CCR with multi-section retrieval targets. |
+| **Tier 3: Full Diagnostic** | Payloads exceeding 8,192 chars with gross savings of 400 chars or more. | Full diagnostic head and usage legend (`160–180 chars` / `~48 tokens`). | Cached in CCR with full diagnostic metadata. |
+
+**Cascade Gate Rescue:** If candidate output with a Tier 2 or Tier 3 header fails the BPE non-inflation gate, the engine automatically attempts re-encoding using a Tier 1 Nano Header. If token reduction remains non-viable, any lossless transformations are emitted as Tier 0 without a header. The engine only reverts to the raw output if lossless compression also fails to yield net token savings.
+
+### 3. Sub-Millisecond Micro-Minification Lane (`micro_minify_tool`)
+
+Payloads between 512 and 2,047 characters are routed through a dedicated fast lane executing in under 0.25 ms without emitting header bloat:
+
+1. **Terminal Hygiene:** Strips ANSI escape sequences and non-essential progress spinner rows while preserving error and diagnostic lines.
+2. **Whitespace Normalization:** Removes trailing spaces and tabs, collapsing consecutive blank lines exceeding two down to a single blank line (unified diff outputs are preserved untouched).
+3. **Lossless JSON Minification:** Compacts pretty-printed JSON structures through an in-memory pass, removing structural whitespace while preserving key order, data types, and values.
+4. **Adjacent Repeat Folding:** Collapses runs of four or more consecutive identical non-error lines into `[repeated Nx]` using a Tier 1 nano header when net savings exceed 60 characters.
+
+### 4. Zero-Loss-of-Intelligence Guarantee
+
+Every compression pass enforces strict verification constraints:
+
+- **Syntax Validity:** Python code skeletonized through `smart_skeletonize_code` is validated to parse under `ast.parse` with zero syntax errors. Non-Python sources fall back safely to scope-aware indentation parsing or verbatim passthrough.
+- **Full Signature and Type Preservation:** Function and class definitions, type annotations, decorators, and module-level constants are never pruned. Short functions (15 lines or fewer) remain 100% verbatim.
+- **Line-Anchored Re-Reading:** Every folded function body emits an explicit comment stub containing exact 1-indexed line ranges and content-addressed references:
+  ```python
+  # [tt:body L142-L218 (77 lines) in #c4 -> read_file(offset=142, limit=77) or trimtok_retrieve(hash="#c4", offset=142, limit=77)]
+  ```
+- **Fault Line Immutability:** Traceback crash locations, error diagnostics, compiler failures, HTTP 5xx codes, and failure indicators identified by `is_important` cannot be folded or dropped.
+- **Fail-Open Boundaries:** A monotonic deadline guard (`guard_ms`) terminates processing and returns raw inputs if execution exceeds the allocated time budget.
+
+---
+
 ## Architecture & Modules
 
 | Module | Role | Key Responsibilities |
 | :--- | :--- | :--- |
-| `trimtok/core.py` | **Stage 1: Terminal Pipeline** | Output classification, traceback/diff pruning, ANSI/spinner stripping, exact & Drain template folding, command budgets, BPE non-inflation gate, and fault quality gate. |
-| `trimtok/dedup.py` | **Stage 2: Tool Pipeline** | Volatile token normalization, JSON minification, AST code skeletonization, cross-turn span/line folding, 3-gram shingle near-dedup, `HEAD_TAIL` windowing, and TOON transcoding. |
-| `trimtok/pruners.py` | **Structural Pruners** | Unified module housing Python/Node stack-trace pruning, semantic `git diff` context folding, scoped search (`def`/`class`) grouping, and `ast` code skeletonization. |
-| `trimtok/signals.py` | **Fault Rails, BPE & Guard** | English/Thai failure polarity detector (`is_important`), `[tt:...]` marker grammar, `tiktoken` BPE estimator with 64 KB fast sampling, and fail-open `Deadline` guard. |
+| `trimtok/core.py` | **Stage 1: Terminal Pipeline** | Output classification, traceback/diff pruning, ANSI/spinner stripping, exact & Drain template folding, command budgets, terminal micro-minification, Cascade Gate Rescue, and BPE non-inflation gate. |
+| `trimtok/dedup.py` | **Stage 2: Tool Pipeline** | Three-tier stateful file engine (`_handle_read_file_v42`), micro-minification fast lane (`micro_minify_tool`), volatile token normalization, JSON minification, cross-turn span folding, 3-gram shingle near-dedup, and TOON transcoding. |
+| `trimtok/pruners.py` | **Structural Pruners** | Unified module housing Python/Node stack-trace pruning, semantic `git diff` context folding, scoped search (`def`/`class`) grouping, and line-anchored AST smart code skeletonization (`smart_skeletonize_code`). |
+| `trimtok/signals.py` | **Fault Rails, BPE & Guard** | English/Thai failure polarity detector (`is_important`), `[tt:...]` marker grammar, four-tier adaptive header scaling (`adaptive_terminal_head`, `adaptive_tool_head`), `tiktoken` BPE estimator with 64 KB fast sampling, and fail-open `Deadline` guard. |
 | `trimtok/toon_codec.py` | **Lossless TOON Codec** | Multi-level dot-notation wrapper unnesting, shared path `@prefix` extraction, inline compact JSON cells (`<= 120 chars`), and in-memory `_strict_eq()` verification. |
 | `trimtok/delta_engine.py` | **Stateful Command Delta** | Safe command family normalization, 2-stage line alignment ($O(N)$ skeleton + `rapidfuzz`), `STILL FAILING` canary rail, and bounded per-session LRU state. |
 | `trimtok/ccr.py` | **SQLite WAL + Zstd CCR Store** | Single-file `FastCCRStore` with atomic `BEGIN IMMEDIATE` Base62 `#cN` alias generation, Zstandard compression, cross-instance persistence, and TTL eviction. |

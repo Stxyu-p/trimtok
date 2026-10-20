@@ -112,7 +112,12 @@ def _repeat_passthrough_sample(index: int):
                 "search_files", result, session_id=session_id
             )
         )
-        assert output == result
+        # v4.2 contract change: an exact within-turn repeat is re-compressed
+        # (TOON / span fold) instead of being passed through raw. The old
+        # passthrough re-sent the whole payload -- ~1.3K tokens the agent had
+        # already paid for. The contract is now "smaller, never larger".
+        assert stats["gate"] == "ok", stats
+        assert len(output) < len(result), (len(output), len(result))
         return elapsed_ms, stats
     finally:
         clear_session(session_id)
@@ -222,11 +227,14 @@ def test_tool_result_compression_scenarios():
         expected_gate="ok",
         budget_ms=25.0,
     )
+    # v4.2: an exact repeat is re-compressed (TOON/span fold) instead of being
+    # passed through raw, so it costs the same as a first-seen fold -- budget it
+    # like one. The old passthrough re-sent the whole payload (~1.3K tokens).
     _measure_case(
-        "compress_tool_result exact-repeat passthrough",
+        "compress_tool_result exact-repeat (recompressed, v4.2)",
         _repeat_passthrough_sample,
-        expected_gate="passthrough_repeat",
-        budget_ms=LATENCY_BUDGET_MS,
+        expected_gate="ok",
+        budget_ms=25.0,
     )
     _measure_case(
         "compress_tool_result cross-turn fold (60 shared lines)",
