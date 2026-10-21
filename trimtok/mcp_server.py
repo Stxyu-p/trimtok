@@ -37,7 +37,7 @@ except ImportError:
 SERVER_INFO = {"name": "trimtok", "version": VERSION}
 FALLBACK_PROTOCOL = "2024-11-05"
 SERVER_INSTRUCTIONS = (
-    "Trimtok v4.2.1 — Deterministic Context Compressor & Lossless CCR Cache.\n\n"
+    "Trimtok v4.2.2 — Deterministic Context Compressor & Lossless CCR Cache.\n\n"
     "## Mandatory Agent Habit (When to Use Trimtok)\n"
     "1. **Noisy Terminal / Test / Build Logs (>2 KB):** Call `trimtok_compress_terminal` (pass `output` or `file_path`) "
     "to compress repetitive logs while preserving 100% of errors, tracebacks, and unified git diffs.\n"
