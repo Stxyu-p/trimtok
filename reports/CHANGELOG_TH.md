@@ -25,6 +25,8 @@
 
 **ผลกระทบคาดการณ์:** บนปริมาณ read_file แบบเดิม (5.83M chars) เพิ่ม ~3.0M chars ≈ **~760,000 tokens**
 
+**ปล่อยแล้ว:** v4.2.2 — commit `f476dd4` (โค้ด+รายงาน) + `a2645a2` (version strings: plugin.yaml / CLI / MCP instructions) · tag `v4.2.2` (annotated) · GitHub release พร้อม assets (wheel 77,845 B · sdist 130,246 B) · `twine check` PASSED ทั้งคู่ · PyPI run `39615603904` success → **4.2.2 LIVE** · editable install รีเฟรชแล้ว (`VERSION 4.2.2`) · **ต้อง restart Hermes 1 ครั้ง** ให้ plugin ที่กำลังรันโหลดโค้ดใหม่
+
 **ยังค้าง:** ต้อง restart Hermes 1 ครั้งให้โค้ดใหม่มีผล (process เก่าถือโค้ดเก่าใน memory) · ยังไม่ commit/push ของ v4.2.2 (รอคำสั่ง) · `skill_view` lane ทำได้แค่ dedupe ซ้ำในเซสชันเดียว (ห้ามตัด SKILL.md กลางไฟล์) · `patch` lane ปล่อย payload <2KB (เป็นข้อความยืนยัน/Error) · rollback = ใส่ `read_file`/`read_file_extra` ใน `exclude_tools`
 → ฉบับเต็ม: `reports/raw/TRIMTOK_V422_READFILE_LANE_TH.md` · `reports/raw/TRIMTOK_READFILE_LANE_ARGON_REVIEW.md`
 
