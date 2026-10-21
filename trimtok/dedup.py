@@ -129,6 +129,13 @@ def expire_old_turns(
             seen = _seen(session_id)
             turns = seen.get("turns", {})
             ids = list(turns.keys())
+            # File bodies stay relevant far longer than 2 tool steps: a loop of
+            # read -> search -> terminal -> read must still recognise the file.
+            file_keep = max(keep_turns * 4, _FILE_KEEP_TURNS)
+            stale_file_hashes: set[str] = set()
+            if len(ids) > file_keep:
+                for tid in ids[: len(ids) - file_keep]:
+                    stale_file_hashes.update(turns.get(tid, {}).get("hashes", []))
             if len(ids) <= keep_turns:
                 return 0
             old_ids = ids[: len(ids) - keep_turns]
@@ -154,7 +161,7 @@ def expire_old_turns(
             # "identical to prior read in active context" -- the agent can no
             # longer see that body in its context window.
             for fmeta in seen.get("files", {}).values():
-                if isinstance(fmeta, dict) and fmeta.get("digest") in doomed:
+                if isinstance(fmeta, dict) and fmeta.get("digest") in stale_file_hashes:
                     fmeta["expired"] = True
             return len(old_ids)
     except Exception:
@@ -659,6 +666,13 @@ _MUTATING_TOOLS = frozenset({
     "patch", "edit_file", "write_file", "replace_in_file",
     "multi_edit", "apply_patch", "create_file", "str_replace_editor",
 })
+# Hermes exposes a second read tool with the same payload shape.
+_READ_FILE_TOOLS = frozenset({
+    "read_file", "read_file_extra", "view_file", "get_file",
+})
+_DEFAULT_LIMIT_FLOOR = 500   # Hermes default limit=2000; an explicit slice <500 is targeted
+_FILE_KEEP_TURNS = 8         # file bodies stay relevant far longer than 2 tool steps
+_NUMBERED_LINE_RE = re.compile(r"^(\s*(\d+)\|)(.*)$")
 
 # Shell commands that can change files on disk -> the cached file body is stale.
 _MUTATING_SHELL_RE = re.compile(
@@ -718,20 +732,89 @@ def _extract_file_args(args: Any) -> tuple[str, int | None, int | None]:
     return norm_path, offset_i, limit_i
 
 
-def _build_file_outline(text: str, max_items: int = 35) -> str:
-    """Fast O(N) structural outline (classes/functions with 1-indexed line numbers)."""
+def _unwrap_numbered_lines(
+    text: str,
+) -> tuple[str, list[str] | None, list[int] | None, list[str], list[str]]:
+    """Unwrap Hermes `LINE|CONTENT` output into (raw_body, prefixes, line_nos, headers, footers).
+
+    Hermes' read_file returns every line prefixed with its own line number
+    ("42|    return total"). That prefix breaks ast.parse(), breaks the outline
+    detector and makes every re-read look like a full-file change, so the 3-tier
+    engine has to look at the raw source and re-attach the original numbers.
+    Raw (unnumbered) payloads are returned untouched.
+    """
+    lines = text.split("\n")
+    if len(lines) < 4:
+        return text, None, None, [], []
+    sample = [ln for ln in lines[:12] if ln.strip()]
+    matches = sum(1 for ln in sample if _NUMBERED_LINE_RE.match(ln))
+    if matches < max(2, len(sample) // 2):
+        return text, None, None, [], []
+    first_idx = -1
+    last_idx = -1
+    for i, ln in enumerate(lines):
+        if _NUMBERED_LINE_RE.match(ln):
+            if first_idx == -1:
+                first_idx = i
+            last_idx = i
+    if first_idx == -1 or last_idx - first_idx < 3:
+        return text, None, None, [], []
+    headers = lines[:first_idx]
+    footers = lines[last_idx + 1:]
+    prefixes: list[str] = []
+    line_nos: list[int] = []
+    raw_lines: list[str] = []
+    for i in range(first_idx, last_idx + 1):
+        m = _NUMBERED_LINE_RE.match(lines[i])
+        if m:
+            prefixes.append(m.group(1))
+            line_nos.append(int(m.group(2)))
+            raw_lines.append(m.group(3))
+        else:
+            prev_no = line_nos[-1] if line_nos else 1
+            prefixes.append("")
+            line_nos.append(prev_no)
+            raw_lines.append(lines[i])
+    return "\n".join(raw_lines), prefixes, line_nos, headers, footers
+
+
+def _is_targeted_slice(
+    offset: int | None,
+    limit: int | None,
+    first_line_no: int,
+    n_lines: int,
+) -> bool:
+    """Is this a targeted line-range slice (must stay verbatim) or a full read?
+
+    Hermes always fills `offset=1, limit=2000` on a full read, so the mere
+    presence of those args says nothing. A read is targeted only when it starts
+    inside the file or when the caller deliberately capped a small window.
+    """
+    if offset is not None and offset > 1:
+        return True
+    if first_line_no > 1:
+        return True
+    if limit is not None and limit < _DEFAULT_LIMIT_FLOOR and n_lines >= limit:
+        return True
+    return False
+
+
+def _build_file_outline(text: str, line_nos: list[int] | None = None, max_items: int = 35) -> str:
+    """Fast O(N) structural outline (classes/functions with real file line numbers)."""
     items: list[str] = []
-    for idx, line in enumerate(text.split("\n"), 1):
+    raw_lines = text.split("\n")
+    for idx, line in enumerate(raw_lines):
+        ln_no = line_nos[idx] if (line_nos and idx < len(line_nos)) else (idx + 1)
         s = line.lstrip()
         if s.startswith(("def ", "async def ", "class ", "interface ", "func ", "fn ", "pub fn ", "export function ")):
             sig = s.split("{")[0].strip()
             if sig.endswith(":"):
                 sig = sig[:-1].strip()
-            items.append(f"  L{idx}: {sig[:90]}")
+            items.append(f"  L{ln_no}: {sig[:90]}")
             if len(items) >= max_items:
                 items.append("  ...")
                 break
-    return "\n".join(items) if items else f"  (total {text.count(chr(10)) + 1} lines)"
+    return "\n".join(items) if items else f"  (total {len(raw_lines)} lines)"
 
 
 def _build_read_delta(
@@ -739,9 +822,17 @@ def _build_read_delta(
     cur_text: str,
     cur_ref: str,
     prev_ref: str,
+    *,
+    cur_prefixes: list[str] | None = None,
+    cur_line_nos: list[int] | None = None,
     ctx_lines: int = _READ_DELTA_CONTEXT_LINES,
 ) -> tuple[str, int]:
-    """Build line-numbered contextual diff view when a previously read file is modified."""
+    """Build a line-numbered contextual diff view of a modified file.
+
+    `prev_text` / `cur_text` are the UNPREFIXED sources; the original Hermes
+    `LINE|` prefixes are re-attached to the emitted lines so the agent can still
+    patch by real line number.
+    """
     prev_lines = prev_text.split("\n")
     cur_lines = cur_text.split("\n")
     matcher = difflib.SequenceMatcher(None, prev_lines, cur_lines, autojunk=False)
@@ -763,24 +854,43 @@ def _build_read_delta(
         else:
             intervals.append((s, e))
 
-    chunks: list[str] = [
+    chunks = [
         f"[tt:file_delta #{cur_ref} vs #{prev_ref} | {total}L total, showing modified hunks +/-{ctx_lines}L]"
     ]
     prev_end = 0
     for s, e in intervals:
         if s > prev_end:
-            chunks.append(f"[... L{prev_end + 1}-L{s} ({s - prev_end} unchanged lines in #{cur_ref}) ...]")
+            l_start = cur_line_nos[prev_end] if (cur_line_nos and prev_end < len(cur_line_nos)) else (prev_end + 1)
+            l_end = cur_line_nos[s - 1] if (cur_line_nos and s - 1 < len(cur_line_nos)) else s
+            chunks.append(f"[... L{l_start}-L{l_end} ({s - prev_end} unchanged lines in #{cur_ref}) ...]")
         for ln_idx in range(s, e):
-            chunks.append(f"{ln_idx + 1}|{cur_lines[ln_idx]}")
+            prefix = cur_prefixes[ln_idx] if (cur_prefixes and ln_idx < len(cur_prefixes)) else f"{ln_idx + 1}|"
+            chunks.append(f"{prefix}{cur_lines[ln_idx]}")
         prev_end = e
     if prev_end < total:
-        chunks.append(f"[... L{prev_end + 1}-L{total} ({total - prev_end} unchanged lines in #{cur_ref}) ...]")
+        l_start = cur_line_nos[prev_end] if (cur_line_nos and prev_end < len(cur_line_nos)) else (prev_end + 1)
+        l_end = cur_line_nos[total - 1] if (cur_line_nos and total - 1 < len(cur_line_nos)) else total
+        chunks.append(f"[... L{l_start}-L{l_end} ({total - prev_end} unchanged lines in #{cur_ref}) ...]")
 
     delta_str = "\n".join(chunks)
-    saved = len(cur_text) - len(delta_str)
+    orig_approx_len = len(cur_text) + (len(cur_lines) * 5 if cur_prefixes else 0)
+    saved = orig_approx_len - len(delta_str)
     if saved <= 120:
         return cur_text, 0
     return delta_str, saved
+
+
+def _tok_pair(orig: str, cand: str) -> tuple[int, int]:
+    """Token counts for the BPE non-inflation gate.
+
+    A real BPE pass costs ~0.5 ms per KB, which dominates a file read. When the
+    candidate is clearly shorter (<90% of the original) the char ratio already
+    proves the token count dropped, so the expensive pass is only used for the
+    near-equal case where it actually matters.
+    """
+    if len(cand) < len(orig) * 0.9:
+        return len(orig) // 4, len(cand) // 4
+    return estimate_tokens(orig), estimate_tokens(cand)
 
 
 def _handle_read_file_v42(
@@ -789,125 +899,164 @@ def _handle_read_file_v42(
     args: Any,
     min_chars: int,
     t0: float,
+    deadline: Any | None = None,
 ) -> tuple[str, dict]:
-    """3-Tier Stateful Handler for read_file with 100% Patch Safety."""
+    """3-Tier Stateful Handler for read_file / read_file_extra with 100% Patch Safety.
+
+    Hermes hands us `LINE|CONTENT` payloads and always fills offset=1/limit=2000,
+    so the payload is unwrapped to raw source first and the original line
+    numbers are re-attached to whatever we emit.
+    """
     norm_path, offset, limit = _extract_file_args(args)
     digest = hashlib.sha256(result.encode("utf-8", "replace")).hexdigest()[:12]
-    clean_text, _ = hygiene(result)
+    raw_body, prefixes, line_nos, headers, footers = _unwrap_numbered_lines(result)
+    clean_text, _ = hygiene(raw_body)
     remember(clean_text, session_id, owner=digest)
 
-    # Rule 0: an explicit offset/limit slice (or a file below min_chars) is
-    # returned verbatim so that a subsequent patch is never handed a mangled body.
-    if offset is not None or limit is not None or len(result) < min_chars:
+    first_line_no = line_nos[0] if line_nos else (offset if offset and offset > 0 else 1)
+    n_lines = len(line_nos) if line_nos else (raw_body.count("\n") + 1)
+
+    # Rule 0: a targeted slice (or a small file) stays verbatim so that a
+    # subsequent patch is never handed a mangled body.
+    if len(result) < min_chars or _is_targeted_slice(offset, limit, first_line_no, n_lines):
         return result, {
             "gate": "passthrough_reference", "digest": digest,
             "ms": (time.perf_counter() - t0) * 1000,
         }
 
-    seen = _seen(session_id)
-    file_cache: dict[str, dict] = seen.setdefault("files", {})
-    cache_key = norm_path or f"__anon_{digest}"
-    prev_entry = file_cache.get(cache_key)
+    with _SEEN_LOCK:
+        seen = _seen(session_id)
+        file_cache: dict[str, dict] = seen.setdefault("files", {})
+        cache_key = norm_path or f"__anon_{digest}"
+        prev_entry = file_cache.get(cache_key)
 
-    # Case A: the same file is read again with identical content.
-    if (
-        prev_entry is not None
-        and prev_entry.get("digest") == digest
-        and not prev_entry.get("expired", False)
-    ):
-        if prev_entry.get("skeleton_only"):
-            # The previous turn delivered a SKELETON, not the file -- the agent has
-            # never seen this body. "identical to prior read in active context"
-            # would be a lie, so hand over the real file instead of an outline.
-            return result, {
-                "gate": "passthrough_reference", "digest": digest,
-                "ms": (time.perf_counter() - t0) * 1000,
-            }
-        prev_entry["reads"] = prev_entry.get("reads", 1) + 1
-        outline = _build_file_outline(result)
-        stub = (
-            f"[tt:file_unchanged #{digest} path=\"{norm_path or 'file'}\" "
-            f"({len(result)} chars, {result.count(chr(10)) + 1}L) — identical to prior read in active context]\n"
-            f"Outline (read_file offset/limit for exact lines):\n"
-            f"{outline}"
-        )
-        if len(stub) < len(result) and estimate_tokens(stub) < estimate_tokens(result):
-            return stub, {
-                "gate": "ok",
-                "kind": "file_cache_hit",
-                "digest": digest,
-                "before_chars": len(result),
-                "after_chars": len(stub),
-                "saved_chars": len(result) - len(stub),
-                "est_tokens_before": estimate_tokens(result),
-                "est_tokens_after": estimate_tokens(stub),
-                "fold_saved": len(result) - len(stub),
-                "ms": (time.perf_counter() - t0) * 1000,
-            }
+        # Case A: the same file is read again with identical content.
+        if (
+            prev_entry is not None
+            and prev_entry.get("digest") == digest
+            and not prev_entry.get("expired", False)
+        ):
+            # Anti-poisoning rail: if the agent already got a stub (or only a
+            # skeleton) for this file, hand over the real body instead of
+            # another pointer -- otherwise it loops on stubs.
+            if prev_entry.get("skeleton_only") or prev_entry.get("stub_hits", 0) >= 1:
+                prev_entry["skeleton_only"] = False
+                prev_entry["stub_hits"] = 0
+                return result, {
+                    "gate": "passthrough_reference", "digest": digest,
+                    "ms": (time.perf_counter() - t0) * 1000,
+                }
+            prev_entry["reads"] = prev_entry.get("reads", 1) + 1
+            prev_entry["stub_hits"] = prev_entry.get("stub_hits", 0) + 1
+            outline = _build_file_outline(raw_body, line_nos=line_nos)
+            stub = (
+                f"[tt:file_unchanged #{digest} path=\"{norm_path or 'file'}\" "
+                f"({len(result)} chars, {n_lines}L) — identical to prior read in active context]\n"
+                f"Outline (read_file offset/limit for exact lines):\n"
+                f"{outline}"
+            )
+            tb, ta = _tok_pair(result, stub)
+            if len(stub) < len(result) and ta < tb:
+                return stub, {
+                    "gate": "ok",
+                    "kind": "file_cache_hit",
+                    "digest": digest,
+                    "before_chars": len(result),
+                    "after_chars": len(stub),
+                    "saved_chars": len(result) - len(stub),
+                    "est_tokens_before": tb,
+                    "est_tokens_after": ta,
+                    "fold_saved": len(result) - len(stub),
+                    "ms": (time.perf_counter() - t0) * 1000,
+                }
 
-    # Case B: the file was modified since the last read -> contextual delta.
-    if norm_path and prev_entry is not None and prev_entry.get("digest") != digest:
-        prev_text = prev_entry.get("text", "")
-        prev_digest = prev_entry.get("digest", "")
-        # SequenceMatcher is O(n*m) on lines -- skip the delta for big files
-        # (it would blow the guard budget) and fall through to the skeleton path.
-        if prev_text and len(result.split("\n")) <= 1500:
-            # The header advertises #prev_ref, so the previous body has to be
-            # retrievable by that ref -> store it in the CCR now.
-            prev_ref = prev_digest
+        # Case B: the file was modified since the last read -> contextual delta.
+        if norm_path and prev_entry is not None and prev_entry.get("digest") != digest:
+            prev_raw = prev_entry.get("raw_body") or ""
+            prev_full = prev_entry.get("text", prev_raw)
+            prev_digest = prev_entry.get("digest", "")
+            # SequenceMatcher is O(n*m) on lines -- skip the delta for big files.
+            if prev_raw and n_lines <= 1500:
+                # The header advertises #prev_ref, so the previous body has to be
+                # retrievable by that ref -> store it in the CCR now.
+                prev_ref = prev_digest
+                try:
+                    from .ccr import put as ccr_put
+                except (ImportError, ValueError):
+                    from trimtok.ccr import put as ccr_put
+                try:
+                    stored = ccr_put(prev_full)
+                    if stored:
+                        prev_ref = stored.lstrip("#")
+                except Exception:
+                    pass
+                delta_view, _ = _build_read_delta(
+                    prev_raw, raw_body, digest, prev_ref,
+                    cur_prefixes=prefixes, cur_line_nos=line_nos,
+                )
+                d_saved = len(result) - len(delta_view)
+                file_cache[cache_key] = {
+                    "digest": digest, "text": result, "raw_body": raw_body,
+                    "reads": 1, "stub_hits": 0, "expired": False, "skeleton_only": False,
+                }
+                if d_saved > 120:
+                    tb, ta = _tok_pair(result, delta_view)
+                    if ta < tb:
+                        return delta_view, {
+                            "gate": "ok",
+                            "kind": "file_delta",
+                            "digest": digest,
+                            "before_chars": len(result),
+                            "after_chars": len(delta_view),
+                            "saved_chars": d_saved,
+                            "est_tokens_before": tb,
+                            "est_tokens_after": ta,
+                            "fold_saved": d_saved,
+                            "ms": (time.perf_counter() - t0) * 1000,
+                        }
+
+        # Record the state of this read (first read or a read we did not fold).
+        if len(file_cache) >= _MAX_FILE_CACHE:
+            for _old_key in list(file_cache.keys())[: len(file_cache) - _MAX_FILE_CACHE + 1]:
+                file_cache.pop(_old_key, None)
+        file_cache[cache_key] = {
+            "digest": digest, "text": result, "raw_body": raw_body,
+            "reads": 1, "stub_hits": 0, "expired": False, "skeleton_only": False,
+        }
+
+        # Case C: cold first read of a large file -> line-anchored AST skeleton.
+        # Fail-open: if the guard budget is already gone, ship the verbatim file
+        # instead of blowing the deadline.
+        budget_left = True
+        if deadline is not None:
             try:
-                from .ccr import put as ccr_put
-            except (ImportError, ValueError):
-                from trimtok.ccr import put as ccr_put
-            try:
-                stored = ccr_put(prev_text)
-                if stored:
-                    prev_ref = stored.lstrip("#")
+                deadline.check()
             except Exception:
-                pass
-            delta_view, d_saved = _build_read_delta(prev_text, result, digest, prev_ref)
-            file_cache[cache_key] = {"digest": digest, "text": result, "reads": 1, "expired": False}
-            if d_saved > 0 and estimate_tokens(delta_view) < estimate_tokens(result):
-                return delta_view, {
-                    "gate": "ok",
-                    "kind": "file_delta",
-                    "digest": digest,
-                    "before_chars": len(result),
-                    "after_chars": len(delta_view),
-                    "saved_chars": d_saved,
-                    "est_tokens_before": estimate_tokens(result),
-                    "est_tokens_after": estimate_tokens(delta_view),
-                    "fold_saved": d_saved,
-                    "ms": (time.perf_counter() - t0) * 1000,
-                }
-
-    # Record the state of this read (first read or a read we did not fold).
-    if len(file_cache) >= _MAX_FILE_CACHE:
-        for _old_key in list(file_cache.keys())[: len(file_cache) - _MAX_FILE_CACHE + 1]:
-            file_cache.pop(_old_key, None)
-    file_cache[cache_key] = {"digest": digest, "text": result, "reads": 1, "expired": False}
-
-    # Case C: cold first read of a large file -> line-anchored AST skeleton.
-    if len(result) >= _COLD_READ_SKELETON_MIN_CHARS:
-        sk_text, sk_saved, fn_count = smart_skeletonize_code(result, ref=f"#{digest}")
-        if sk_saved > 200 and fn_count > 0:
-            head = adaptive_tool_head(sk_saved, digest, len(result))
-            candidate = f"{head}\n{sk_text}" if head else sk_text
-            if len(candidate) < len(result) and estimate_tokens(candidate) < estimate_tokens(result):
-                # What the agent sees this turn is a skeleton, not the file body.
-                file_cache[cache_key]["skeleton_only"] = True
-                return candidate, {
-                    "gate": "ok",
-                    "kind": "file_skeleton",
-                    "digest": digest,
-                    "before_chars": len(result),
-                    "after_chars": len(candidate),
-                    "saved_chars": len(result) - len(candidate),
-                    "est_tokens_before": estimate_tokens(result),
-                    "est_tokens_after": estimate_tokens(candidate),
-                    "skeleton_saved": sk_saved,
-                    "ms": (time.perf_counter() - t0) * 1000,
-                }
+                budget_left = False
+        if budget_left and (len(result) >= _COLD_READ_SKELETON_MIN_CHARS or len(raw_body) >= _COLD_READ_SKELETON_MIN_CHARS):
+            sk_body, sk_saved, fn_count = smart_skeletonize_code(
+                raw_body, ref=f"#{digest}", line_prefixes=prefixes, line_nos=line_nos,
+            )
+            if sk_saved > 200 and fn_count > 0:
+                rebuilt = "\n".join(headers + [sk_body] + footers) if (headers or footers) else sk_body
+                actual_saved = len(result) - len(rebuilt)
+                head = adaptive_tool_head(max(actual_saved, sk_saved), digest, len(result))
+                candidate = f"{head}\n{rebuilt}" if head else rebuilt
+                tb, ta = _tok_pair(result, candidate)
+                if len(candidate) < len(result) and ta < tb:
+                    file_cache[cache_key]["skeleton_only"] = True
+                    return candidate, {
+                        "gate": "ok",
+                        "kind": "file_skeleton",
+                        "digest": digest,
+                        "before_chars": len(result),
+                        "after_chars": len(candidate),
+                        "saved_chars": len(result) - len(candidate),
+                        "est_tokens_before": tb,
+                        "est_tokens_after": ta,
+                        "skeleton_saved": len(result) - len(candidate),
+                        "ms": (time.perf_counter() - t0) * 1000,
+                    }
 
     # Cold first read of a 2KB-12KB file: verbatim so the agent can patch safely.
     return result, {
@@ -968,18 +1117,22 @@ def compress_tool_result(
             return result, {"gate": "passthrough_non_str", "ms": 0.0}
         if SENTINEL_RE.search(result[:2000]):
             return result, {"gate": "passthrough_sentinel", "ms": 0.0}
-        # A mutating tool invalidates the cached body for the path it touched:
-        # the next read of that path must be treated as a fresh cold read.
+        # A mutating tool changes the file, but the cached body is what the next
+        # read is diffed against -- dropping it here meant the file_delta lane
+        # could never fire in a real read -> patch -> re-read loop.
         if tool_name in _MUTATING_TOOLS:
             try:
                 mut_path, _, _ = _extract_file_args(args)
                 if mut_path:
                     with _SEEN_LOCK:
-                        _seen(session_id or "default").setdefault("files", {}).pop(mut_path, None)
+                        f_entry = _seen(session_id or "default").setdefault("files", {}).get(mut_path)
+                        if isinstance(f_entry, dict):
+                            f_entry["mutated"] = True
+                            f_entry["stub_hits"] = 0
             except Exception:
                 pass
-        if tool_name == "read_file":
-            return _handle_read_file_v42(result, session_id, args, min_chars, t0)
+        if tool_name in _READ_FILE_TOOLS:
+            return _handle_read_file_v42(result, session_id, args, min_chars, t0, deadline)
         if len(result) < min_chars:
             if len(result) >= _MICRO_MIN_CHARS:
                 return micro_minify_tool(result, session_id, t0)

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trimtok"
-version = "4.2.1"
+version = "4.2.2"
 description = "Deterministic, lossless-retrievable context compression for autonomous AI agents and MCP clients"
 readme = "README.md"
 authors = [

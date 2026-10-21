@@ -371,6 +371,9 @@ def is_compressed(text: str) -> bool:
 # 4. Guard & ANSI Utilities
 # ---------------------------------------------------------------------------
 VERBATIM_TOOLS = frozenset({"read_file", "write_to_file", "replace_file_content", "ask_question"})
+# Read tools whose payload is a numbered file body: the stateful file engine
+# handles them, so they are NOT verbatim-only.
+_READ_FILE_LIKE = frozenset({"read_file", "read_file_extra", "view_file", "get_file"})
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][AB0]")
 

@@ -461,8 +461,14 @@ def smart_skeletonize_code(
     ref: str = "",
     *,
     min_body_lines: int = _MIN_FOLD_BODY_LINES,
+    line_prefixes: list[str] | None = None,
+    line_nos: list[int] | None = None,
 ) -> tuple[str, int, int]:
     """Line-anchored AST code skeletonizer with Zero Loss of Signatures/Types.
+
+    When `line_prefixes` / `line_nos` are provided (Hermes `LINE|CONTENT`
+    output), `text` must be the unprefixed source and the skeleton re-attaches
+    the exact original `LINE|` prefix to every kept line.
 
     Preserves 100% of:
       - Imports, module constants, global assignments, type definitions
@@ -482,6 +488,12 @@ def smart_skeletonize_code(
 
     lines = text.split("\n")
     total_lines = len(lines)
+    use_prefixes = (
+        line_prefixes is not None
+        and line_nos is not None
+        and len(line_prefixes) == total_lines
+        and len(line_nos) == total_lines
+    )
     # Ranges to fold: (fold_start_1idx, fold_end_1idx, indent_str, func_name)
     fold_ranges: list[tuple[int, int, str, str]] = []
 
@@ -563,24 +575,36 @@ def smart_skeletonize_code(
     cur = 1  # 1-indexed line pointer
     for s, e, ind, fn in merged_ranges:
         while cur < s and cur <= total_lines:
-            out.append(lines[cur - 1])
+            prefix = line_prefixes[cur - 1] if use_prefixes else ""  # type: ignore[index]
+            out.append(f"{prefix}{lines[cur - 1]}")
             cur += 1
-        omitted = e - s + 1
+        # Markers and hints must carry the REAL file line numbers, not the
+        # position inside the payload (Hermes `LINE|CONTENT` numbers are the
+        # file's own line numbers).
+        file_s = line_nos[s - 1] if use_prefixes else s  # type: ignore[index]
+        file_e = line_nos[e - 1] if use_prefixes else e  # type: ignore[index]
+        omitted = file_e - file_s + 1
+        marker_prefix = line_prefixes[s - 1] if use_prefixes else ""  # type: ignore[index]
         # The marker must remain a valid Python statement: a bare comment line
         # would be an IndentationError when it is the only statement of a body.
         marker = (
-            f"{ind}pass  # [tt:body L{s}-L{e} ({omitted}L of {fn}){ref_tag} "
-            f"-> use read_file(offset={s}, limit={omitted}) or trimtok_retrieve]"
+            f"{marker_prefix}{ind}pass  # [tt:body L{file_s}-L{file_e} ({omitted}L of {fn}){ref_tag} "
+            f"-> use read_file(offset={file_s}, limit={omitted}) or trimtok_retrieve]"
         )
         out.append(marker)
         cur = e + 1
 
     while cur <= total_lines:
-        out.append(lines[cur - 1])
+        prefix = line_prefixes[cur - 1] if use_prefixes else ""  # type: ignore[index]
+        out.append(f"{prefix}{lines[cur - 1]}")
         cur += 1
 
     new_text = "\n".join(out)
-    saved = len(text) - len(new_text)
+    if use_prefixes:
+        orig_len = sum(len(line_prefixes[i]) + len(lines[i]) + 1 for i in range(total_lines)) - 1  # type: ignore[index]
+    else:
+        orig_len = len(text)
+    saved = orig_len - len(new_text)
     if saved <= 0:
         return text, 0, 0
     return new_text, saved, len(merged_ranges)

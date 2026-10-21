@@ -2,6 +2,56 @@
 
 All notable changes to trimtok are documented here.
 
+## [4.2.2] - 2026-10-21
+
+The v4.2 stateful read-file lane never fired in real Hermes: 1,078 `read_file`
+calls / 5.83M characters were passed through with 0% reduction. Argon 4 reviewed
+the code and confirmed the root cause plus four more co-killers; all five are
+fixed here. `tests/test_v422_hermes_read_lane.py` reproduces the real runtime
+(`offset=1, limit=2000` defaults and `LINE|CONTENT` payloads) and was verified
+to fail against the pre-fix code.
+
+### Fixed
+- **Hermes' default pagination no longer defeats the engine** (`trimtok/dedup.py`) -
+  Hermes always sends `offset=1, limit=2000`, so the old Rule 0 rejected every
+  call as a "targeted slice". A read is now treated as targeted only when it
+  really starts inside the file (`offset > 1`, first line number > 1) or when the
+  caller deliberately capped a small window - decided from the payload and the
+  arguments alone, without touching the filesystem.
+- **Numbered payloads are unwrapped before analysis** (`trimtok/dedup.py`,
+  `trimtok/pruners.py`) - Hermes returns every line as `LINE|CONTENT`, which
+  broke `ast.parse()`, the outline detector and the line-number diff. The
+  payload is unwrapped to raw source, analysed there, and the original `LINE|`
+  prefixes are re-attached to every kept line; skeleton markers now carry the
+  real file line numbers.
+- **The file cache survives a patch** (`trimtok/dedup.py`) - the mutating-tool
+  handler dropped the cached body, so the contextual-delta lane could never fire
+  in a real read -> patch -> re-read loop. The body is now kept and flagged.
+- **The file cache survives multi-step agent loops** (`trimtok/dedup.py`) -
+  `expire_old_turns` aged file bodies out after two tool steps; they now live
+  for eight, matching how long a read -> search -> terminal -> read loop runs.
+- **`read_file_extra` reaches the engine** (`trimtok/dedup.py`,
+  `trimtok/signals.py`, `trimtok/__init__.py`) - the second Hermes read tool was
+  dropped by a hardcoded tool-name check, and read tools are no longer treated
+  as verbatim-only.
+
+### Added
+- **Anti-loop rail** (`trimtok/dedup.py`) - a re-read that already received a stub
+  or a skeleton returns the real file instead of another pointer.
+- **Cheap token gate** (`trimtok/dedup.py`) - the BPE pass only runs when the
+  candidate is close in size to the original; the char ratio already proves the
+  token count dropped otherwise.
+- **Fail-open on the guard budget** (`trimtok/dedup.py`) - a file read that is
+  out of time ships the verbatim file instead of blowing the deadline.
+- **Work log** (`reports/CHANGELOG_TH.md`) - one living changelog per topic with
+  the measured numbers; the raw Argon reviews live in `reports/raw/`.
+
+### Measured
+- `read_file` cold-read band: 240,202 -> 115,155 characters (52.1% reduction;
+  0% before) - benchmark `RESULT: PASS`, all acceptance gates met.
+- Test suite: 31 passed (27 previous + 4 new Hermes-fidelity tests).
+- Latency, read_file band: p50 6.49 ms, p95 74.83 ms (43 KB file).
+
 ## [4.2.1] - 2026-10-21
 
 Argon 4 reviewed the v4.2 diff in the original planning thread and returned

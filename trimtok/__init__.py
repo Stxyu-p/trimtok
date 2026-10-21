@@ -31,6 +31,7 @@ from .delta_engine import clear_session as delta_clear_session
 from .signals import (
     Deadline,
     VERBATIM_TOOLS,
+    _READ_FILE_LIKE,
     estimate_tokens,
     is_important,
 )
@@ -444,14 +445,18 @@ def _on_tool_result(
     if _excluded_tool(tool_name, ctx):
         return None
     verbatim_name = str(tool_name or "").strip()
-    if verbatim_name in VERBATIM_TOOLS and verbatim_name != "read_file":
+    if verbatim_name in VERBATIM_TOOLS and verbatim_name not in _READ_FILE_LIKE:
         return None
     sid = str(session_id or task_id or "default")
     turn = str(turn_id or "")
+    # The tool args (path/offset/limit) decide whether a read is a full read or
+    # a targeted slice -- if the caller passed them elsewhere, use that.
+    effective_args = args if args is not None else (
+        kw.get("tool_args") or kw.get("arguments") or kw.get("input"))
     new_result, stats = compress_tool_result(
         str(tool_name or ""),
         result,
-        args=args,
+        args=effective_args,
         session_id=sid,
         min_chars=_int_cfg(ctx, "min_chars", 2048, 0, 10_000_000),
         toon_enabled=_bool_cfg(ctx, "toon_enabled", True),
