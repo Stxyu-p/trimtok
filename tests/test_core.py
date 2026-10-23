@@ -364,6 +364,14 @@ check("drain-template-fires", "[template " in _drain_out and _drain_st["gate"] =
 check("drain-template-sample", "payload-xyz" in _drain_out)
 check("drain-template-count", "×" in _drain_out)
 
+# 15. Hardening: late failure detection and PID prefix preservation
+late_fail_text = ("passing log info line with padding content\n" * 300) + "\nTraceback (most recent call last):\n  File 'test.py', line 10\nZeroDivisionError"
+check("late-traceback-detect-log", detect_kind(late_fail_text) == "log")
+
+from trimtok.core import _normalize_line
+check("status-code-not-stripped", _normalize_line("404 Not Found: /api/v1/users").startswith("404"))
+check("pid-bracket-stripped", not _normalize_line("[12345] Real log message").startswith("[12345]"))
+
 def test_core_suite() -> None:
     assert check.failed == 0
 

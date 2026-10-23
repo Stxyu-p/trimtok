@@ -15,7 +15,17 @@ import ast
 import json
 import time
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    class _MockPytest:
+        class mark:
+            @staticmethod
+            def skipif(cond, reason=""):
+                def decorator(fn):
+                    return fn
+                return decorator
+    pytest = _MockPytest()
 
 from trimtok.core import compress_terminal
 from trimtok.dedup import clear_session, compress_tool_result

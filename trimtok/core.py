@@ -53,7 +53,7 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][AB0]"
 _TS_PREFIX_RE = re.compile(
     r"^\[?\d{4}[-/]\d{2}[-/]\d{2}[T ]\d{2}:\d{2}:\d{2}[^\]]*\]?\s*"
 )
-_PID_PREFIX_RE = re.compile(r"^\[?\d+\]?\s*")
+_PID_PREFIX_RE = re.compile(r"^\[\d+\]\s*|^pid[=:]\s*\d+\s*", re.I)
 _PROGRESS_RE = re.compile(r"^\s*(⠁|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|◐|◓|◑|◒|\||/|-|\\|\d+%|\[\s*\d+/\d+\])")
 _NOISE_LINE_RE = re.compile(
     r"(?i)^\s*(npm notice|.*deprecated.*|.*audit.* vulnerabilities? \(.*\)|"
@@ -127,18 +127,22 @@ def _fold_templates(
 
 
 def detect_kind(text: str) -> str:
-    """Cheap content-type router (stdlib with fast_json_loads acceleration)."""
-    head = text[:4000]
-    if "diff --git" in head or re.search(r"^@@ -\d+", head, re.M):
+    """Cheap content-type router inspecting head and tail for late failure summaries."""
+    sample = text[:4000] if len(text) <= 8000 else (text[:4000] + "\n" + text[-4000:])
+    if "diff --git" in sample or re.search(r"^@@ -\d+", sample, re.M):
         return "diff"
-    if re.search(r"(?m)^(FAIL|ERROR|ok|PASSED|FAILED|Traceback|  File )", head):
+    if re.search(r"(?m)^(FAIL|ERROR|ok|PASSED|FAILED|Traceback|  File |panic:|thread '.*' panicked)", sample):
         return "log"
-    if re.search(r"(?m)^[^:\n]{1,120}:\d+:", head):
+    if re.search(r"(?m)^[^:\n]{1,120}:\d+:", text[:4000]):
         return "search"
     try:
-        stripped = head.strip()
-        if stripped[:1] in "{[":
-            fast_json_loads(text.strip()[:65536] if len(text) > 65536 else text.strip())
+        stripped = text.strip()
+        if len(stripped) >= 2 and (
+            (stripped[0] == "{" and stripped[-1] == "}") or
+            (stripped[0] == "[" and stripped[-1] == "]")
+        ):
+            if len(stripped) <= 65536:
+                fast_json_loads(stripped)
             return "json"
     except Exception:
         pass

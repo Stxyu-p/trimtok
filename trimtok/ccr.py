@@ -91,7 +91,8 @@ def _compress_payload(content_str: str) -> bytes | str:
         return content_str
     if _ZSTD_AVAILABLE and _ZSTD_CCTX is not None:
         try:
-            return b"zstd:" + _ZSTD_CCTX.compress(raw)
+            with _LOCK:
+                return b"zstd:" + _ZSTD_CCTX.compress(raw)
         except Exception:
             pass
     try:
@@ -110,7 +111,8 @@ def _decompress_payload(stored: Any) -> str | None:
         b = bytes(stored)
         if b.startswith(b"zstd:") and _ZSTD_AVAILABLE and _ZSTD_DCTX is not None:
             try:
-                return _ZSTD_DCTX.decompress(b[5:]).decode("utf-8", errors="replace")
+                with _LOCK:
+                    return _ZSTD_DCTX.decompress(b[5:]).decode("utf-8", errors="replace")
             except Exception:
                 pass
         if b.startswith(b"zlib:"):
@@ -142,13 +144,14 @@ class FastCCRStore:
         try:
             self.base.mkdir(parents=True, exist_ok=True)
             self._conn = sqlite3.connect(
-                str(self.db_path), check_same_thread=False, timeout=5.0
+                str(self.db_path), check_same_thread=False, timeout=10.0, isolation_level=None
             )
             cur = self._conn.cursor()
             cur.execute("PRAGMA journal_mode=WAL;")
             cur.execute("PRAGMA synchronous=NORMAL;")
             cur.execute("PRAGMA temp_store=MEMORY;")
-            cur.execute("PRAGMA busy_timeout=3000;")
+            cur.execute("PRAGMA busy_timeout=10000;")
+            cur.execute("PRAGMA journal_size_limit=67108864;")
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS chunks ("
                 " sha12 TEXT PRIMARY KEY, alias TEXT UNIQUE, content BLOB, created_at REAL)"
@@ -157,7 +160,6 @@ class FastCCRStore:
             cur.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);")
             row = cur.execute("SELECT value FROM meta WHERE key='alias_seq'").fetchone()
             self._alias_seq = int(row[0]) if row and str(row[0]).isdigit() else 0
-            self._conn.commit()
             self._writable = True
         except Exception:
             self._conn = None
@@ -190,16 +192,7 @@ class FastCCRStore:
 
             try:
                 cur = self._conn.cursor()
-                row = cur.execute("SELECT alias FROM chunks WHERE sha12=?", (sha12,)).fetchone()
-                if row:
-                    alias = row[0]
-                    self._set_mem(sha12, alias, content)
-                    return alias
-
-                if self._conn.in_transaction:
-                    self._conn.commit()
                 cur.execute("BEGIN IMMEDIATE")
-                # Re-check under lock in case another process inserted concurrently
                 row = cur.execute("SELECT alias FROM chunks WHERE sha12=?", (sha12,)).fetchone()
                 if row:
                     alias = row[0]
