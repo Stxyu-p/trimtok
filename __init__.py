@@ -9,9 +9,10 @@ _OUTER_DIR = pathlib.Path(__file__).resolve().parent
 _INNER_DIR = _OUTER_DIR / "trimtok"
 _INNER_INIT = _INNER_DIR / "__init__.py"
 
-if __name__ == "trimtok":
-    _SEARCH_PATHS = [str(_INNER_DIR), str(_OUTER_DIR)]
-    __path__ = _SEARCH_PATHS
+_SEARCH_PATHS = [str(_INNER_DIR), str(_OUTER_DIR)]
+__path__ = _SEARCH_PATHS
+
+if "trimtok" not in sys.modules or getattr(sys.modules["trimtok"], "__file__", None) != str(_INNER_INIT):
     _spec = importlib.util.spec_from_file_location(
         "trimtok", _INNER_INIT, submodule_search_locations=_SEARCH_PATHS
     )
@@ -20,10 +21,12 @@ if __name__ == "trimtok":
         _mod.__path__ = _SEARCH_PATHS
         sys.modules["trimtok"] = _mod
         _spec.loader.exec_module(_mod)
+    else:
+        import trimtok as _mod
 else:
-    import trimtok as _mod
+    _mod = sys.modules["trimtok"]
 
-    sys.modules[__name__] = _mod
+sys.modules[__name__] = _mod
 
 # A host that loads this file under a namespaced module name keeps a reference
 # to THIS module object and looks for register() on it (the Hermes plugin
