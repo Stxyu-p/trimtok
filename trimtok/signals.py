@@ -115,23 +115,26 @@ def is_msgspec_available() -> bool:
 # 2. Polarity & Error Detection
 # ---------------------------------------------------------------------------
 _ERROR_RE = re.compile(
-    r"(?i)(?<![A-Za-z0-9_])"
-    r"(error(?:s)?|exception|traceback|fail(?:ed|ure)?|panic|fatal|critical|"
-    r"warn(?:ing)?|denied|refused|timeout|seg(?:fault|mentation\s+fault)|"
-    r"assert(?:ion)?(?:error|ion| failed)?|oom|epipe|"
-    r"exit\s+code\s+[1-9]|out\s+of\s+memory|"
+    r"(?:(?<![A-Za-z0-9_])|[A-Za-z0-9_]+(?:Error|Exception)\b)"
+    r"(?:error(?:s)?|exception|traceback|fail(?:ed|ure|s)?|panic(?:ked)?|fatal|critical|"
+    r"warn(?:ing|ings)?|denied|refused|timeout|seg(?:fault|mentation\s+fault)|"
+    r"sig(?:segv|abrt|bus|kill|term)|undefined\s+reference|killed|"
+    r"assert(?:ion)?(?:error|ion|\s+failed)?|oom|epipe|"
+    r"exit\s+(?:code|status)\s+[1-9]\d*|out\s+of\s+memory|"
     r"status(?:_code)?[=:\s]+5\d{2}(?![0-9])|"
     r"http[/\d.\s]*5\d{2}(?![0-9])|bad\s+gateway|"
     r"ข้อผิดพลาด|ผิดพลาด|ล้มเหลว|ขัดข้อง)"
     r"(?![A-Za-z0-9_])"
-    r"|^\s*(File |  at |Caused by:)"
+    r"|\b[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception|Fault|Panic):"
+    r"|^\s*(?:File |  at |Caused by:|\d+:\s+0x[0-9a-fA-F]+)",
+    re.I,
 )
 
 _ERROR_HINTS = (
     "error", "exception", "traceback", "fail", "panic", "fatal", "critical",
     "warn", "denied", "refused", "timeout", "segfault", "segment", "fault",
     "assert", "oom", "epipe", "exit code", "out of memory", "memory",
-    "status", "bad gateway", "http/",
+    "status", "bad gateway", "http/", "sig", "undefined reference", "killed",
     "ผิดพลาด", "ล้มเหลว", "ขัดข้อง", "ข้อผิดพลาด",
     "file ", "  at ", "caused by:",
 )
