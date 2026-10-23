@@ -2,6 +2,14 @@
 
 All notable changes to trimtok are documented here.
 
+## [4.2.3] - 2026-10-24
+
+### Changed
+- **Zero Model / Zero Daemon Architecture Documentation**:
+  - Re-affirmed standalone context compression architecture: operates 100% via heuristic AST analysis, BPE token estimation, differential patching, and lossless Zstandard CCR caching.
+  - Requires zero embedding models, zero GPU/ONNX runtimes, zero external daemons, and zero network calls.
+  - Hardened cross-platform SQLite WAL concurrency and file-locking on Windows NTFS.
+
 ## [4.2.2] - 2026-10-21
 
 The v4.2 stateful read-file lane never fired in real Hermes: 1,078 `read_file`
