@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-import sys
 import time
 from functools import lru_cache
 from typing import Any
@@ -84,11 +83,6 @@ def estimate_bpe_tokens(text: str) -> int:
         return 0
 
 
-def count_tokens(text: str) -> int:
-    """Alias for estimate_bpe_tokens."""
-    return estimate_bpe_tokens(text)
-
-
 def estimate_tokens(text: str) -> int:
     """Standard token estimator interface."""
     return estimate_bpe_tokens(text)
@@ -101,14 +95,6 @@ def estimate_bpe_gain(before: str, after: str) -> int:
 
 def is_tiktoken_available() -> bool:
     return _TIKTOKEN_AVAILABLE
-
-
-def is_jiter_available() -> bool:
-    return _JITER_AVAILABLE
-
-
-def is_msgspec_available() -> bool:
-    return _MSGSPEC_AVAILABLE
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +120,7 @@ _ERROR_HINTS = (
     "error", "exception", "traceback", "fail", "panic", "fatal", "critical",
     "warn", "denied", "refused", "timeout", "segfault", "segment", "fault",
     "assert", "oom", "epipe", "exit code", "out of memory", "memory",
-    "status", "bad gateway", "http/", "sig", "undefined reference", "killed",
+    "status", "bad gateway", "http/", "http", "sig", "undefined reference", "killed",
     "ผิดพลาด", "ล้มเหลว", "ขัดข้อง", "ข้อผิดพลาด",
     "file ", "  at ", "caused by:",
 )
@@ -150,13 +136,33 @@ def looks_suspicious(low: str) -> bool:
 _CACHEABLE_MAX_CHARS = 240
 _FAULT_CACHE_SIZE = 16384
 
+# Negated / concept phrases that mention fault words but are NOT faults
+# ("no error", "0 warnings", "error-handling policy"). Stripped before the real
+# check so a benign mention does not lock a line as important, which would
+# defeat compression on ordinary info logs (F1). A real error signal on the
+# same line is untouched, so genuine errors are still detected.
+_BENIGN_RE = re.compile(
+    r"(?:no\s+(?:error|errors|warning|warnings|warn|warns|failure|failures|fail|fails|"
+    r"exception|exceptions|fault|faults|panic|panics|assertion|assertions|"
+    r"issue|issues|problem|problems|crash|crashes)"
+    r"|(?:0|zero)\s+(?:error|errors|warning|warnings|warn|warns|failure|failures|"
+    r"exception|exceptions|issue|issues|problem|problems)"
+    r"|without\s+(?:error|errors|warning|warnings|warn|warns|failure|failures))"
+    r"|error[- ](?:handling|policy|recovery|detection|reporting|checking|"
+    r"tracking|summary|count|counts|free|bound|bounds|tolerant|correction)",
+    re.I,
+)
+
 
 def _compute_fault(line: str) -> bool:
     if not line:
         return False
     if not looks_suspicious(line.lower()):
         return False
-    return bool(_ERROR_RE.search(line))
+    # Strip negated/concept phrases first so "no error" / "error-handling"
+    # do not falsely lock a benign line as a fault (F1).
+    probe = _BENIGN_RE.sub(" ", line)
+    return bool(_ERROR_RE.search(probe))
 
 
 _cached_fault = lru_cache(maxsize=_FAULT_CACHE_SIZE)(_compute_fault)
@@ -183,7 +189,8 @@ KEEP_PREFIX = "TRIMTOK_KEEP:"
 
 SLOT_RE = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-    r"|<TAG>|<UUID>|<SESS>|<TS>|\b\d{1,2}:\d{2}:\d{2}\b|(?<!\d)\d+",
+    r"|<TAG>|<UUID>|<SESS>|<TS>|\b\d{1,2}:\d{2}:\d{2}\b"
+    r"|(?<!\d)\d+",
     re.I,
 )
 
@@ -339,11 +346,14 @@ def headtail_head(kept_head: int, kept_tail: int, omitted: int, ref: str) -> str
     return f"[tt:headtail omitted={omitted} #{ref}]"
 
 
-_HASH_RE = re.compile(r"(?:retrieve:|#)([0-9A-Za-z]{1,16})")
-
 _EXEMPT_RE = re.compile(
     r"(?i)port\s+\d{2,5}|(?<!\d):\d{2,5}\b|[0-9a-f]{7,40}|"
     r"\b\d{3,}\s+(errors|lines|files|rows|tests|passed|failed)\b"
+)
+
+
+_VALUE_LINE_RE = re.compile(
+    r"(?i)port\s+\d{2,5}|=\s*\d+",
 )
 
 
@@ -352,20 +362,6 @@ def is_exempt(line: str) -> bool:
         if (line or "").startswith("TRIMTOK_KEEP:"):
             return True
         return bool(_EXEMPT_RE.search(line or ""))
-    except Exception:
-        return False
-
-
-def find_hashes(text: str) -> list[str]:
-    try:
-        return _HASH_RE.findall(text or "")
-    except Exception:
-        return []
-
-
-def is_compressed(text: str) -> bool:
-    try:
-        return bool(SENTINEL_RE.search((text or "")[:2000]))
     except Exception:
         return False
 

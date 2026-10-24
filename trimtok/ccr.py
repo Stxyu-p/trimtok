@@ -37,7 +37,7 @@ import zlib
 
 _BASE62 = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _MAX_MEM_ITEMS = 512
-_HEX12_RE = re.compile(r"^[0-9a-f]{12,16}$")
+_HEX12_RE = re.compile(r"^[0-9a-f]{12,64}$")
 _LOCK = threading.Lock()
 _GLOBAL_STORE: FastCCRStore | None = None
 
@@ -151,11 +151,19 @@ class FastCCRStore:
             cur.execute("PRAGMA synchronous=NORMAL;")
             cur.execute("PRAGMA temp_store=MEMORY;")
             cur.execute("PRAGMA busy_timeout=10000;")
-            cur.execute("PRAGMA journal_size_limit=67108864;")
+            cur.execute("PRAGMA journal_size_limit=4194304;")
+            cur.execute("PRAGMA wal_autocheckpoint=100;")
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS chunks ("
-                " sha12 TEXT PRIMARY KEY, alias TEXT UNIQUE, content BLOB, created_at REAL)"
+                " sha TEXT PRIMARY KEY, alias TEXT UNIQUE, content BLOB, created_at REAL)"
             )
+            # Migrate legacy schema (sha12 column) to new (sha) column.
+            try:
+                cols = {r[1] for r in cur.execute("PRAGMA table_info(chunks)").fetchall()}
+                if "sha" not in cols and "sha12" in cols:
+                    cur.execute("ALTER TABLE chunks RENAME COLUMN sha12 TO sha;")
+            except Exception:
+                pass
             cur.execute("CREATE INDEX IF NOT EXISTS idx_alias ON chunks(alias);")
             cur.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);")
             row = cur.execute("SELECT value FROM meta WHERE key='alias_seq'").fetchone()
@@ -168,6 +176,10 @@ class FastCCRStore:
         with self._lock:
             if self._conn is not None:
                 try:
+                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                except Exception:
+                    pass
+                try:
                     self._conn.close()
                 except Exception:
                     pass
@@ -177,27 +189,26 @@ class FastCCRStore:
         """Store content, return Base62 alias (e.g. #c1). Never raises."""
         if not content:
             return ""
-        sha12 = hashlib.sha256(content.encode("utf-8")).hexdigest()[:12]
+        sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
         with self._lock:
-            if sha12 in self._sha_alias:
-                alias = self._sha_alias[sha12]
-                self._mem.move_to_end(sha12)
+            if sha in self._sha_alias:
+                alias = self._sha_alias[sha]
+                self._mem.move_to_end(sha)
                 return alias
 
             if not self._writable or self._conn is None:
-                self._alias_seq += 1
-                alias = f"#c{_to_base62(self._alias_seq)}"
-                self._set_mem(sha12, alias, content)
-                return alias
+                # Fail open: never emit a retrieval marker that cannot be
+                # resolved after a process restart (in-memory-only alias).
+                return ""
 
             try:
                 cur = self._conn.cursor()
                 cur.execute("BEGIN IMMEDIATE")
-                row = cur.execute("SELECT alias FROM chunks WHERE sha12=?", (sha12,)).fetchone()
+                row = cur.execute("SELECT alias FROM chunks WHERE sha=?", (sha,)).fetchone()
                 if row:
                     alias = row[0]
                     cur.execute("COMMIT")
-                    self._set_mem(sha12, alias, content)
+                    self._set_mem(sha, alias, content)
                     return alias
 
                 cur.execute(
@@ -212,9 +223,9 @@ class FastCCRStore:
                 now = time.time()
                 stored_blob = _compress_payload(content)
                 cur.execute(
-                    "INSERT INTO chunks (sha12, alias, content, created_at) VALUES (?, ?, ?, ?) "
-                    "ON CONFLICT(sha12) DO UPDATE SET content=excluded.content, created_at=excluded.created_at",
-                    (sha12, alias, stored_blob, now),
+                    "INSERT INTO chunks (sha, alias, content, created_at) VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(sha) DO UPDATE SET content=excluded.content, created_at=excluded.created_at",
+                    (sha, alias, stored_blob, now),
                 )
                 # Opportunistic TTL sweep (at most once every 50 writes)
                 if ttl_hours > 0 and (seq_num % 50 == 0):
@@ -222,7 +233,7 @@ class FastCCRStore:
                     cur.execute("DELETE FROM chunks WHERE created_at < ?", (expire_before,))
 
                 cur.execute("COMMIT")
-                self._set_mem(sha12, alias, content)
+                self._set_mem(sha, alias, content)
                 return alias
             except Exception:
                 try:
@@ -231,11 +242,11 @@ class FastCCRStore:
                     pass
                 self._alias_seq += 1
                 alias = f"#c{_to_base62(self._alias_seq)}"
-                self._set_mem(sha12, alias, content)
+                self._set_mem(sha, alias, content)
                 return alias
 
     def get(self, ref: str, *, ttl_hours: int = 24) -> str | None:
-        """Retrieve original content by #ref (e.g. #c1) or sha12 hash."""
+        """Retrieve original content by #ref (e.g. #c1) or sha hash."""
         if not ref:
             return None
         target = ref.strip()
@@ -254,42 +265,42 @@ class FastCCRStore:
                 cur = self._conn.cursor()
                 if target.startswith("#"):
                     row = cur.execute(
-                        "SELECT sha12, alias, content, created_at FROM chunks WHERE alias=?",
+                        "SELECT sha, alias, content, created_at FROM chunks WHERE alias=?",
                         (target,),
                     ).fetchone()
                 else:
                     row = cur.execute(
-                        "SELECT sha12, alias, content, created_at FROM chunks WHERE sha12=?",
+                        "SELECT sha, alias, content, created_at FROM chunks WHERE sha=?",
                         (target,),
                     ).fetchone()
 
                 if row:
-                    sha12, row_alias, blob, created_at = row[0], row[1], row[2], row[3]
+                    sha, row_alias, blob, created_at = row[0], row[1], row[2], row[3]
                     if (
                         ttl_hours > 0
                         and created_at is not None
                         and (time.time() - float(created_at)) > (ttl_hours * 3600.0)
                     ):
-                        cur.execute("DELETE FROM chunks WHERE sha12=?", (sha12,))
+                        cur.execute("DELETE FROM chunks WHERE sha=?", (sha,))
                         self._conn.commit()
-                        self._mem.pop(sha12, None)
-                        self._sha_alias.pop(sha12, None)
+                        self._mem.pop(sha, None)
+                        self._sha_alias.pop(sha, None)
                         if row_alias:
                             self._alias_mem.pop(row_alias, None)
                         return None
                     decomp = _decompress_payload(blob)
                     if decomp is not None:
-                        alias = row_alias or (target if target.startswith("#") else f"#{sha12}")
-                        self._set_mem(sha12, alias, decomp)
+                        alias = row_alias or (target if target.startswith("#") else f"#{sha}")
+                        self._set_mem(sha, alias, decomp)
                         return decomp
             except Exception:
                 return None
         return None
 
-    def _set_mem(self, sha12: str, alias: str, content: str) -> None:
-        self._mem[sha12] = content
-        self._alias_mem[alias] = sha12
-        self._sha_alias[sha12] = alias
+    def _set_mem(self, sha: str, alias: str, content: str) -> None:
+        self._mem[sha] = content
+        self._alias_mem[alias] = sha
+        self._sha_alias[sha] = alias
         while len(self._mem) > self.max_mem_items:
             old_sha, _ = self._mem.popitem(last=False)
             old_alias = self._sha_alias.pop(old_sha, None)
@@ -328,13 +339,13 @@ class FastCCRStore:
                     if before_seconds > 0:
                         cutoff = time.time() - before_seconds
                         rows = cur.execute(
-                            "SELECT sha12, alias FROM chunks WHERE created_at < ?",
+                            "SELECT sha, alias FROM chunks WHERE created_at < ?",
                             (cutoff,),
                         ).fetchall()
                         count = len(rows)
-                        for sha12, alias in rows:
-                            self._mem.pop(sha12, None)
-                            self._sha_alias.pop(sha12, None)
+                        for sha, alias in rows:
+                            self._mem.pop(sha, None)
+                            self._sha_alias.pop(sha, None)
                             if alias:
                                 self._alias_mem.pop(alias, None)
                         cur.execute("DELETE FROM chunks WHERE created_at < ?", (cutoff,))
@@ -550,9 +561,6 @@ def stats(*, dir: Path | None = None, ttl_hours: int = 24, **kwargs: Any) -> dic
         return {"entries": 0, "bytes": 0}
 
 
-def get_stats(*, dir: Path | None = None, **kwargs: Any) -> dict[str, int]:
-    return stats(dir=dir, **kwargs)
-
 
 def purge(*, dir: Path | None = None, before_seconds: float = 0, **kwargs: Any) -> int:
     try:
@@ -578,7 +586,7 @@ def resolve_hash(ref: str) -> str | None:
         with store._lock:
             try:
                 row = store._conn.execute(
-                    "SELECT sha12 FROM chunks WHERE alias=?", (target,)
+                    "SELECT sha FROM chunks WHERE alias=?", (target,)
                 ).fetchone()
                 if row and row[0]:
                     store._alias_mem[target] = row[0]

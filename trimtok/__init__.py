@@ -41,7 +41,6 @@ from .pruners import (
     prune_unified_diff,
     skeletonize_code,
 )
-from .toon_codec import fold_json_to_toon
 
 _MAX_GREP_PATTERN_CHARS = 256
 _MAX_GREP_INPUT_CHARS = 1_000_000

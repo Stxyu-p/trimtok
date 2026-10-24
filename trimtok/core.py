@@ -26,6 +26,7 @@ try:
         fast_json_loads,
         is_exempt,
         is_important,
+        _VALUE_LINE_RE,
         strip_ansi,
         adaptive_terminal_head,
         terminal_head,
@@ -42,6 +43,7 @@ except (ImportError, ValueError):
         fast_json_loads,
         is_exempt,
         is_important,
+        _VALUE_LINE_RE,
         strip_ansi,
         adaptive_terminal_head,
         terminal_head,
@@ -76,6 +78,10 @@ def _template_key(line: str) -> str:
     """Template key with volatile slots normalized; '' = not groupable."""
     norm = _normalize_line(line)
     if len(norm) < 20:
+        return ""
+    # Distinct port/config values must not collapse into one template key
+    # (would hide differing values in context). Skip grouping for such lines.
+    if _VALUE_LINE_RE.search(line or ""):
         return ""
     key = _SLOT_RE.sub("{}", norm)
     if len(key) < 20:
@@ -428,22 +434,24 @@ def compress_terminal(
         out_txt = "\n".join(windowed)
         missing = [e for e in in_err if e and e not in out_txt and not e.startswith(_KEEP_PREFIX)]
         if missing:
-            forced_total = sum(1 for _, imp in flagged_all if imp)
-            if forced_total > budget:
-                return new_output, {
-                    "gate": "ok", "kind": kind, "digest": digest,
-                    "before_chars": len(output), "after_chars": len(new_output),
-                    "saved_chars": len(output) - len(new_output),
-                    "est_tokens_before": tokens_before,
-                    "est_tokens_after": tokens_after,
-                    "hidden_lines": hidden, "dropped_lines": dropped,
-                    "partial": True, "omitted_errors": len(missing),
+            # Emit partial (windowed output + omitted count) instead of reverting
+            # to raw: keeps compression benefit while flagging lost errors for
+            # retrieval via #ref (F2). Revert only if windowed output is empty.
+            if not new_output:
+                return output, {
+                    "gate": "reverted_quality", "kind": kind,
+                    "before_chars": len(output), "after_chars": len(output),
+                    "saved_chars": 0, "missing_errors": len(missing),
                     "ms": (time.perf_counter() - t0) * 1000,
                 }
-            return output, {
-                "gate": "reverted_quality", "kind": kind,
-                "before_chars": len(output), "after_chars": len(output),
-                "saved_chars": 0, "missing_errors": len(missing),
+            return new_output, {
+                "gate": "ok", "kind": kind, "digest": digest,
+                "before_chars": len(output), "after_chars": len(new_output),
+                "saved_chars": len(output) - len(new_output),
+                "est_tokens_before": tokens_before,
+                "est_tokens_after": tokens_after,
+                "hidden_lines": hidden, "dropped_lines": dropped,
+                "partial": True, "omitted_errors": len(missing),
                 "ms": (time.perf_counter() - t0) * 1000,
             }
         return new_output, {

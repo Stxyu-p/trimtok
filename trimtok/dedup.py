@@ -28,6 +28,7 @@ try:
         headtail_head,
         is_exempt,
         is_important,
+        _VALUE_LINE_RE,
         masked,
         seen_line,
         seen_lines,
@@ -50,6 +51,7 @@ except ImportError:
         headtail_head,
         is_exempt,
         is_important,
+        _VALUE_LINE_RE,
         masked,
         seen_line,
         seen_lines,
@@ -339,6 +341,9 @@ def _fold_intra_repeats(text: str, deadline: Any | None = None) -> tuple[str, in
 def _intra_template_key(line: str) -> str:
     norm = line.strip()
     if len(norm) < 20:
+        return ""
+    # Distinct port/config values must not collapse into one template key.
+    if _VALUE_LINE_RE.search(line or ""):
         return ""
     key = _SLOT_RE.sub("{}", norm)
     if len(key) < 20:
