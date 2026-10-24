@@ -127,6 +127,11 @@ def _decompress_payload(stored: Any) -> str | None:
     return str(stored)
 
 
+def _is_hex_digest(s: str) -> bool:
+    """True if s looks like a hex content digest (>=8 hex chars)."""
+    return len(s) >= 8 and all(c in "0123456789abcdef" for c in s.lower())
+
+
 class FastCCRStore:
     """Two-Tier content-addressed store: RAM LRU + SQLite WAL with Base62 aliases."""
 
@@ -253,7 +258,13 @@ class FastCCRStore:
         if re.match(r"^c[0-9A-Za-z]+$", target) and len(target) <= 8:
             target = f"#{target}"
         with self._lock:
-            sha = self._alias_mem.get(target) if target.startswith("#") else target
+            # A "#<hex>" ref may be a digest (content hash) rather than a CCR
+            # alias; resolve by sha prefix in that case.
+            is_alias = target.startswith("#") and not _is_hex_digest(target.lstrip("#"))
+            if is_alias:
+                sha = self._alias_mem.get(target)
+            else:
+                sha = target.lstrip("#")
             if sha and sha in self._mem and ttl_hours >= 24:
                 self._mem.move_to_end(sha)
                 return self._mem[sha]
@@ -263,15 +274,20 @@ class FastCCRStore:
 
             try:
                 cur = self._conn.cursor()
-                if target.startswith("#"):
+                if is_alias:
                     row = cur.execute(
                         "SELECT sha, alias, content, created_at FROM chunks WHERE alias=?",
                         (target,),
                     ).fetchone()
+                elif len(sha) < 64:
+                    row = cur.execute(
+                        "SELECT sha, alias, content, created_at FROM chunks WHERE substr(sha,1,?)=?",
+                        (len(sha), sha),
+                    ).fetchone()
                 else:
                     row = cur.execute(
                         "SELECT sha, alias, content, created_at FROM chunks WHERE sha=?",
-                        (target,),
+                        (sha,),
                     ).fetchone()
 
                 if row:

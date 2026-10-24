@@ -38,6 +38,7 @@ try:
     )
     from .pruners import group_search_hits, skeletonize_code, smart_skeletonize_code
     from .toon_codec import fold_json_to_toon
+    from .ccr import put as _ccr_put
 except ImportError:
     from signals import (
         KEEP_PREFIX as _KEEP_PREFIX,
@@ -61,6 +62,7 @@ except ImportError:
     )
     from pruners import group_search_hits, skeletonize_code, smart_skeletonize_code
     from toon_codec import fold_json_to_toon
+    from ccr import put as _ccr_put
 
 _MIN_SPAN_LINES = 5
 _MIN_SPAN_CHARS = 200
@@ -986,11 +988,7 @@ def _handle_read_file_v42(
                 # retrievable by that ref -> store it in the CCR now.
                 prev_ref = prev_digest
                 try:
-                    from .ccr import put as ccr_put
-                except (ImportError, ValueError):
-                    from trimtok.ccr import put as ccr_put
-                try:
-                    stored = ccr_put(prev_full)
+                    stored = _ccr_put(prev_full)
                     if stored:
                         prev_ref = stored.lstrip("#")
                 except Exception:
@@ -1143,6 +1141,11 @@ def compress_tool_result(
                 return micro_minify_tool(result, session_id, t0)
             return result, {"gate": "passthrough_small", "ms": 0.0}
         _rh = hashlib.sha256(result.encode("utf-8", "replace")).hexdigest()[:12]
+        # Store the original in CCR so retrieve(hash="#digest") resolves.
+        try:
+            _ccr_put(result)
+        except Exception:
+            pass
         seen_state = _seen(session_id or "default")
         failed_hashes = seen_state.setdefault("failed_raw", set())
         # Only a hash that previously FAILED (reverted_gate) and has no span in

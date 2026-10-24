@@ -32,6 +32,7 @@ try:
         terminal_head,
     )
     from .pruners import prune_traceback, prune_unified_diff
+    from .ccr import put as _ccr_put
 except (ImportError, ValueError):
     from trimtok import delta_engine
     from trimtok.signals import (
@@ -49,6 +50,7 @@ except (ImportError, ValueError):
         terminal_head,
     )
     from trimtok.pruners import prune_traceback, prune_unified_diff
+    from trimtok.ccr import put as _ccr_put
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][AB0]")
 
@@ -393,6 +395,10 @@ def compress_terminal(
         ]
         windowed, dropped = _window(kept, budget)
         digest = hashlib.sha256(output.encode("utf-8", "replace")).hexdigest()[:12]
+        try:
+            _ccr_put(output)
+        except Exception:
+            pass
         omitted_total = hidden + dropped
         gross_saved = len(output) - sum(len(x) + 1 for x in windowed)
         tokens_before = estimate_tokens(output)
