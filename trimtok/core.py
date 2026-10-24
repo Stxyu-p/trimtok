@@ -1,6 +1,6 @@
 """trimtok core: deterministic terminal-output compression (Phase 1 & Trimtok 4.0).
 
-Stdlib only. Pure functions — no external dependencies, no Hermes imports.
+Stdlib + optional rapidfuzz (fuzzy fold) + optional tiktoken (token estimation).
 Pipeline per SPEC: detect kind -> filter -> token-gate -> error-preservation
 quality-gate. Never raises: every entry point catches and returns input.
 """
