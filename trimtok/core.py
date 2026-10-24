@@ -13,6 +13,14 @@ import time
 from functools import lru_cache
 from typing import Any
 
+# Optional fuzzy matcher (rapidfuzz is a declared dependency; difflib fallback).
+try:
+    from rapidfuzz.distance import Levenshtein as _Levenshtein
+    _FUZZY_AVAILABLE = True
+except Exception:
+    _Levenshtein = None
+    _FUZZY_AVAILABLE = False
+
 VERSION = "4.2.2"
 
 try:
@@ -181,7 +189,26 @@ def _fold_repeats(
             continue
         norm = _normalize_line(line)
         j = i + 1
-        while j < n and not flagged[j][1] and _normalize_line(flagged[j][0]) == norm:
+        # Fuzzy fold: lines whose normalized form is >= 0.85 similar are
+        # treated as the same template (handles variation like "request 123"
+        # vs "request 124"). Falls back to exact match when rapidfuzz absent.
+        # Guard: only fuzzy on short lines (<200 chars) to limit O(n^2) cost.
+        _do_fuzzy = _FUZZY_AVAILABLE and len(norm) < 200
+        while j < n and not flagged[j][1]:
+            other_norm = _normalize_line(flagged[j][0])
+            if len(other_norm) >= 200:
+                # Long lines: exact match only (performance guard).
+                if other_norm != norm:
+                    break
+                j += 1
+                continue
+            if _do_fuzzy:
+                sim = _Levenshtein.normalized_similarity(norm, other_norm)
+            else:
+                import difflib
+                sim = difflib.SequenceMatcher(None, norm, other_norm).ratio()
+            if sim < 0.85:
+                break
             j += 1
         run = j - i
         if run >= 3:
