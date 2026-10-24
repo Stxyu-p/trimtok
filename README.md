@@ -4,7 +4,7 @@
 
 **Universal, Local, Deterministic Context Compressor for AI Coding Agents & IDEs**
 
-<p><em>88.3% fewer characters across heavy engineering workloads — zero intelligence lost, every byte recoverable in sub-millisecond time.</em></p>
+<p><em>Real-world telemetry (3,840 events): 48.5% fewer characters on terminal output, 38.7% on tool results — zero intelligence lost, every byte recoverable in sub-millisecond time.</em></p>
 
 <p>
   <a href="https://pypi.org/project/trimtok/"><img src="https://img.shields.io/pypi/v/trimtok?style=flat-square&color=blue" alt="PyPI" /></a>
@@ -368,11 +368,13 @@ Every compression pass enforces strict verification constraints:
 | `ccr.put` / `ccr.get` | SQLite WAL + Zstd write / warm `#c1` read | **0.22 ms / 0.011 ms** | 0.42 ms / 0.012 ms | `< 5.0 ms` |
 
 <details>
-<summary><strong>📊 Click to expand: Full 34-Case Heavy Stress Suite Breakdown (88.3% Total Reduction)</strong></summary>
+<summary><strong>📊 Click to expand: Real-World Telemetry Breakdown (48.5% Terminal / 38.7% Tool)</strong></summary>
 
 <br/>
 
 Verified via `python tests/stress_heavy.py`:
+
+> **Note:** The rows below are **synthetic stress cases** (perfect repeats, templated data) showing the compression ceiling. Real-world telemetry (3,840 events) shows **48.5% (terminal) / 38.7% (tool)** reduction. Synthetic numbers are best-case references only.
 
 | Workload Scenario | Before → After | Reduction |
 | :--- | :--- | ---: |
@@ -389,7 +391,7 @@ Verified via `python tests/stress_heavy.py`:
 | 4,800-line deep stack traceback (`T12`) | `94,656 → 11,230 chars` | **88.1%** |
 | 1,000-row JSON array via TOON (`D15b`) | `101,885 → 26,147 chars` | **74.3%** |
 | Realistic 5-turn mixed session (`SIM`) | `105,839 → 39,904 chars` | **62.3%** |
-| **All 34 stress cases combined** | **`3,559,894 → 417,581 chars`** | **88.3%** (~785k tokens saved) |
+| **Real-world (3,840 telemetry events)** | **`1,471,634 → 758,566 chars` (terminal) / `3,537,546 → 2,169,655 chars` (tool)** | **48.5% / 38.7%** |
 
 </details>
 
@@ -442,13 +444,13 @@ flowchart LR
     Task(["Developer Request"]) --> SP["Skill Proof<br/>~/.skill-proof/skills<br/>(Deterministic Skill Router)"]
     SP --> MC["MemCore<br/>~/.memcore<br/>(Governed Bitemporal Memory)"]
     MC --> Agent["Any AI Coding Agent"]
-    Agent --> TT["trimtok<br/>~/.trimtok<br/>(88.3% Context Compression + CCR #c1)"]
+    Agent --> TT["trimtok<br/>~/.trimtok<br/>(48.5% Terminal / 38.7% Tool + CCR #c1)"]
     TT --> Agent
 ```
 
 | Pillar | Repository | Global Hub | What Installing All 3 Gives You |
 | :--- | :--- | :--- | :--- |
-| **Context Shield** | **[trimtok](https://github.com/Stxyu-p/trimtok)** | `~/.trimtok` | Cuts terminal, traceback, diff, AST code, and JSON token bloat by **88.3%** with instant `#c1` lossless recovery. |
+| **Context Shield** | **[trimtok](https://github.com/Stxyu-p/trimtok)** | `~/.trimtok` | Cuts terminal, traceback, diff, AST code, and JSON token bloat by **38–48%** (real-world telemetry) with instant `#c1` lossless recovery. |
 | **Governed Memory** | **[MemCore](https://github.com/Stxyu-p/memcore)** | `~/.memcore` | Gives every IDE and CLI **one shared bitemporal brain** (`FTS5` + `sqlite-vec` SIMD + `model2vec`) with hard trust labels and source-file staleness tracking. |
 | **Skill Vault & Router** | **[Skill Proof](https://github.com/Stxyu-p/skill-proof)** | `~/.skill-proof/skills` | Consolidates all dispersed `SKILL.md` playbooks into **one deduplicated global vault** and routes tasks in `< 1 ms` with zero routing LLM calls. |
 
