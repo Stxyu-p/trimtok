@@ -7,8 +7,8 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core import LEGEND, SENTINEL_RE, compress_terminal, detect_kind, is_important, strip_ansi
-from ccr import get as ccr_get, put as ccr_put, stats as ccr_stats
+from trimtok.core import LEGEND, SENTINEL_RE, compress_terminal, detect_kind, is_important, strip_ansi
+from trimtok.ccr import get as ccr_get, put as ccr_put, stats as ccr_stats
 
 
 def check(name, cond):
@@ -160,10 +160,10 @@ with tempfile.TemporaryDirectory() as td:
     check("exclude-tool-exact-name", compress_call.called)
 
     # 8b. retrieve tool with pagination and grep
-    from __init__ import _handle_retrieve
+    from trimtok import _handle_retrieve
     # monkeypatch default_dir for test
-    import ccr
-    import ccr_v2
+    from trimtok import ccr
+    from trimtok import ccr as ccr_v2
     orig_dir = ccr.default_dir
     ccr.default_dir = lambda: d
     try:

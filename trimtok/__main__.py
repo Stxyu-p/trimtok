@@ -93,6 +93,24 @@ def _sync_global_skill() -> None:
             pass
 
 
+def _run_setup_wizard() -> None:
+    """Initialize global CCR SQLite WAL store, sync schemas/skills, and run live self-check."""
+    _sync_antigravity_schema_cache()
+    _sync_global_skill()
+    try:
+        store_dir = ccr.default_dir()
+        st = ccr.stats()
+        zstd_ok = getattr(ccr, "_ZSTD_AVAILABLE", False)
+        fuzzy_ok = getattr(__import__("trimtok.core", fromlist=["_FUZZY_AVAILABLE"]), "_FUZZY_AVAILABLE", False)
+        print(
+            f"[Trimtok Setup Wizard] Ready | Store: {store_dir / 'trimtok_ccr_v2.sqlite3'} "
+            f"({st.get('entries', 0)} chunks) | Zstd: {'yes' if zstd_ok else 'zlib'} | "
+            f"RapidFuzz: {'yes' if fuzzy_ok else 'difflib'}"
+        )
+    except Exception:
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -105,8 +123,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", action="version", version=f"trimtok {VERSION}")
     sub = parser.add_subparsers(dest="cmd")
 
-    p_inst = sub.add_parser("install", help="Auto-register Trimtok MCP server in all detected agent CLIs/IDEs")
+    p_inst = sub.add_parser("install", help="Run Setup Wizard & auto-register Trimtok MCP server across agent CLIs/IDEs")
     add_install_arguments(p_inst)
+
+    p_setup = sub.add_parser("setup", help="Run full Trimtok Setup Wizard (initialize store, sync skills & register MCP clients)")
+    add_install_arguments(p_setup)
 
     p_uninst = sub.add_parser("uninstall", help="Remove Trimtok MCP server registration from agent CLIs/IDEs")
     add_install_arguments(p_uninst)
@@ -146,11 +167,10 @@ def main(argv: list[str] | None = None) -> int:
         return mcp_server.main()
     if ns.cmd == "clients":
         return run_clients(_server_spec())
-    if ns.cmd == "install":
+    if ns.cmd in ("install", "setup"):
         rc = run_install(_server_spec(), ns, remove=False)
         if not getattr(ns, "dry_run", False) and not getattr(ns, "print_only", False):
-            _sync_antigravity_schema_cache()
-            _sync_global_skill()
+            _run_setup_wizard()
         return rc
     if ns.cmd == "uninstall":
         return run_install(_server_spec(), ns, remove=True)

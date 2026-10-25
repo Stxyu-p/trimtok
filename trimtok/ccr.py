@@ -245,10 +245,8 @@ class FastCCRStore:
                     self._conn.execute("ROLLBACK")
                 except Exception:
                     pass
-                self._alias_seq += 1
-                alias = f"#c{_to_base62(self._alias_seq)}"
-                self._set_mem(sha, alias, content)
-                return alias
+                # Strict fail-open: never emit an unresolvable in-memory alias!
+                return ""
 
     def get(self, ref: str, *, ttl_hours: int = 24) -> str | None:
         """Retrieve original content by #ref (e.g. #c1) or sha hash."""
@@ -541,8 +539,9 @@ def close(dir: Path | None = None) -> None:
     global _GLOBAL_STORE
     with _LOCK:
         if _GLOBAL_STORE is not None:
-            _GLOBAL_STORE.close()
-            _GLOBAL_STORE = None
+            if dir is None or _GLOBAL_STORE.base == Path(dir):
+                _GLOBAL_STORE.close()
+                _GLOBAL_STORE = None
 
 
 def put(content: str, *, dir: Path | None = None, ttl_hours: int = 24, **kwargs: Any) -> str:
@@ -558,12 +557,19 @@ def put(content: str, *, dir: Path | None = None, ttl_hours: int = 24, **kwargs:
 def get(ref: str, *, dir: Path | None = None, ttl_hours: int = 24, **kwargs: Any) -> str | None:
     """Retrieve content by #c... alias or 12-char hex digest."""
     try:
+        if not ref:
+            return None
+        target = ref.strip()
         base = Path(dir) if dir else default_dir()
-        if dir is not None or base.exists():
-            file_res = _file_get(ref, base, ttl_hours=ttl_hours)
-            if file_res is not None:
-                return file_res
-        return _get_store(base).get(ref, ttl_hours=ttl_hours)
+        is_alias = target.startswith("#c") or bool(re.match(r"^c[0-9A-Za-z]+$", target) and len(target) <= 8)
+        if is_alias:
+            return _get_store(base).get(target, ttl_hours=ttl_hours)
+
+        # For hex digests: check SQLite store first, only fall back to _file_get if not in SQLite
+        store_res = _get_store(base).get(target, ttl_hours=ttl_hours)
+        if store_res is not None:
+            return store_res
+        return _file_get(target, base, ttl_hours=ttl_hours)
     except Exception:
         return None
 

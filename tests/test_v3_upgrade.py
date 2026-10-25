@@ -22,19 +22,21 @@ from pathlib import Path
 # Add project root to sys.path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import bpe_estimator
-import ccr
-import ccr_v2
-import core
-import dedup
-import delta_engine
-import diff_engine
-import marker
-import toon_codec
-import traceback_pruner
-from core import VERSION, compress_terminal
-from dedup import compress_tool_result
-from __init__ import RETRIEVE_SCHEMA, _handle_retrieve, _handle_ts_command
+from trimtok import (
+    core,
+    dedup,
+    delta_engine,
+    toon_codec,
+    ccr,
+    signals as bpe_estimator,
+    signals as marker,
+    pruners as diff_engine,
+    pruners as traceback_pruner,
+)
+from trimtok import ccr as ccr_v2
+from trimtok.core import VERSION, compress_terminal
+from trimtok.dedup import compress_tool_result
+from trimtok import RETRIEVE_SCHEMA, _handle_retrieve, _handle_ts_command
 
 
 def check(name: str, cond: bool, extra: str = "") -> None:
