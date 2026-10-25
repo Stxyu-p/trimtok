@@ -21,7 +21,7 @@ except Exception:
     _Levenshtein = None
     _FUZZY_AVAILABLE = False
 
-VERSION = "4.2.4"
+VERSION = "4.2.5"
 
 try:
     from . import delta_engine

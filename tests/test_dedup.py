@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from dedup import (
+from trimtok.dedup import (
     clear_session,
     compress_tool_result,
     expire_old_turns,
@@ -182,7 +182,7 @@ _o_sh, _sh_s2 = compress_tool_result("search_files", _sh_b, session_id=SID + "-s
 check("shingle-fires", _sh_s2["gate"] == "ok" and "[tt:shingle " in _o_sh)
 # bare pointers: template stays verbatim in the seed corpus (keep-first),
 # pointers resolve via CCR — same contract as [tt:seen]
-from dedup import _seen as _sh_seen
+from trimtok.dedup import _seen as _sh_seen
 check("shingle-keep-first", any("payload-xyz" in t for _, t in _sh_seen(SID + "-shingle")["spans"]))
 # ...but short lines never fold even at Jaccard 1.0-adjacent (pointer longer)
 clear_session(SID + "-shingle2")
@@ -230,7 +230,7 @@ check("env-tail-folds", _es2["gate"] in ("ok", "reverted_gate"))
 
 # 11. TOON lossless columnar (default ON; round-trip verified; gain-gated)
 import json as _jj
-from toon_codec import fold_json_to_toon as _fjt, toon_decode as _tdec
+from trimtok.toon_codec import fold_json_to_toon as _fjt, toon_decode as _tdec
 rows = [{"id": i, "name": f"u{i}", "ok": True} for i in range(120)]
 raw = _jj.dumps(rows)
 clear_session("toon")
@@ -269,14 +269,14 @@ _t_ord3 = _fjt(_ord_json)
 check("toon-key-order-ok", _t_ord3 != _ord_json and _tdec(_t_ord3) == _ord_rows)
 
 # 11b. Guardrails: exemption list + minimum-size gate.
-from dedup import is_exempt as _is_exempt
+from trimtok.dedup import is_exempt as _is_exempt
 check("exempt-port", _is_exempt("listen on port 8080 ready"))
 check("exempt-count", _is_exempt("total 3000 errors completed"))
 check("exempt-hash", _is_exempt("commit abc1234def5678 done"))
 check("exempt-keep", _is_exempt("TRIMTOK_KEEP: secret"))
 check("exempt-no", not _is_exempt("worker heartbeat ok payload here"))
 # 500-token minimum-size gate == min_chars 2048 default (2048/4 = 512 tokens)
-from dedup import compress_tool_result as _ctr2
+from trimtok.dedup import compress_tool_result as _ctr2
 clear_session("min-gate")
 _small500 = "x" * 2000
 assert len(_small500) // 4 < 512
@@ -287,7 +287,7 @@ check("min-gate-500tok", _s500["gate"] == "passthrough_small")
 # 12. per-command budgets
 import sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from core import _budget_for
+from trimtok.core import _budget_for
 check("budget-ls", _budget_for("ls -la", "text", 120) == 60)
 check("budget-grep", _budget_for("rg foo", "search", 120) == 80)
 check("budget-diff", _budget_for("whatever", "diff", 120) == 200)
@@ -325,7 +325,7 @@ for t in ("t1", "t2", "t3", "t4"):
 n_exp = expire_old_turns("mask", keep_turns=2)
 check("mask-expires", n_exp == 2)
 # old content no longer folds (freshness), recent still does
-from dedup import _seen as _dbg_seen
+from trimtok.dedup import _seen as _dbg_seen
 mask_state = _dbg_seen("mask")
 check(
     "mask-index-shrunk",
@@ -351,7 +351,7 @@ mapped2 = mask_old_turns("mask2", "new3", keep_turns=2, store=store)
 check("mask-idempotent", mapped2 == {})
 
 # 15. fold-index memory budgets evict old corpus and bound the line index
-import dedup as _dedup
+import trimtok.dedup as _dedup
 
 _old_span_cap = _dedup._MAX_SPAN_CHARS
 _old_line_cap = _dedup._MAX_INDEXED_LINES

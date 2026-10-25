@@ -10,9 +10,9 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core import compress_terminal
-from dedup import compress_tool_result, minify_json, remember, clear_session
-from ccr import put as ccr_put
+from trimtok.core import compress_terminal
+from trimtok.dedup import compress_tool_result, minify_json, remember, clear_session
+from trimtok.ccr import put as ccr_put
 
 
 def check(name, cond):

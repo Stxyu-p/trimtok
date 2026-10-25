@@ -90,7 +90,7 @@ with tempfile.TemporaryDirectory() as td:
     from unittest.mock import patch
     failed_d = d / "failed-write"
     failed_d.mkdir()
-    with patch("ccr.os.replace", side_effect=OSError("simulated publish failure")):
+    with patch("trimtok.ccr.os.replace", side_effect=OSError("simulated publish failure")):
         failed_hash = ccr_put("content that cannot be published", dir=failed_d)
     check("ccr-write-failure-cleans-temp", failed_hash == "" and not list(failed_d.iterdir()))
 
@@ -113,14 +113,14 @@ with tempfile.TemporaryDirectory() as td:
     check("ccr-stats-removes-expired", expiry_ok)
 
     # Failed cache storage must leave terminal and tool outputs uncompressed.
-    import __init__ as plugin
+    import trimtok as plugin
     class _Config:
         @staticmethod
         def get_config(key, default):
             return default
     plugin._on_transform._ctx = _Config()
     plugin._on_tool_result._ctx = _Config()
-    with patch("__init__.ccr_put", return_value=""):
+    with patch("trimtok.ccr_put", return_value=""):
         check("transform-fails-open-without-ccr", plugin._on_transform(command="pytest", output=big) is None)
         payload = json.dumps({"items": [{"id": i, "name": "x" * 40} for i in range(100)]}, indent=2)
         check(

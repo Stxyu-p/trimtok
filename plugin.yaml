@@ -1,5 +1,5 @@
 name: trimtok
-version: 4.2.4
+version: 4.2.5
 description: "Local context compressor: per-command budgets, balanced windowing, error rails, Drain templates, shingle near-dedup, HEAD_TAIL stubs, cross-turn fold, command/tool exclusions, two-tier SQLite CCR with short #ref aliases and section retrieval (errors/diff/summary/tail), scoped search grouping, lossless TOON v2 hierarchical columnar JSON tables, cross-turn fuzzy delta engine (STILL FAILING / +added / -removed), structured traceback & semantic diff pruner, fail-open guard (guard_ms, default 50)."
 entry_point: __init__.py
 author: "P Choke & MIKA"
