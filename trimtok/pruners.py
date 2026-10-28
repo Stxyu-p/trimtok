@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import json as _json
 import re
 from typing import Any
 
@@ -608,3 +609,169 @@ def smart_skeletonize_code(
     if saved <= 0:
         return text, 0, 0
     return new_text, saved, len(merged_ranges)
+
+
+_TEXT_STRUCT_RE = re.compile(
+    r"^ {0,3}(?:#{1,6}\s|```|~~~|\|.*\||[-*_]{3,}\s*$)"  # markdown heading/fence/table/rule
+    r"|^(?: {0,2})?[A-Za-z_$][\w.$/-]*:[ \t]*(?:\S|$)"    # yaml / ini key
+    r"|^\s{0,3}[A-Za-z][\w.-]*::"                          # rst directive
+)
+_MIN_TEXT_FOLD_RUN = 4
+_MIN_TEXT_FOLD_RATIO = 0.12
+_MAX_SHAPE_SAMPLES = 25
+
+
+def _json_shape(line: str):
+    """Structural fingerprint of a JSON record line, or None if it is not one."""
+    s = line.strip()
+    if not s or s[0] not in "{[":
+        return None
+    try:
+        obj = _json.loads(s)
+    except Exception:
+        return None
+    if isinstance(obj, dict):
+        return ("{",) + tuple(sorted(obj))
+    if isinstance(obj, list):
+        head = tuple(sorted(obj[0])) if obj and isinstance(obj[0], dict) else type(obj[0]).__name__ if obj else ""
+        return ("[", len(obj), head)
+    return None
+
+
+def fold_text_structure(
+    text: str,
+    ref: str = "",
+    *,
+    line_prefixes: list[str] | None = None,
+    line_nos: list[int] | None = None,
+) -> tuple[str, int]:
+    """Fold long prose runs in markdown/yaml/rst/jsonl, keeping every structural line.
+
+    The Python AST lane is useless for non-code (it returns nothing), so a 21KB
+    CHANGELOG used to pass through untouched. This keeps headings, fences, tables
+    and key lines with their exact original `LINE|` prefix, and replaces prose with
+    a marker naming the real line range so the agent can read_file(offset=...) or
+    trimtok_retrieve instead of guessing.
+
+    Records (jsonl / list rows) are never swallowed whole: the first record of
+    every distinct key shape survives, so the reader still sees the schema.
+
+    Returns (folded_text, saved_chars); (text, 0) when the fold is not worth it.
+    """
+    try:
+        lines = text.split("\n")
+        total = len(lines)
+        if total < 40:
+            return text, 0
+        use_p = (
+            line_prefixes is not None
+            and line_nos is not None
+            and len(line_prefixes) == total
+            and len(line_nos) == total
+        )
+        struct = [bool(_TEXT_STRUCT_RE.match(ln)) for ln in lines]
+        out: list[str] = []
+        ref_tag = f" {ref}" if ref else ""
+
+        def pfx(k: int) -> str:
+            return line_prefixes[k] if use_p else ""  # type: ignore[index]
+
+        def emit_kept(start: int, end: int, keep: set[int]) -> None:
+            k = start
+            while k < end:
+                if k in keep:
+                    out.append(f"{pfx(k)}{lines[k]}")
+                    k += 1
+                    continue
+                m = k
+                while m < end and m not in keep:
+                    m += 1
+                s = line_nos[k] if use_p else k + 1  # type: ignore[index]
+                e = line_nos[m - 1] if use_p else m  # type: ignore[index]
+                out.append(
+                    f"{pfx(k)}[tt:prose L{s}-L{e} ({e - s + 1}L){ref_tag} "
+                    f"-> read_file(offset={s}, limit={e - s + 1}) or trimtok_retrieve]"
+                )
+                k = m
+
+        i = 0
+        while i < total:
+            if struct[i]:
+                out.append(f"{pfx(i)}{lines[i]}")
+                i += 1
+                continue
+            j = i
+            while j < total and not struct[j]:
+                j += 1
+            if j - i <= _MIN_TEXT_FOLD_RUN:
+                emit_kept(i, j, set(range(i, j)))
+            else:
+                keep = {i, j - 1}
+                shapes: dict[tuple, int] = {}
+                for k in range(i, j):
+                    sh = _json_shape(lines[k])
+                    if sh is not None:
+                        shapes.setdefault(sh, k)
+                keep |= set(list(shapes.values())[:_MAX_SHAPE_SAMPLES])
+                emit_kept(i, j, keep)
+            i = j
+
+        saved = sum(len(x) for x in lines) - sum(len(x) for x in out)
+        if saved < 200 or saved < int(_MIN_TEXT_FOLD_RATIO * len(text)):
+            return text, 0
+        return "\n".join(out), saved
+    except Exception:
+        return text, 0
+
+
+_SUCCESS_COLLAPSE_CMDS = (
+    "npm install", "npm i", "npm ci", "pnpm install", "pnpm i", "pnpm add",
+    "yarn install", "yarn add", "docker pull", "git push", "git fetch",
+)
+
+def collapse_success_output(cmd: str, text: str, exit_code: int = 0) -> str:
+    # Noisy build/install logs that succeeded contain zero intelligence for reasoning
+    if exit_code != 0 or not text:
+        return text
+    clean_cmd = cmd.strip()
+    if not any(clean_cmd.startswith(c) for c in _SUCCESS_COLLAPSE_CMDS):
+        return text
+    # Safety guard: never swallow actual errors even if exit code was spoofed
+    lower = text.lower()
+    if any(k in lower for k in ("error:", "failed", "traceback", "npm err!", "panic:")):
+        return text
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    summary = lines[-1] if lines else "completed"
+    if len(lines) > 1 and ("added" in lines[0] or "packages" in lines[0]):
+        summary = lines[0]
+    return f"[tt:success cmd=\"{clean_cmd}\" {summary}]"
+
+def group_directory_siblings(lines: list[str], threshold: int = 5) -> list[str]:
+    # Folding repetitive sibling files in directory trees preserves navigational anchors
+    parsed = []
+    dir_counts: dict[str, int] = {}
+    for l in lines:
+        parts = l.strip().split()
+        if len(parts) >= 2 and "/" in parts[-1]:
+            pfx = l[:l.rfind(parts[-1])]
+            fpath = parts[-1]
+            pdir = fpath[:fpath.rfind("/") + 1]
+            parsed.append((pfx, pdir, fpath, l))
+            dir_counts[pdir] = dir_counts.get(pdir, 0) + 1
+        else:
+            parsed.append(("", "", "", l))
+
+    if not any(c >= threshold for c in dir_counts.values()):
+        return lines
+
+    emitted_dirs = set()
+    result = []
+    for pfx, pdir, fpath, orig in parsed:
+        if pdir and dir_counts.get(pdir, 0) >= threshold:
+            if pdir not in emitted_dirs:
+                emitted_dirs.add(pdir)
+                result.append(f"{pfx}{pdir} ({dir_counts[pdir]} files modified) [tt:grouped]")
+        else:
+            result.append(orig)
+    return result
+
