@@ -151,6 +151,9 @@ def main(argv: list[str] | None = None) -> int:
     p_comp.add_argument("--tool", default="", help="Tool name (switches to tool/TOON mode)")
     p_comp.add_argument("--min-chars", type=int, default=2048, help="Minimum char threshold (default: 2048)")
 
+    p_wrap = sub.add_parser("wrap", help="Run a command and compress its terminal output via Trimtok")
+    p_wrap.add_argument("command", nargs=argparse.REMAINDER, help="Command and arguments to run")
+
     ns = parser.parse_args(args_list)
 
     if ns.cmd in (None, "status"):
@@ -200,6 +203,26 @@ def main(argv: list[str] | None = None) -> int:
         if not compressed.endswith("\n"):
             sys.stdout.write("\n")
         return 0
+    if ns.cmd == "wrap":
+        cmd_args = list(ns.command)
+        if cmd_args and cmd_args[0] == "--":
+            cmd_args = cmd_args[1:]
+        if not cmd_args:
+            sys.stderr.write("Error: no command provided to wrap. Usage: trimtok wrap -- <command> [args...]\n")
+            return 1
+        import subprocess
+        proc = subprocess.run(cmd_args, capture_output=True, text=True, shell=False)
+        combined = (proc.stdout or "") + (proc.stderr or "")
+        cmd_name = Path(cmd_args[0]).stem
+        compressed, stats = compress_terminal(cmd_name, combined, min_chars=512)
+        if stats.get("gate") == "ok":
+            ref = ccr.put(combined)
+            if ref and stats.get("digest"):
+                compressed = compressed.replace(f"#{stats['digest']}", ref)
+        sys.stdout.write(compressed)
+        if not compressed.endswith("\n"):
+            sys.stdout.write("\n")
+        return proc.returncode
     parser.print_help()
     return 0
 
