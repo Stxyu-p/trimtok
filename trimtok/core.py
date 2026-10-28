@@ -520,13 +520,14 @@ def compress_terminal(
                 "ms": (time.perf_counter() - t0) * 1000,
             }
         saved_chars = len(output) - len(new_output)
-        if saved_chars >= 0.80 * len(output):
-            # Guard against over-compression destroying navigation anchors
-            if score_anchor_preservation(output, new_output) < 0.70:
+        if saved_chars >= 0.80 * len(output) and kind not in ("log", "repeat"):
+            # Guard against over-compression destroying navigation anchors on code/diff/test outputs
+            anchor_score = score_anchor_preservation(output, new_output)
+            if anchor_score < 0.70 and len(output) < 50_000:
                 return output, {
                     "gate": "reverted_gate", "kind": kind, "reason": "low_anchor_preservation",
                     "before_chars": len(output), "after_chars": len(output),
-                    "saved_chars": 0, "ms": (time.perf_counter() - t0) * 1000,
+                    "saved_chars": 0, "anchor_score": anchor_score, "ms": (time.perf_counter() - t0) * 1000,
                 }
         return new_output, {
             "gate": "ok", "kind": kind, "digest": digest,
