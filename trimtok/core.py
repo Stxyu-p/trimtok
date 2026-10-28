@@ -21,7 +21,7 @@ except Exception:
     _Levenshtein = None
     _FUZZY_AVAILABLE = False
 
-VERSION = "4.2.5"
+VERSION = "5.0.0"
 
 try:
     from . import delta_engine
@@ -30,6 +30,7 @@ try:
         LEGEND_FOLD as LEGEND,
         SENTINEL_RE,
         SLOT_RE as _SLOT_RE,
+        Deadline,
         estimate_tokens,
         fast_json_loads,
         is_exempt,
@@ -48,6 +49,7 @@ except (ImportError, ValueError):
         LEGEND_FOLD as LEGEND,
         SENTINEL_RE,
         SLOT_RE as _SLOT_RE,
+        Deadline,
         estimate_tokens,
         fast_json_loads,
         is_exempt,
@@ -246,7 +248,14 @@ def _window(
             sorted_all = sorted(keep_set)
             keep_set = set(sorted_all[:budget]) | essential
         else:
-            keep_set = set(sorted(forced_set)[:budget]) | {0, max(0, n - 1)}
+            # Fault-dense payload: keeping the FIRST `budget` faults silently throws
+            # away every later error. Sample the fault set evenly and always keep
+            # its tail (the failure that ended the run lives there).
+            faults = sorted(forced_set)
+            tail_n = min(max(_TAIL_KEEP, budget // 4), len(faults))
+            head_n = max(1, budget - tail_n)
+            step = max(1, len(faults) // head_n)
+            keep_set = set(faults[::step][:head_n]) | set(faults[-tail_n:]) | {0, max(0, n - 1)}
     else:
         rem = budget - len(keep_set)
         if rem > 0:
@@ -324,6 +333,15 @@ def compress_terminal(
     try:
         if not isinstance(output, str):
             return output, {"gate": "passthrough_non_str", "ms": 0.0}
+        if deadline is not None and len(output) > 100_000:
+            # A large payload legitimately needs more CPU than a tiny one: the guard
+            # exists to bound pathological work, not to punish size. Killing a 435KB
+            # log at 200ms shipped it raw (0% saved) for the sake of 22ms of folding.
+            _remain = max(0.0, (getattr(deadline, "deadline", 0.0) - time.monotonic()) * 1000.0)
+            _base = getattr(deadline, "budget_ms", 200.0)
+            _scaled = _base + (len(output) - 100_000) / 1200.0
+            if _scaled > _remain:
+                deadline = Deadline(min(_base * 3.0, max(_scaled, _remain)))
         if session_id and command:
             # A shell command that rewrites files invalidates the cached body for
             # the path it touched -- otherwise the next read_file would claim the
@@ -384,9 +402,9 @@ def compress_terminal(
                             }
                 except Exception:
                     pass
-            return output, {"gate": "passthrough_small", "ms": 0.0}
+            return output, {"gate": "passthrough_small", "reason": "below_min_chars", "ms": 0.0}
         if SENTINEL_RE.search(output[:2000]):
-            return output, {"gate": "passthrough_sentinel", "ms": 0.0}
+            return output, {"gate": "passthrough_sentinel", "reason": "sentinel", "ms": 0.0}
         if deadline is not None:
             deadline.check()
         kind = detect_kind(output)
@@ -426,10 +444,24 @@ def compress_terminal(
             _ccr_put(output)
         except Exception:
             pass
+        # Faults the window could not keep must be announced in the header, not
+        # silently dropped: the #ref restores them, but only if the reader knows.
+        # Count by multiset, don't substring-search: a set loses duplicate fault lines
+        # (5 identical errors, 1 kept -> 4 hidden but reported 0), and `needle not in
+        # out_txt` over a 400KB payload blew the guard budget.
+        fault_counts: dict[str, int] = {}
+        for _ln, _imp in flagged_all:
+            if _imp and _ln and not _ln.startswith(_KEEP_PREFIX):
+                fault_counts[_ln] = fault_counts.get(_ln, 0) + 1
+        for _ln in windowed:
+            if fault_counts.get(_ln):
+                fault_counts[_ln] -= 1
+        n_missing_faults = sum(fault_counts.values())
         omitted_total = hidden + dropped
         gross_saved = len(output) - sum(len(x) + 1 for x in windowed)
         tokens_before = estimate_tokens(output)
-        head = adaptive_terminal_head(kind, omitted_total, digest, len(output), gross_saved, LEGEND)
+        head = adaptive_terminal_head(kind, omitted_total, digest, len(output), gross_saved, LEGEND,
+                                      errors_hidden=n_missing_faults)
         new_output = "\n".join(head + windowed) if head else "\n".join(windowed)
         tokens_after = estimate_tokens(new_output)
         if len(new_output) >= len(output) or tokens_after >= tokens_before:
@@ -441,7 +473,8 @@ def compress_terminal(
             # third tier has never paid for its own header in the telemetry.
             if omitted_total > 0:
                 nano = adaptive_terminal_head(
-                    kind, omitted_total, digest, len(output), gross_saved, LEGEND, force_tier=1)
+                    kind, omitted_total, digest, len(output), gross_saved, LEGEND, force_tier=1,
+                    errors_hidden=n_missing_faults)
                 nano_out = "\n".join(nano + windowed) if nano else "\n".join(windowed)
                 nano_tok = estimate_tokens(nano_out)
                 if len(nano_out) < len(output) and nano_tok < tokens_before:
@@ -463,10 +496,7 @@ def compress_terminal(
                     "before_chars": len(output), "after_chars": len(output),
                     "saved_chars": 0, "ms": (time.perf_counter() - t0) * 1000,
                 }
-        in_err = {ln.strip()[:160] for ln, imp in flagged_all if imp}
-        out_txt = "\n".join(windowed)
-        missing = [e for e in in_err if e and e not in out_txt and not e.startswith(_KEEP_PREFIX)]
-        if missing:
+        if n_missing_faults:
             # Emit partial (windowed output + omitted count) instead of reverting
             # to raw: keeps compression benefit while flagging lost errors for
             # retrieval via #ref (F2). Revert only if windowed output is empty.
@@ -474,7 +504,7 @@ def compress_terminal(
                 return output, {
                     "gate": "reverted_quality", "kind": kind,
                     "before_chars": len(output), "after_chars": len(output),
-                    "saved_chars": 0, "missing_errors": len(missing),
+                    "saved_chars": 0, "missing_errors": n_missing_faults,
                     "ms": (time.perf_counter() - t0) * 1000,
                 }
             return new_output, {
@@ -484,7 +514,7 @@ def compress_terminal(
                 "est_tokens_before": tokens_before,
                 "est_tokens_after": tokens_after,
                 "hidden_lines": hidden, "dropped_lines": dropped,
-                "partial": True, "omitted_errors": len(missing),
+                "partial": True, "omitted_errors": n_missing_faults,
                 "ms": (time.perf_counter() - t0) * 1000,
             }
         return new_output, {
@@ -497,6 +527,22 @@ def compress_terminal(
             "ms": (time.perf_counter() - t0) * 1000,
         }
     except TimeoutError:
-        return output, {"gate": "passthrough_timeout", "ms": (time.perf_counter() - t0) * 1000}
-    except Exception:
-        return output, {"gate": "passthrough_exception", "ms": (time.perf_counter() - t0) * 1000}
+        # The budget died mid-fold. ANSI/hygiene are O(n) and never drop content, so
+        # ship the cleaned text (smaller, lossless) instead of the raw payload.
+        try:
+            clean = strip_ansi(output).rstrip()
+            if len(clean) + 12 <= len(output):
+                return clean, {
+                    "gate": "ok", "kind": detect_kind(output), "lossless_tier0": True,
+                    "degraded": "deadline",
+                    "before_chars": len(output), "after_chars": len(clean),
+                    "saved_chars": len(output) - len(clean),
+                    "est_tokens_before": 0, "est_tokens_after": 0,
+                    "ms": (time.perf_counter() - t0) * 1000,
+                }
+        except Exception:
+            pass
+        return output, {"gate": "passthrough_timeout", "reason": "deadline", "ms": (time.perf_counter() - t0) * 1000}
+    except Exception as _e:
+        return output, {"gate": "passthrough_exception", "reason": f"{type(_e).__name__}: {_e}"[:200],
+                        "ms": (time.perf_counter() - t0) * 1000}

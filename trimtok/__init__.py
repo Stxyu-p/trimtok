@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+__version__ = "5.0.0"
+
 import json
 import os
 import re
@@ -134,6 +136,17 @@ def _usage(entry: dict, ctx: Any = None) -> None:
         pass
 
 
+def _after_chars(stats: dict, before: int) -> int:
+    """Chars after compression, with passthrough gates counted as unchanged.
+
+    Passthrough gates never set after_chars, so a row read after=0 and every
+    aggregate of 1-after/before reported them as 100% saved (inflated the
+    headline ~3.5x: real is ~9%, not ~44%).
+    """
+    after = int(stats.get("after_chars") or 0)
+    return after if after else max(before - int(stats.get("saved_chars") or 0), 0)
+
+
 def _terminal_shape(stats: dict) -> str:
     if str(stats.get("kind") or "") == "json":
         return "json"
@@ -147,6 +160,10 @@ def _terminal_shape(stats: dict) -> str:
 
 
 def _tool_shape(stats: dict) -> str:
+    if stats.get("gate") == "passthrough_reference":
+        # read_file verbatim band: its own shape, or it vanishes into "mixed"
+        # and hides 15% of all tokens sitting at 0% saving.
+        return "ref-verbatim"
     if (stats.get("fold_saved") or 0) > 0 or (stats.get("intra_saved") or 0) > 0:
         return "repeat"
     if (stats.get("headtail_saved") or 0) > 0:
@@ -170,13 +187,14 @@ def _usage_terminal(command: Any, output: Any, stats: dict, ctx: Any) -> None:
             "kind": stats.get("kind"),
             "gate": stats.get("gate"),
             "before": len(out),
-            "after": int(stats.get("after_chars") or 0),
+            "after": _after_chars(stats, len(out)),
             "saved": int(stats.get("saved_chars") or 0),
             "partial": bool(stats.get("partial", False)),
             "omitted": int(stats.get("omitted_errors") or 0),
             "ms": round(float(stats.get("ms", 0.0)), 2),
             "hash": str(stats.get("digest") or ""),
             "shape": _terminal_shape(stats),
+            "reason": stats.get("reason"),
         }, ctx=ctx)
     except Exception:
         pass
@@ -191,7 +209,7 @@ def _usage_tool(tool_name: Any, result: Any, stats: dict, ctx: Any) -> None:
             "tool": str(tool_name or "tool"),
             "gate": stats.get("gate"),
             "before": len(res),
-            "after": int(stats.get("after_chars") or 0),
+            "after": _after_chars(stats, len(res)),
             "saved": int(stats.get("saved_chars") or 0),
             "ms": round(float(stats.get("ms", 0.0)), 2),
             "hash": str(stats.get("digest") or ""),
@@ -200,6 +218,7 @@ def _usage_tool(tool_name: Any, result: Any, stats: dict, ctx: Any) -> None:
             "fold": int(stats.get("fold_saved") or 0),
             "intra": int(stats.get("intra_saved") or 0),
             "skeleton": int(stats.get("skeleton_saved") or 0),
+            "reason": stats.get("reason"),
         }, ctx=ctx)
     except Exception:
         pass
@@ -415,7 +434,7 @@ def _on_transform(
         session_id=str(kw.get("session_id") or kw.get("task_id") or ""),
         delta_enabled=_bool_cfg(ctx, "delta_enabled", True),
         delta_threshold=_float_cfg(ctx, "delta_threshold", 0.65, 0.5, 1.0),
-        deadline=Deadline(_float_cfg(ctx, "guard_ms", 50.0, 1.0, 1000.0)),
+        deadline=Deadline(_float_cfg(ctx, "guard_ms", 200.0, 1.0, 1000.0)),
     )
     _usage_terminal(command, output, stats, ctx)
     return _finalize(output, new_output, stats, ctx, {
@@ -459,7 +478,7 @@ def _on_tool_result(
         session_id=sid,
         min_chars=_int_cfg(ctx, "min_chars", 2048, 0, 10_000_000),
         toon_enabled=_bool_cfg(ctx, "toon_enabled", True),
-        deadline=Deadline(_float_cfg(ctx, "guard_ms", 50.0, 1.0, 1000.0)),
+        deadline=Deadline(_float_cfg(ctx, "guard_ms", 200.0, 1.0, 1000.0)),
     )
     _usage_tool(tool_name, result, stats, ctx)
     out = _finalize(result, new_result, stats, ctx, {

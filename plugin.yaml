@@ -1,6 +1,6 @@
 name: trimtok
-version: 4.2.5
-description: "Local context compressor: per-command budgets, balanced windowing, error rails, Drain templates, shingle near-dedup, HEAD_TAIL stubs, cross-turn fold, command/tool exclusions, two-tier SQLite CCR with short #ref aliases and section retrieval (errors/diff/summary/tail), scoped search grouping, lossless TOON v2 hierarchical columnar JSON tables, cross-turn fuzzy delta engine (STILL FAILING / +added / -removed), structured traceback & semantic diff pruner, fail-open guard (guard_ms, default 50)."
+version: 5.0.0
+description: "Local context compressor: per-command budgets, balanced windowing, error rails, Drain templates, shingle near-dedup, HEAD_TAIL stubs, cross-turn fold, command/tool exclusions, two-tier SQLite CCR with short #ref aliases and section retrieval (errors/diff/summary/tail), scoped search grouping, lossless TOON v2 hierarchical columnar JSON tables, cross-turn fuzzy delta engine (STILL FAILING / +added / -removed), structured traceback & semantic diff pruner, fail-open guard (guard_ms, default 200)."
 entry_point: __init__.py
 author: "P Choke & MIKA"
 provides_hooks:
@@ -18,8 +18,8 @@ config_schema:
     description: Master switch for all hooks (fail-open; false = passthrough).
   guard_ms:
     type: float
-    default: 50
-    description: Fail-open deadline budget in ms (1-1000); hooks return the original text when exceeded. Safety ceiling — set 8.5 for the strict plan profile.
+    default: 200
+    description: Fail-open deadline budget in ms (1-1000); hooks return the original text when exceeded. 200 covers the observed p99 (63ms) and worst real case (145ms); at 50 every payload over ~9K tokens timed out and saved nothing.
   phase2_enabled:
     type: bool
     default: true
