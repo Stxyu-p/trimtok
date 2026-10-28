@@ -438,3 +438,26 @@ def score_anchor_preservation(original: str, candidate: str) -> float:
     cand_anchors = set(_ANCHOR_RE.findall(candidate))
     return len(orig_anchors & cand_anchors) / len(orig_anchors)
 
+
+_THRASH_STATE: dict[str, dict[str, Any]] = {}
+
+def reset_thrash_tracker() -> None:
+    # Clear session thrash memory between unit tests
+    _THRASH_STATE.clear()
+
+def check_command_thrash(session_id: str, cmd: str, output: str, exit_code: int) -> str | None:
+    # Detecting unproductive retry loops breaks edit-compile-fail thrashing in-band
+    if exit_code == 0 or not cmd:
+        _THRASH_STATE.pop(session_id, None)
+        return None
+    state = _THRASH_STATE.get(session_id)
+    if state and state.get("last_cmd") == cmd:
+        state["streak"] = state.get("streak", 1) + 1
+    else:
+        state = {"last_cmd": cmd, "streak": 1}
+        _THRASH_STATE[session_id] = state
+    if state["streak"] >= 3:
+        return f"[tt:loop_warning streak={state['streak']} hint=\"'{cmd}' failed {state['streak']} times; inspect root cause instead of re-running\"]"
+    return None
+
+
