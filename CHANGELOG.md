@@ -2,6 +2,82 @@
 
 All notable changes to trimtok are documented here.
 
+## [4.3.0] - 2026-10-27
+
+Real savings on traffic that used to pass through untouched, measured on a real
+corpus (`eval/`, 32 payloads / 1.13MB, no mocks): **60.45% -> 72.45%** with zero
+accuracy-gate failures (was 2 before this release).
+
+### Added
+- **Structural fold for non-code `read_file` payloads.** The only structural lane
+  was a Python AST skeleton, so markdown / yaml / rst / jsonl fell through to a
+  verbatim passthrough (`reason=below_skeleton_min`) — 16.6% of all production
+  tokens at ~1.5% saving. `pruners.fold_text_structure` keeps headings, fences,
+  tables and key lines with their exact original `LINE|` prefix and replaces prose
+  runs with a marker naming the real line range (`[tt:prose L120-L138 (19L)]`), so
+  a patch by offset still works. Records are never swallowed whole: the first line
+  of every distinct JSON key shape survives. Code extensions are deliberately
+  excluded. Corpus effect: README 0->39.6%, CHANGELOG 0->66.5%, skill files
+  0->51-72%, usage.jsonl 0->97.4% (11 distinct record shapes kept).
+- **`tests/test_real_corpus.py`** — 243 assertions over every corpus payload,
+  driven through the real entry points. Asserts no exception escapes, no payload
+  inflates, every added `#ref` resolves in the CCR, dropped fault lines are
+  announced, prose ranges stay inside the file, headings and top-level symbols
+  survive. Refuses to touch `~/.trimtok` (temp data dir) and runs in ~1.4s.
+
+### Fixed
+- **Fault lines were hidden without saying so.** With more fault lines than the
+  window budget, `_window` kept the *first* `budget` of them, so every later error
+  vanished silently — the errors that end a run live at the tail. It now samples
+  the fault set evenly and always keeps its tail, and the header carries
+  `errors_hidden=K` (tier 0 is forced up to tier 2 so the count is never lost).
+  Masked faults were counted by multiset, not by set: five identical errors with
+  one kept used to report zero hidden.
+- **A 435KB log was killed by its own guard and shipped raw.** The 200ms guard was
+  applied regardless of payload size, so a 435KB log (222ms of honest work) went
+  out at 0% saved. The guard now scales with size above 100KB (capped at 3x), and
+  a genuine timeout still ships the ANSI-stripped text instead of the raw payload.
+- **Passthrough gates named themselves but carried no `reason`**
+  (`passthrough_small`, `passthrough_sentinel`), so consumers could not tell a
+  size cutoff from a sentinel skip.
+
+## [4.2.6] - 2026-10-26
+
+Measurement honesty + the real hot path. No compression algorithm changed.
+
+### Fixed
+- **usage.jsonl reported passthrough gates as 100% saved.** `after_chars` was
+  written as 0 for every passthrough gate, so any aggregate of
+  `1 - after/before` counted ~2.6M untouched tokens as fully eliminated. The
+  published headline (48.5% terminal / 38.7% tool) was inflated ~3.5x; real
+  production values over 4,323 events are **13.7% terminal / 7.5% tool (9.5%
+  overall)**. Passthrough rows now record `after == before`.
+- **`_classify` / `_ERROR_RE` cost 42us per 70-char line.** The `looks_suspicious`
+  prefilter carried loose hints ("status", "sig", "memory", "http") so every
+  info log line reached the 614-char case-insensitive alternation. A 20,000-line
+  dump took 1.3s of pure regex (and blew the fail-open deadline). The prefilter
+  now asserts the literal prefix first (`_STATUS5_RE`, `_HTTP5_RE`,
+  `_HEX_FRAME_RE`) and stays a strict superset of `_ERROR_RE`: 0 rejected lines
+  out of 88,890 that the regex would match. `_classify` 1206ms -> 118ms on
+  20,000 lines; a 1.56MB payload compresses in 163ms instead of 751ms.
+- **`OOMKilled` and `npm ERR!` were not detected as fault lines** and could be
+  folded away.
+
+### Changed
+- **`guard_ms` default 50 -> 200.** Real p99 is 63ms, worst observed 145ms; at 50
+  every payload over ~9K tokens hit the deadline and saved nothing (20 events /
+  188,686 tokens in the sample). The deadline is still fail-open.
+- **Gate reasons are recorded** (`reason` in usage.jsonl): `small`,
+  `targeted_slice`, `anti_poison`, `below_skeleton_min`, `no_gain_fold`,
+  `header_cost`, `deadline`, `sentinel`, plus the exception text. The
+  `passthrough_reference` gate has four distinct causes and was indistinguishable
+  in telemetry.
+- **`shape="ref-verbatim"`** for the read_file passthrough band, which previously
+  hid 14.7% of all tokens inside `shape="mixed"`.
+- **Tests no longer write production telemetry.** Mocked-gate rows (`gate="small"`,
+  fixtures like `git statusx`) polluted the real usage.jsonl and skewed every
+  real-world number.
+
 ## [4.2.3] - 2026-10-24
 
 ### Changed

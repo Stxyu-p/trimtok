@@ -117,7 +117,9 @@ with tempfile.TemporaryDirectory() as td:
     class _Config:
         @staticmethod
         def get_config(key, default):
-            return default
+            # Test doubles must never write production telemetry: mocked-gate rows
+            # in the real usage.jsonl distorted every real-world measurement.
+            return False if key == "usage_enabled" else default
     plugin._on_transform._ctx = _Config()
     plugin._on_tool_result._ctx = _Config()
     with patch("trimtok.ccr_put", return_value=""):
@@ -130,7 +132,7 @@ with tempfile.TemporaryDirectory() as td:
 
     class _ConfigValues:
         def __init__(self, values):
-            self.values = values
+            self.values = {**values, "usage_enabled": False}
 
         def get_config(self, key, default):
             return self.values.get(key, default)
@@ -275,6 +277,23 @@ with tempfile.TemporaryDirectory() as td:
         hook_tool = [r for r in rows if r.get("hook") == "tool"]
         check("usage-tool-shape", len(hook_tool) >= 1 and all(r.get("shape") for r in hook_tool))
         check("usage-no-content", all("heartbeat ok payload" not in json.dumps(r) and len(r.get("cmd", "") or r.get("tool", "")) <= 120 for r in rows))
+        # Passthrough rows must report after == before: a 0 there makes every
+        # aggregate of 1-after/before read them as "100% saved" and inflated the
+        # published headline ~3.5x.
+        check(
+            "usage-passthrough-after-honest",
+            all(r["after"] > 0 and (r["after"] != 0 or r["before"] == 0) for r in rows if r.get("hook") in ("tool", "terminal")),
+        )
+        check("usage-tool-carries-reason-key", all("reason" in r for r in hook_tool))
+        # read_file verbatim band must name its reason and its own shape, or it
+        # hides ~15% of all tokens at 0% saving inside shape="mixed".
+        _rf_src = "\n".join(f"{i}|def f{i}(): pass" for i in range(1, 600))
+        _rf_out, _rf_stats = plugin.compress_tool_result(
+            "read_file", _rf_src, args={"path": "big.py", "offset": 1, "limit": 2000},
+            session_id="usage-reason",
+        )
+        check("read-file-verbatim-reason", _rf_stats.get("reason") in ("below_skeleton_min", "targeted_slice", "small"))
+        check("read-file-verbatim-shape", plugin._tool_shape(_rf_stats) == "ref-verbatim")
         # retrieve hit + miss both logged
         import re as _re
         m = _re.search(r"#(c[0-9A-Za-z]+|[0-9a-f]{12})", out_ok or "")
@@ -347,7 +366,11 @@ _err3k = "\n".join(f"ERROR {i}: connection failed timeout task {i}" for i in ran
 _o3k, _s3k = compress_terminal("pytest", _err3k)
 check("overflow-partial", _s3k["gate"] == "ok" and _s3k.get("partial") is True)
 check("overflow-saves", _s3k.get("saved_chars", 0) > 100_000)
-check("overflow-head-counts", "hidden=2799" in _o3k.split("\n")[0])
+_o3k_lines = _o3k.split("\n")
+_kept_err = sum(1 for _ln in _o3k_lines if _ln.startswith("ERROR "))
+_hdr_hidden = int(_re.search(r"hidden=(\d+)", _o3k_lines[0]).group(1))
+# The header must account for exactly the lines that are not in the body.
+check("overflow-head-counts", _hdr_hidden == 3000 - _kept_err and _kept_err > 0)
 # non-overflow path keeps every error with no partial flag
 _ok2, _sok2 = compress_terminal("pytest", big)
 check("no-overflow-complete", _sok2["gate"] == "ok" and not _sok2.get("partial", False))

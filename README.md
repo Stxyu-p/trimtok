@@ -2,7 +2,9 @@
 
 **Universal, Local, Deterministic Context Compressor for Autonomous AI Coding Agents**
 
-Real-world production telemetry across thousands of agent turns proves **48.5% character reduction on terminal outputs** and **38.7% on tool results** — with zero intelligence lost and every original byte instantly recoverable via Content-Addressed Context Recovery (`#c1`).
+Real-world production telemetry (4,373 compression events, 22–26 Oct 2026) measures **15.7% token reduction on terminal outputs** and **7.5% on tool results** (8.8% overall), with every original byte recoverable via Content-Addressed Context Recovery (`#c1`). Reduction is computed as `saved_chars / before_chars` over usage.jsonl; treat any larger figure you see elsewhere as a measurement bug (aggregating `1 - after/before` counts passthrough rows as 100% saved and inflates the result ~3.5x).
+
+Version 4.3.0 (2026-10-27) raised that by opening two lanes that used to pass through untouched — non-code `read_file` payloads and overlarge logs killed by their own guard. On the real-payload benchmark in [`eval/`](eval/README.md) (32 payloads, 1.13MB, no mocks) reduction went **60.45% → 72.45%** with zero accuracy-gate failures, verified independently by `tests/test_real_corpus.py` (243 assertions over the same corpus). Production numbers above predate 4.3.0 and will be re-measured from telemetry, not projected.
 
 [![PyPI](https://img.shields.io/pypi/v/trimtok?style=flat-square&color=blue)](https://pypi.org/project/trimtok/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue?style=flat-square)](https://www.python.org/)
@@ -93,7 +95,7 @@ FAILED tests/test_auth.py::test_login - AssertionError: expected 200 got 401
 ======================== 1 failed, 200 passed in 43.2s ========================
 ```
 
-**trimtok Compressed Output (~300 characters — 99% reduction):**
+**trimtok Compressed Output (~300 characters — 99% reduction on this delta case; illustrative, not an average):**
 ```text
 [tt:delta cmd="pytest" sim=99% +#1 -#1 !#1 #c2 #c1]
 [tt:legend] Delta vs previous run: + added, - resolved, ! still failing; refs = full original via trimtok_retrieve.

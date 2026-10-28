@@ -36,7 +36,7 @@ try:
         template_head,
         tool_head,
     )
-    from .pruners import group_search_hits, skeletonize_code, smart_skeletonize_code
+    from .pruners import fold_text_structure, group_search_hits, skeletonize_code, smart_skeletonize_code
     from .toon_codec import fold_json_to_toon
     from .ccr import put as _ccr_put
 except ImportError:
@@ -60,7 +60,7 @@ except ImportError:
         template_head,
         tool_head,
     )
-    from pruners import group_search_hits, skeletonize_code, smart_skeletonize_code
+    from pruners import fold_text_structure, group_search_hits, skeletonize_code, smart_skeletonize_code
     from toon_codec import fold_json_to_toon
     from ccr import put as _ccr_put
 
@@ -667,6 +667,11 @@ def minify_json(text: str) -> tuple[str, int]:
 # ---------------------------------------------------------------------------
 _MICRO_MIN_CHARS = 512
 _COLD_READ_SKELETON_MIN_CHARS = 12_000  # files <= 12KB: cold read stays verbatim (patch safety)
+# Prose/config files get the structural fold. Code extensions are deliberately
+# absent: folding a .py file with no long functions would break patch-by-offset.
+_TEXT_STRUCT_EXTS = frozenset({
+    "md", "markdown", "rst", "txt", "yaml", "yml", "toml", "ini", "cfg", "jsonl", "log", "csv",
+})
 _READ_DELTA_CONTEXT_LINES = 12          # real lines shown +/- 12 around an edited region
 _MAX_FILE_CACHE = 64                    # per-session cached file bodies (memory bound)
 _MUTATING_TOOLS = frozenset({
@@ -928,6 +933,7 @@ def _handle_read_file_v42(
     if len(result) < min_chars or _is_targeted_slice(offset, limit, first_line_no, n_lines):
         return result, {
             "gate": "passthrough_reference", "digest": digest,
+            "reason": "small" if len(result) < min_chars else "targeted_slice",
             "ms": (time.perf_counter() - t0) * 1000,
         }
 
@@ -951,6 +957,7 @@ def _handle_read_file_v42(
                 prev_entry["stub_hits"] = 0
                 return result, {
                     "gate": "passthrough_reference", "digest": digest,
+                    "reason": "anti_poison",
                     "ms": (time.perf_counter() - t0) * 1000,
                 }
             prev_entry["reads"] = prev_entry.get("reads", 1) + 1
@@ -1037,9 +1044,29 @@ def _handle_read_file_v42(
             except Exception:
                 budget_left = False
         if budget_left and (len(result) >= _COLD_READ_SKELETON_MIN_CHARS or len(raw_body) >= _COLD_READ_SKELETON_MIN_CHARS):
+            # The skeleton advertises retrieve(hash=#...), so the full body must be in
+            # the CCR before the marker ships -- otherwise the folded 60% of the file
+            # is unreachable (dead pointer). No store -> stay verbatim.
+            _sk_ref = _ccr_put(result)
+            if not _sk_ref:
+                return result, {
+                    "gate": "passthrough_reference", "digest": digest,
+                    "reason": "ccr_unavailable",
+                    "ms": (time.perf_counter() - t0) * 1000,
+                }
             sk_body, sk_saved, fn_count = smart_skeletonize_code(
-                raw_body, ref=f"#{digest}", line_prefixes=prefixes, line_nos=line_nos,
+                raw_body, ref=f"#{_sk_ref.lstrip('#')}", line_prefixes=prefixes, line_nos=line_nos,
             )
+            sk_kind = "file_skeleton"
+            _ext = (norm_path or "").rsplit(".", 1)[-1].lower() if "." in (norm_path or "") else ""
+            if not (sk_saved > 200 and fn_count > 0) and _ext in _TEXT_STRUCT_EXTS:
+                # Not Python (markdown/yaml/rst/jsonl): the AST lane has nothing to
+                # say, so fold prose instead of shipping the whole file verbatim.
+                sk_body, sk_saved = fold_text_structure(
+                    raw_body, ref=f"#{_sk_ref.lstrip('#')}", line_prefixes=prefixes, line_nos=line_nos,
+                )
+                fn_count = 1 if sk_saved > 200 else 0
+                sk_kind = "file_structure"
             if sk_saved > 200 and fn_count > 0:
                 rebuilt = "\n".join(headers + [sk_body] + footers) if (headers or footers) else sk_body
                 actual_saved = len(result) - len(rebuilt)
@@ -1050,7 +1077,7 @@ def _handle_read_file_v42(
                     file_cache[cache_key]["skeleton_only"] = True
                     return candidate, {
                         "gate": "ok",
-                        "kind": "file_skeleton",
+                        "kind": sk_kind,
                         "digest": digest,
                         "before_chars": len(result),
                         "after_chars": len(candidate),
@@ -1061,9 +1088,11 @@ def _handle_read_file_v42(
                         "ms": (time.perf_counter() - t0) * 1000,
                     }
 
-    # Cold first read of a 2KB-12KB file: verbatim so the agent can patch safely.
+    # Cold first read of a file under _COLD_READ_SKELETON_MIN_CHARS: verbatim so
+    # the agent can patch safely.
     return result, {
         "gate": "passthrough_reference", "digest": digest,
+        "reason": "below_skeleton_min",
         "ms": (time.perf_counter() - t0) * 1000,
     }
 
@@ -1100,7 +1129,8 @@ def micro_minify_tool(result: str, session_id: str, t0: float) -> tuple[str, dic
             "minify_saved": m_saved,
             "ms": (time.perf_counter() - t0) * 1000,
         }
-    return result, {"gate": "passthrough_small", "ms": (time.perf_counter() - t0) * 1000}
+    return result, {"gate": "passthrough_small", "reason": "micro_no_gain",
+                     "ms": (time.perf_counter() - t0) * 1000}
 
 
 def compress_tool_result(
@@ -1119,7 +1149,7 @@ def compress_tool_result(
         if not isinstance(result, str):
             return result, {"gate": "passthrough_non_str", "ms": 0.0}
         if SENTINEL_RE.search(result[:2000]):
-            return result, {"gate": "passthrough_sentinel", "ms": 0.0}
+            return result, {"gate": "passthrough_sentinel", "reason": "sentinel", "ms": 0.0}
         # A mutating tool changes the file, but the cached body is what the next
         # read is diffed against -- dropping it here meant the file_delta lane
         # could never fire in a real read -> patch -> re-read loop.
@@ -1139,7 +1169,7 @@ def compress_tool_result(
         if len(result) < min_chars:
             if len(result) >= _MICRO_MIN_CHARS:
                 return micro_minify_tool(result, session_id, t0)
-            return result, {"gate": "passthrough_small", "ms": 0.0}
+            return result, {"gate": "passthrough_small", "reason": "below_min_chars", "ms": 0.0}
         _rh = hashlib.sha256(result.encode("utf-8", "replace")).hexdigest()[:12]
         # Store the original in CCR so retrieve(hash="#digest") resolves.
         try:
@@ -1214,6 +1244,7 @@ def compress_tool_result(
             failed_hashes.add(_rh)
             return result, {
                 "gate": "reverted_gate", "before_chars": len(result),
+                "reason": "no_gain_fold",
                 "ms": (time.perf_counter() - t0) * 1000,
             }
         digest = _rh
@@ -1245,6 +1276,7 @@ def compress_tool_result(
                 failed_hashes.add(_rh)
                 return result, {
                     "gate": "reverted_gate", "before_chars": len(result),
+                    "reason": "header_cost",
                     "ms": (time.perf_counter() - t0) * 1000,
                 }
         return new_result, {
@@ -1265,7 +1297,7 @@ def compress_tool_result(
             "ms": (time.perf_counter() - t0) * 1000,
         }
     except TimeoutError:
-        return result, {"gate": "passthrough_timeout",
+        return result, {"gate": "passthrough_timeout", "reason": "deadline",
                         "ms": (time.perf_counter() - t0) * 1000}
     except Exception as _e:
         # Surface the cause: a swallowed exception here silently disables ALL
