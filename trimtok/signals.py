@@ -105,7 +105,7 @@ _ERROR_RE = re.compile(
     r"(?:error(?:s)?|exception|traceback|fail(?:ed|ure|s)?|panic(?:ked)?|fatal|critical|"
     r"warn(?:ing|ings)?|denied|refused|timeout|seg(?:fault|mentation\s+fault)|"
     r"sig(?:segv|abrt|bus|kill|term)|undefined\s+reference|killed|"
-    r"assert(?:ion)?(?:error|ion|\s+failed)?|oom|epipe|"
+    r"assert(?:ion)?(?:error|ion|\s+failed)?|oom(?:killed)?|npm\s+err!|epipe|"
     r"exit\s+(?:code|status)\s+[1-9]\d*|out\s+of\s+memory|"
     r"status(?:_code)?[=:\s]+5\d{2}(?![0-9])|"
     r"http[/\d.\s]*5\d{2}(?![0-9])|bad\s+gateway|"
@@ -118,18 +118,35 @@ _ERROR_RE = re.compile(
 
 _ERROR_HINTS = (
     "error", "exception", "traceback", "fail", "panic", "fatal", "critical",
-    "warn", "denied", "refused", "timeout", "segfault", "segment", "fault",
-    "assert", "oom", "epipe", "exit code", "out of memory", "memory",
-    "status", "bad gateway", "http/", "http", "sig", "undefined reference", "killed",
+    "warn", "denied", "refused", "timeout", "segfault", "segmentation", "fault",
+    "assert", "oom", "epipe", "exit code", "exit status", "out of memory",
+    "oomkilled", "npm err!", "bad gateway", "undefined reference", "killed", "sigsegv", "sigabrt",
+    "sigbus", "sigkill", "sigterm",
     "ผิดพลาด", "ล้มเหลว", "ขัดข้อง", "ข้อผิดพลาด",
     "file ", "  at ", "caused by:",
 )
 
+# Loose hints ("status", "http", "sig", "memory") sent ~every info log line into
+# the 614-char _ERROR_RE (~42us/line, 1.3s on a 20K-line dump). These three are
+# the same checks with their literal prefix asserted first: the prefilter stays a
+# strict superset of _ERROR_RE, so nothing is dropped and the precise regex still
+# decides.
+_STATUS5_RE = re.compile(r"status(?:_code)?[=:\s]+5\d{2}(?![0-9])", re.I)
+_HTTP5_RE = re.compile(r"http[/\d.\s]*5\d{2}(?![0-9])", re.I)
+_HEX_FRAME_RE = re.compile(r"\d+:\s+0x[0-9a-fA-F]+")
+
 
 def looks_suspicious(low: str) -> bool:
+    """Cheap reject-before-expensive-regex prefilter (never rejects a real fault)."""
     for h in _ERROR_HINTS:
         if h in low:
             return True
+    if "status" in low and _STATUS5_RE.search(low):
+        return True
+    if "http" in low and _HTTP5_RE.search(low):
+        return True
+    if "0x" in low and _HEX_FRAME_RE.search(low):
+        return True
     return False
 
 
@@ -240,6 +257,7 @@ def adaptive_terminal_head(
     legend: str = LEGEND_FOLD,
     *,
     force_tier: int | None = None,
+    errors_hidden: int = 0,
 ) -> list[str]:
     """Return header lines scaled to payload size and savings (Tier 0..3).
 
@@ -277,11 +295,21 @@ def adaptive_terminal_head(
 
     if tier <= 0:
         return []
+    if errors_hidden:
+        # Never let the reader miss a dropped error line: the count needs at least
+        # the compact tag, even when the saving would only pay for the nano one.
+        tier = max(tier, 2)
+        tag = f" errors_hidden={errors_hidden}"
+    else:
+        tag = ""
     if tier == 1:
-        return [f"[tt:{ref} -{omitted_lines}L]"]
+        return [f"[tt:{ref} -{omitted_lines}L{tag}]"]
     if tier == 2:
-        return [f"[tt:{kind} -{omitted_lines}L {ref} | retrieve(hash=\"{ref}\", section=\"errors|diff|tail\")]"]
-    return [terminal_head(kind, omitted_lines, digest.lstrip("#")), legend]
+        return [f"[tt:{kind} -{omitted_lines}L {ref} | retrieve(hash=\"{ref}\", section=\"errors|diff|tail\"){tag}]"]
+    full = terminal_head(kind, omitted_lines, digest.lstrip("#"))
+    if tag:
+        full = full[:-1] + tag + "]" if full.endswith("]") else full + tag
+    return [full, legend]
 
 
 def adaptive_tool_head(
@@ -393,3 +421,20 @@ class Deadline:
     def check(self) -> None:
         if time.monotonic() > self.deadline:
             raise TimeoutError(f"Trimtok deadline exceeded ({self.budget_ms:.1f}ms)")
+
+
+_ANCHOR_RE = re.compile(
+    r"[\w\-\./]+\.[a-zA-Z0-9_]+:\d+"
+    r"|\b[A-Za-z]+(?:Error|Exception)\b"
+    r"|\b(?:FAILED|PASSED|ERROR:)\b"
+    r"|\btest_[a-zA-Z0-9_]+\b"
+)
+
+def score_anchor_preservation(original: str, candidate: str) -> float:
+    # Navigation anchors (file:line, test names, errors) must survive compression
+    orig_anchors = set(_ANCHOR_RE.findall(original))
+    if not orig_anchors:
+        return 1.0
+    cand_anchors = set(_ANCHOR_RE.findall(candidate))
+    return len(orig_anchors & cand_anchors) / len(orig_anchors)
+

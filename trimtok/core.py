@@ -39,6 +39,7 @@ try:
         strip_ansi,
         adaptive_terminal_head,
         terminal_head,
+        score_anchor_preservation,
     )
     from .pruners import prune_traceback, prune_unified_diff
     from .ccr import put as _ccr_put
@@ -58,6 +59,7 @@ except (ImportError, ValueError):
         strip_ansi,
         adaptive_terminal_head,
         terminal_head,
+        score_anchor_preservation,
     )
     from trimtok.pruners import prune_traceback, prune_unified_diff
     from trimtok.ccr import put as _ccr_put
@@ -517,10 +519,19 @@ def compress_terminal(
                 "partial": True, "omitted_errors": n_missing_faults,
                 "ms": (time.perf_counter() - t0) * 1000,
             }
+        saved_chars = len(output) - len(new_output)
+        if saved_chars >= 0.80 * len(output):
+            # Guard against over-compression destroying navigation anchors
+            if score_anchor_preservation(output, new_output) < 0.70:
+                return output, {
+                    "gate": "reverted_gate", "kind": kind, "reason": "low_anchor_preservation",
+                    "before_chars": len(output), "after_chars": len(output),
+                    "saved_chars": 0, "ms": (time.perf_counter() - t0) * 1000,
+                }
         return new_output, {
             "gate": "ok", "kind": kind, "digest": digest,
             "before_chars": len(output), "after_chars": len(new_output),
-            "saved_chars": len(output) - len(new_output),
+            "saved_chars": saved_chars,
             "est_tokens_before": tokens_before,
             "est_tokens_after": tokens_after,
             "hidden_lines": hidden, "dropped_lines": dropped,
