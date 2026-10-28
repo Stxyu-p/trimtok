@@ -667,6 +667,7 @@ def minify_json(text: str) -> tuple[str, int]:
 # ---------------------------------------------------------------------------
 _MICRO_MIN_CHARS = 512
 _COLD_READ_SKELETON_MIN_CHARS = 12_000  # files <= 12KB: cold read stays verbatim (patch safety)
+_NON_CODE_MIN_CHARS = 2_000             # non-code docs/configs have no patch line offset constraints
 # Prose/config files get the structural fold. Code extensions are deliberately
 # absent: folding a .py file with no long functions would break patch-by-offset.
 _TEXT_STRUCT_EXTS = frozenset({
@@ -1043,7 +1044,9 @@ def _handle_read_file_v42(
                 deadline.check()
             except Exception:
                 budget_left = False
-        if budget_left and (len(result) >= _COLD_READ_SKELETON_MIN_CHARS or len(raw_body) >= _COLD_READ_SKELETON_MIN_CHARS):
+        _ext = (norm_path or "").rsplit(".", 1)[-1].lower() if "." in (norm_path or "") else ""
+        min_skel = _NON_CODE_MIN_CHARS if _ext in _TEXT_STRUCT_EXTS else _COLD_READ_SKELETON_MIN_CHARS
+        if budget_left and (len(result) >= min_skel or len(raw_body) >= min_skel):
             # The skeleton advertises retrieve(hash=#...), so the full body must be in
             # the CCR before the marker ships -- otherwise the folded 60% of the file
             # is unreachable (dead pointer). No store -> stay verbatim.
@@ -1166,6 +1169,28 @@ def compress_tool_result(
                 pass
         if tool_name in _READ_FILE_TOOLS:
             return _handle_read_file_v42(result, session_id, args, min_chars, t0, deadline)
+        if tool_name == "skill_view" and isinstance(args, dict):
+            # Repeated skill reads in the same session collapse to a 1-line cache hit pointer
+            skill_name = str(args.get("name") or args.get("skill") or "")
+            if skill_name:
+                _rh = hashlib.sha256(result.encode("utf-8", "replace")).hexdigest()[:12]
+                with _SEEN_LOCK:
+                    s_seen = _seen(session_id or "default")
+                    s_cache = s_seen.setdefault("skills", {})
+                    prev_skill = s_cache.get(skill_name)
+                    if prev_skill and prev_skill.get("digest") == _rh:
+                        prev_ref = prev_skill.get("ref", _rh)
+                        stub = f"[tt:skill_cached name=\"{skill_name}\" #{prev_ref} ({len(result)} chars) — identical to prior skill_view in active context -> trimtok_retrieve]"
+                        tb, ta = _tok_pair(result, stub)
+                        return stub, {
+                            "gate": "ok", "kind": "skill_cache_hit", "digest": _rh,
+                            "before_chars": len(result), "after_chars": len(stub),
+                            "saved_chars": len(result) - len(stub),
+                            "est_tokens_before": tb, "est_tokens_after": ta,
+                            "ms": (time.perf_counter() - t0) * 1000,
+                        }
+                    ref = _ccr_put(result)
+                    s_cache[skill_name] = {"digest": _rh, "ref": ref or _rh}
         if len(result) < min_chars:
             if len(result) >= _MICRO_MIN_CHARS:
                 return micro_minify_tool(result, session_id, t0)

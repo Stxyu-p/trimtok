@@ -41,7 +41,7 @@ try:
         terminal_head,
         score_anchor_preservation,
     )
-    from .pruners import prune_traceback, prune_unified_diff
+    from .pruners import prune_traceback, prune_unified_diff, collapse_success_output
     from .ccr import put as _ccr_put
 except (ImportError, ValueError):
     from trimtok import delta_engine
@@ -61,7 +61,7 @@ except (ImportError, ValueError):
         terminal_head,
         score_anchor_preservation,
     )
-    from trimtok.pruners import prune_traceback, prune_unified_diff
+    from trimtok.pruners import prune_traceback, prune_unified_diff, collapse_success_output
     from trimtok.ccr import put as _ccr_put
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][AB0]")
@@ -356,6 +356,20 @@ def compress_terminal(
                 invalidate_shell_mutations(command, session_id)
             except Exception:
                 pass
+        if command and len(output) >= 256:
+            # Package manager / clean build outputs collapse to 1-line factsheet
+            clean_success = collapse_success_output(command, output)
+            if clean_success != output:
+                tb = estimate_tokens(output)
+                ta = estimate_tokens(clean_success)
+                return clean_success, {
+                    "gate": "ok", "kind": "success_collapse", "digest": "",
+                    "before_chars": len(output), "after_chars": len(clean_success),
+                    "saved_chars": len(output) - len(clean_success),
+                    "est_tokens_before": tb, "est_tokens_after": ta,
+                    "hidden_lines": output.count("\n"), "dropped_lines": 0,
+                    "ms": (time.perf_counter() - t0) * 1000,
+                }
         if len(output) < min_chars:
             # v4.2 Tier 0 for the 512..min_chars band: ANSI + hygiene are lossless,
             # so ship the cleaned text with no header at all instead of passing the
@@ -539,9 +553,30 @@ def compress_terminal(
             "ms": (time.perf_counter() - t0) * 1000,
         }
     except TimeoutError:
-        # The budget died mid-fold. ANSI/hygiene are O(n) and never drop content, so
-        # ship the cleaned text (smaller, lossless) instead of the raw payload.
+        # The budget died mid-fold. If the payload is huge (>20KB), stashing in CCR
+        # and shipping head+tail avoids blowing the context window with raw bytes.
         try:
+            if len(output) >= 20_000:
+                _ref = _ccr_put(output)
+                lines = output.splitlines()
+                n_total = len(lines)
+                if n_total > 80:
+                    kept_head = lines[:30]
+                    kept_tail = lines[-30:]
+                    omitted = n_total - 60
+                    ref_tag = f" #{_ref}" if _ref else ""
+                    stub = (
+                        "\n".join(kept_head)
+                        + f"\n[tt:timeout_bounded{ref_tag} ({omitted} lines omitted under deadline) -> trimtok_retrieve]\n"
+                        + "\n".join(kept_tail)
+                    )
+                    return stub, {
+                        "gate": "ok", "kind": "timeout_bounded", "digest": _ref or "",
+                        "degraded": "deadline", "before_chars": len(output),
+                        "after_chars": len(stub), "saved_chars": len(output) - len(stub),
+                        "hidden_lines": omitted, "dropped_lines": 0,
+                        "ms": (time.perf_counter() - t0) * 1000,
+                    }
             clean = strip_ansi(output).rstrip()
             if len(clean) + 12 <= len(output):
                 return clean, {
