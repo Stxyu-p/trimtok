@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" width="160" alt="Trimtok Logo" />
+</p>
+
 # trimtok
 
 **Universal, Local, Deterministic Context Compressor for Autonomous AI Coding Agents**
@@ -11,6 +15,7 @@ Version 4.3.0 (2026-10-27) raised that by opening two lanes that used to pass th
 [![Storage](https://img.shields.io/badge/storage-SQLite_WAL_+_Zstandard-07405E?style=flat-square)](#content-addressed-context-recovery-ccr)
 [![Latency](https://img.shields.io/badge/latency-%3C_2ms_in--process-10b981?style=flat-square)](#the-solution-deterministic-context-compression-in-12-ms)
 [![Safety](https://img.shields.io/badge/safety-Fail--Open_Guarantee-8b5cf6?style=flat-square)](#core-engineering-guarantees)
+[![CLI](https://img.shields.io/badge/cli-trimtok_wrap-EC4899?style=flat-square)](#standalone-cli-wrapper-trimtok-wrap)
 [![License: MIT](https://img.shields.io/badge/license-MIT-slate?style=flat-square)](LICENSE)
 
 ---
@@ -73,6 +78,24 @@ Verify client registration and storage health anytime:
 trimtok clients
 trimtok status
 ```
+
+---
+
+## Standalone CLI Wrapper (`trimtok wrap`)
+
+Run any noisy developer command directly in your shell or CI pipeline through Trimtok's deterministic compression engine:
+
+```bash
+# Run pytest or cargo test with automatic output compression & CCR storage
+trimtok wrap -- pytest tests/
+trimtok wrap -- cargo test
+
+# Runs in scripts or CI, preserving the child process exit code
+trimtok wrap -- npm test || echo "Test suite failed with exit code $?"
+```
+
+- **Exit Code Fidelity:** Strictly preserves the child process exit code (1:1 transparency).
+- **In-Process Compression:** Cleans ANSI/escape codes, collapses repetitive loops via Drain templates, folds stack traces, and caches full output in SQLite WAL + Zstandard.
 
 ---
 
