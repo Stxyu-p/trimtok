@@ -43,6 +43,7 @@ from .pruners import (
     prune_unified_diff,
     skeletonize_code,
 )
+from .prerewrite import rewrite_command
 
 _MAX_GREP_PATTERN_CHARS = 256
 _MAX_GREP_INPUT_CHARS = 1_000_000
