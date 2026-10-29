@@ -1,0 +1,13 @@
+{
+  "id": "code-small-ts-utils",
+  "domain": "code-small",
+  "lang": "typescript",
+  "tool": "read_file",
+  "args": {
+    "offset": 1,
+    "limit": 2000
+  },
+  "origin": "sample/utils.ts",
+  "chars": 1965,
+  "content": "1|/**\n2| * MIT License\n3| * Copyright (c) 2026 Autonomous Tools Project\n4| *\n5| * Permission is hereby granted, free of charge, to any person obtaining a copy\n6| * of this software and associated documentation files (the \"Software\"), to deal\n7| * in the Software without restriction, including without limitation the rights\n8| * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\n9| * copies of the Software, and to permit persons to whom the Software is\n10| * furnished to do so, subject to the following conditions:\n11| *\n12| * The above copyright notice and this permission notice shall be included in all\n13| * copies or substantial portions of the Software.\n14| */\n15|\n16|// ============================================================================\n17|// Token Estimation and Formatting Helpers\n18|// ============================================================================\n19|\n20|export interface TokenStats {\n21|  beforeChars: number;\n22|  afterChars: number;\n23|  savedChars: number;\n24|  reductionRatio: number;\n25|}\n26|\n27|export function formatBytes(bytes: number, decimals: number = 2): string {\n28|  if (bytes === 0) return '0 Bytes';\n29|  const k = 1024;\n30|  const dm = decimals < 0 ? 0 : decimals;\n31|  const sizes = ['Bytes', 'KB', 'MB', 'GB'];\n32|  const i = Math.floor(Math.log(bytes) / Math.log(k));\n33|  return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];\n34|}\n35|\n36|export function calculateStats(before: number, after: number): TokenStats {\n37|  const saved = Math.max(0, before - after);\n38|  const ratio = before > 0 ? (saved / before) : 0;\n39|  return {\n40|    beforeChars: before,\n41|    afterChars: after,\n42|    savedChars: saved,\n43|    reductionRatio: Math.round(ratio * 1000) / 1000,\n44|  };\n45|}\n46|\n47|export function truncateIdentifier(id: string, maxLen: number = 16): string {\n48|  if (id.length <= maxLen) return id;\n49|  return id.substring(0, maxLen - 3) + '...';\n50|}\n51|"
+}

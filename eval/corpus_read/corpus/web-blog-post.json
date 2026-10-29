@@ -1,0 +1,13 @@
+{
+  "id": "web-blog-post",
+  "domain": "web-doc",
+  "lang": "markdown",
+  "tool": "web_extract",
+  "args": {
+    "offset": 1,
+    "limit": 2000
+  },
+  "origin": "https://aiweekly.dev/articles/local-agents",
+  "chars": 1031,
+  "content": "# The Future of Local AI Agents: Sub-millisecond Tooling\nPublished on Oct 28, 2026 by AI Engineering Weekly\nSubscribe to our newsletter! Enter your email: [___________] [Submit]\nAdvertisement: Deploy AI models on bare metal with 99.99% uptime.\n---\nAs autonomous coding agents transition from simple single-file scripts to large multi-repo fleets,\nin-process deterministic tools are overtaking heavy daemon architectures.\nZero-cloud local memory engines and AST-level token compressors allow agents to run for hours without\nhitting context ceilings or leaking proprietary code to third parties.\n\nKey takeaways:\n1. Local SQLite WAL databases outperform external vector stores for agent workspaces.\n2. Compressing repetitive logs preserves agent reasoning quality.\n3. Deterministic tool execution beats secondary LLM meta-agents every time.\n\n---\nComments (14):\n- User42: Great article, agree on local SQLite.\n- BotHunter: What about large codebases?\n- DevX: The latency savings are huge.\n\nShare on X | LinkedIn | Reddit | Hacker News\n"
+}

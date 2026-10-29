@@ -1,0 +1,13 @@
+{
+  "id": "code-small-go-router",
+  "domain": "code-small",
+  "lang": "go",
+  "tool": "read_file",
+  "args": {
+    "offset": 1,
+    "limit": 2000
+  },
+  "origin": "sample/router.go",
+  "chars": 1587,
+  "content": "1|// Copyright 2026 The Go Authors. All rights reserved.\n2|// Use of this source code is governed by a BSD-style\n3|// license that can be found in the LICENSE file.\n4|\n5|package router\n6|\n7|import (\n8|\t\"fmt\"\n9|\t\"strings\"\n10|\t\"sync\"\n11|\t\"time\"\n12|)\n13|\n14|// ============================================================================\n15|// Endpoint registry and fast lookup cache\n16|// ============================================================================\n17|\n18|type RouteEntry struct {\n19|\tPath      string\n20|\tMethod    string\n21|\tHandlerID string\n22|\tWeight    int\n23|\tCreatedAt time.Time\n24|}\n25|\n26|type RouterRegistry struct {\n27|\tmu     sync.RWMutex\n28|\troutes map[string]RouteEntry\n29|}\n30|\n31|func NewRouterRegistry() *RouterRegistry {\n32|\treturn &RouterRegistry{\n33|\t\troutes: make(map[string]RouteEntry),\n34|\t}\n35|}\n36|\n37|func (r *RouterRegistry) Register(method, path, handlerID string) error {\n38|\tr.mu.Lock()\n39|\tdefer r.mu.Unlock()\n40|\tkey := fmt.Sprintf(\"%s:%s\", strings.ToUpper(method), strings.ToLower(path))\n41|\tif _, exists := r.routes[key]; exists {\n42|\t\treturn fmt.Errorf(\"route already registered: %s\", key)\n43|\t}\n44|\tr.routes[key] = RouteEntry{\n45|\t\tPath:      path,\n46|\t\tMethod:    method,\n47|\t\tHandlerID: handlerID,\n48|\t\tWeight:    1,\n49|\t\tCreatedAt: time.Now(),\n50|\t}\n51|\treturn nil\n52|}\n53|\n54|func (r *RouterRegistry) Lookup(method, path string) (RouteEntry, bool) {\n55|\tr.mu.RLock()\n56|\tdefer r.mu.RUnlock()\n57|\tkey := fmt.Sprintf(\"%s:%s\", strings.ToUpper(method), strings.ToLower(path))\n58|\tentry, ok := r.routes[key]\n59|\treturn entry, ok\n60|}\n61|"
+}

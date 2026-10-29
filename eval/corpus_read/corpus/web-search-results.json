@@ -1,0 +1,13 @@
+{
+  "id": "web-search-results",
+  "domain": "web-doc",
+  "lang": "markdown",
+  "tool": "web_extract",
+  "args": {
+    "offset": 1,
+    "limit": 2000
+  },
+  "origin": "https://google.com/search",
+  "chars": 1088,
+  "content": "# Google Search: python context compression autonomous agent\n[Search] [Images] [News] [Videos] [Maps]\n---\nSponsored Ad: Enterprise AI Context Management Platform - Start free trial at https://example.com/ad\n---\n### Results\n1. **Context Compression in Modern LLM Agents**\n   https://example.com/context-comp-2026\n   Autonomous agents burn 60% of context on repetitive logs. By applying local AST and selective pruning,\n   agents retain error traces while stripping redundant passing assertions.\n   * Cached * Similar * Share * Save to collection\n\n2. **Repomix vs RTK: Token Optimization Benchmark**\n   https://example.com/repomix-vs-rtk\n   Detailed comparison of Tree-sitter signature extraction vs CLI proxy filtering.\n   * Cached * Similar * Share\n\n3. **Lossless Token Reduction Techniques**\n   https://example.com/lossless-token-density\n   Reducing whitespace and converting nested JSON into tabular formats saves up to 40% tokens without loss.\n\n[1] [2] [3] [4] [5] [Next >]\n---\nFooter: (c) 2026 Search Engine Inc. Privacy Policy | Terms of Service | Cookie Preferences | Send Feedback\n"
+}

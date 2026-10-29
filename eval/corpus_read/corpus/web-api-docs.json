@@ -1,0 +1,13 @@
+{
+  "id": "web-api-docs",
+  "domain": "web-doc",
+  "lang": "markdown",
+  "tool": "web_extract",
+  "args": {
+    "offset": 1,
+    "limit": 2000
+  },
+  "origin": "https://api.dev/docs/auth",
+  "chars": 1038,
+  "content": "# REST API v2 - Authentication & Session Endpoints\nCookie Notice: We use cookies to analyze web traffic. [Accept All] [Reject Non-Essential] [Cookie Settings]\nNavigation: Home > Docs > API Reference > Authentication\n---\n## POST /api/v1/auth/login\nAuthenticates a client via JSON credentials.\n\n### Request Headers\n| Header | Type | Description |\n|---|---|---|\n| Authorization | Bearer token | OAuth token |\n| Content-Type | application/json | Required payload type |\n\n### Request Body\n```json\n{\n  \"username\": \"agent-01\",\n  \"api_key\": \"sec_live_99887766\"\n}\n```\n\n### Response Codes\n- `200 OK`: Login successful. Returns session token.\n- `401 Unauthorized`: Bad API key or expired grant.\n- `429 Too Many Requests`: Rate limit reached (60 req/min).\n\n---\nRelated Topics:\n- [Session Rotation](/docs/sessions)\n- [OAuth Device Flow](/docs/oauth)\n- [Webhook Callbacks](/docs/webhooks)\n- [Rate Limits Overview](/docs/limits)\n- [Legacy v1 Endpoints](/docs/v1-deprecated)\n\nSupport: Discord | Twitter @API_Support | Status Page: https://status.api.dev\n"
+}
