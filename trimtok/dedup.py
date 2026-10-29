@@ -39,6 +39,8 @@ try:
     from .pruners import fold_text_structure, group_search_hits, skeletonize_code, smart_skeletonize_code
     from .toon_codec import fold_json_to_toon
     from .ccr import put as _ccr_put
+    from .strategies.lossless_min import minify_lossless
+    from .strategies.tiered_shave import shave_tiered
 except ImportError:
     from signals import (
         KEEP_PREFIX as _KEEP_PREFIX,
@@ -63,6 +65,10 @@ except ImportError:
     from pruners import fold_text_structure, group_search_hits, skeletonize_code, smart_skeletonize_code
     from toon_codec import fold_json_to_toon
     from ccr import put as _ccr_put
+    from strategies.lossless_min import minify_lossless
+    from strategies.tiered_shave import shave_tiered
+
+_WEB_TOOLS = frozenset({"web_extract", "web_search", "browser_exec"})
 
 _MIN_SPAN_LINES = 5
 _MIN_SPAN_CHARS = 200
@@ -1091,8 +1097,25 @@ def _handle_read_file_v42(
                         "ms": (time.perf_counter() - t0) * 1000,
                     }
 
-    # Cold first read of a file under _COLD_READ_SKELETON_MIN_CHARS: verbatim so
-    # the agent can patch safely.
+    # Cold first read of a file under _COLD_READ_SKELETON_MIN_CHARS:
+    # If not a targeted slice, try safe cosmetic cleanup (clean license/banners)
+    if not _is_targeted_slice(offset, limit, first_line_no, n_lines):
+        _min_res, _min_stats = minify_lossless(result)
+        if _min_stats.get("saved_chars", 0) >= 40 and len(_min_res) < len(result) and not SENTINEL_RE.search(result[:2000]):
+            tb, ta = _tok_pair(result, _min_res)
+            if ta < tb:
+                return _min_res, {
+                    "gate": "ok",
+                    "kind": "file_clean",
+                    "digest": digest,
+                    "before_chars": len(result),
+                    "after_chars": len(_min_res),
+                    "saved_chars": len(result) - len(_min_res),
+                    "est_tokens_before": tb,
+                    "est_tokens_after": ta,
+                    "ms": (time.perf_counter() - t0) * 1000,
+                }
+
     return result, {
         "gate": "passthrough_reference", "digest": digest,
         "reason": "below_skeleton_min",
@@ -1169,6 +1192,26 @@ def compress_tool_result(
                 pass
         if tool_name in _READ_FILE_TOOLS:
             return _handle_read_file_v42(result, session_id, args, min_chars, t0, deadline)
+        if tool_name in _WEB_TOOLS:
+            _rh = hashlib.sha256(result.encode("utf-8", "replace")).hexdigest()[:12]
+            w_cand, w_stats = shave_tiered(result, {"domain": "web-doc", "lang": "markdown"})
+            if w_stats.get("saved_chars", 0) >= 40 and len(w_cand) < len(result) and not SENTINEL_RE.search(result[:2000]):
+                tb, ta = _tok_pair(result, w_cand)
+                if ta < tb:
+                    _ref = _ccr_put(result)
+                    head = adaptive_tool_head(len(result) - len(w_cand), _rh, len(result), is_lossless_only=False)
+                    final_w = f"{head}\n{w_cand}" if head else w_cand
+                    return final_w, {
+                        "gate": "ok",
+                        "kind": "web_intake",
+                        "digest": _rh,
+                        "before_chars": len(result),
+                        "after_chars": len(final_w),
+                        "saved_chars": len(result) - len(final_w),
+                        "est_tokens_before": tb,
+                        "est_tokens_after": ta,
+                        "ms": (time.perf_counter() - t0) * 1000,
+                    }
         if tool_name == "skill_view" and isinstance(args, dict):
             # Repeated skill reads in the same session collapse to a 1-line cache hit pointer
             skill_name = str(args.get("name") or args.get("skill") or "")

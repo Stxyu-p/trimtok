@@ -13,7 +13,6 @@ import re
 from typing import Any
 
 from .lossless_min import minify_lossless
-from ..dedup import _unwrap_numbered_lines
 from ..pruners import fold_text_structure
 
 _LINE_PREFIX_RE = re.compile(r"^(\s*(\d+)\|)(.*)$")
@@ -25,6 +24,9 @@ _WEB_NOISE_RE = re.compile(
     r"(?i)(?:cookie\s+(?:notice|policy|settings)|accept\s+all|reject\s+non-essential|"
     r"navigation:\s+home\s*>|share\s+on\s+(?:twitter|x|facebook|linkedin)|"
     r"subscribe\s+to\s+our\s+newsletter|advertisement:)"
+)
+_LINK_DEBLOAT_RE = re.compile(
+    r"\[([^\]\n]{1,120})\]\((?:https?://|/)[^)\"\s]+(?:\s+['\"][^'\"]*['\"])?\)"
 )
 
 def _is_web_or_doc(domain: str, lang: str) -> bool:
@@ -59,9 +61,12 @@ def shave_tiered(text: str, meta: dict[str, Any] | None = None) -> tuple[str, di
                 continue
             filtered_lines.append(line)
         interim_text = "\n".join(filtered_lines)
+        # Strip URL targets from inline markdown links (keeps anchor text)
+        interim_text = _LINK_DEBLOAT_RE.sub(r"\1", interim_text)
 
         # 2. For markdown / docs >= 2000 chars, fold long prose runs
         if len(interim_text) >= 2000:
+            from ..dedup import _unwrap_numbered_lines
             raw_body, prefixes, line_nos, _, _ = _unwrap_numbered_lines(interim_text)
             folded_doc, d_saved = fold_text_structure(raw_body, ref="#doc", line_prefixes=prefixes, line_nos=line_nos)
             if d_saved > 200:
