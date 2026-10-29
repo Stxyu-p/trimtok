@@ -11,7 +11,7 @@ from typing import Any
 _LINE_PREFIX_RE = re.compile(r"^(\s*\d+\|)(.*)$")
 _ASCII_BANNER_RE = re.compile(r"^\s*(?:#|//|/\*|\*)\s*[-=_*#~]{5,}\s*(?:\*/)?$")
 _LICENSE_TRIGGER_RE = re.compile(
-    r"(?i)\b(?:mit license|apache license|bsd-style|copyright\s+\(c\)|all rights reserved|gnu general public|mozilla public)\b"
+    r"(?i)(?:\bmit license\b|\bapache license\b|\bbsd-style\b|\bcopyright(?:\s+\(c\))?|\ball rights reserved\b|\bgnu general public\b|\bmozilla public\b)"
 )
 _FN_SIG_RE = re.compile(r"^\s*(?:async\s+)?(?:def|func|function)\s+([a-zA-Z0-9_]+)")
 
