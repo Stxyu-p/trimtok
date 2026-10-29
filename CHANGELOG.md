@@ -2,7 +2,35 @@
 
 All notable changes to trimtok are documented here.
 
-## [4.3.0] - 2026-10-27
+## [5.2.0] - 2026-10-29
+
+### Added
+- **Tiered Web & File Intake Pipeline (`trimtok.strategies.tiered_shave`):**
+  - **Inline URL De-bloat (`_LINK_DEBLOAT_RE`):** Strips redundant URL targets from markdown links (`[Anchor](https://...)` -> `Anchor`), cutting 35–45% of token bloat on web search and documentation pages in < 4 ms without losing a single semantic concept.
+  - **Web Noise & Boilerplate Purging:** Automatically prunes cookie consent banners, breadcrumbs (`Home > ...`), social share links, and citation metadata tags.
+  - **Heading + 2-Line Factsheet Digest:** Retains all headings, markdown tables, code fences, and the first 2 descriptive lines per section, folding excessive narrative paragraphs into line-anchored CCR `#ref` stubs. Measured on live Wikipedia, Python 3 official docs, and MDN Web Docs with **76.8% – 96.1% token reduction in 2.5 – 4.5 ms**.
+  - **100% Patch-Safe Small Code Minification:** For source files < 14KB, automatically strips bulky open-source license headers, copyright notices, and decorative ASCII divider banners without modifying or shifting a single executable statement.
+- **Empirical Comparative Benchmark Suite (`eval/eval_read_file_bench.py`):**
+  - 16 authentic payloads across 4 key domains (web docs, specifications, small code, large code) in Python, JS, TS, and Go.
+  - Rigorous automated verification of Token Reduction %, In-Process Latency (ms), Patch Line-Safety (Zero Offset Drift), and Single-Turn Comprehension.
+- **Single-Source Version Authority Sync:** `trimtok/core.py` is the single source of truth; package root imports `VERSION` directly and tests assert uniformity against `pyproject.toml` and `plugin.yaml`.
+
+## [5.1.0] - 2026-10-29
+
+### Added
+- **Standalone `trimtok wrap -- <cmd>` CLI:** Run commands directly in shell or CI pipelines outside Hermes; wraps child process, preserves exact exit codes, stores full uncompressed output into SQLite CCR, and emits compact delta summaries.
+- **Official Simplified Vector & Brand Logo Assets.**
+
+## [5.0.0] - 2026-10-28
+
+### Added
+- **High-ROI Groups 1 & 2 Optimizations:**
+  - Non-code structural fold for markdown, yaml, and jsonl files.
+  - Skill view session cache hit: repeated `skill_view` calls in the same session collapse to a 1-line pointer.
+  - Success collapse on monotonic CLI verbs (`npm install`, `docker pull`, `git push`) with exit code 0.
+- **Pre-execution Command Rewriting (`prerewrite`):** Injects concise flags into noisy CLI tools.
+- **Runtime Thrash Guard & Loop Detection:** Detects repeated tool execution loops and provides steering indicators.
+- **Anti-lossy Compaction Stash Hook:** Stashes raw tool outputs into CCR before `/compact`.
 
 Real savings on traffic that used to pass through untouched, measured on a real
 corpus (`eval/`, 32 payloads / 1.13MB, no mocks): **60.45% -> 72.45%** with zero

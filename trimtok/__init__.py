@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-__version__ = "5.0.0"
-
 import json
 import os
 import re
@@ -13,6 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from .core import VERSION, compress_terminal
+
+__version__ = VERSION
 from .ccr import (
     default_dir,
     get as ccr_get,
