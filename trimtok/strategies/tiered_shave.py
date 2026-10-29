@@ -13,6 +13,8 @@ import re
 from typing import Any
 
 from .lossless_min import minify_lossless
+from ..dedup import _unwrap_numbered_lines
+from ..pruners import fold_text_structure
 
 _LINE_PREFIX_RE = re.compile(r"^(\s*(\d+)\|)(.*)$")
 _PY_FN_RE = re.compile(r"^\s*(?:async\s+)?def\s+([a-zA-Z0-9_]+)\s*\(")
@@ -48,16 +50,26 @@ def shave_tiered(text: str, meta: dict[str, Any] | None = None) -> tuple[str, di
 
     # Case A: Web or Document
     if _is_web_or_doc(domain, lang):
+        # 1. Strip web boilerplate lines
+        filtered_lines = []
         for line in lines:
             m = _LINE_PREFIX_RE.match(line)
             content = m.group(3) if m else line
             if _WEB_NOISE_RE.search(content):
                 continue
-            out_lines.append(line)
-        res = "\n".join(out_lines)
+            filtered_lines.append(line)
+        interim_text = "\n".join(filtered_lines)
+
+        # 2. For markdown / docs >= 2000 chars, fold long prose runs
+        if len(interim_text) >= 2000:
+            raw_body, prefixes, line_nos, _, _ = _unwrap_numbered_lines(interim_text)
+            folded_doc, d_saved = fold_text_structure(raw_body, ref="#doc", line_prefixes=prefixes, line_nos=line_nos)
+            if d_saved > 200:
+                interim_text = folded_doc
+
         before_len = len(text)
-        after_len = len(res)
-        return res, {
+        after_len = len(interim_text)
+        return interim_text, {
             "gate": "ok",
             "before_chars": before_len,
             "after_chars": after_len,
