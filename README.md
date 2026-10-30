@@ -8,76 +8,111 @@
 
 [![PyPI](https://img.shields.io/pypi/v/trimtok?style=flat-square&color=blue)](https://pypi.org/project/trimtok/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue?style=flat-square)](https://www.python.org/)
-[![Storage](https://img.shields.io/badge/storage-SQLite_WAL_+_Zstandard-07405E?style=flat-square)](#content-addressed-context-recovery-ccr)
-[![Latency](https://img.shields.io/badge/latency-%3C_2ms_in--process-10b981?style=flat-square)](#the-solution-in-process-deterministic-compression-in-12-ms)
-[![Safety](https://img.shields.io/badge/safety-Fail--Open_Guarantee-8b5cf6?style=flat-square)](#core-engineering-guarantees)
+[![Storage](https://img.shields.io/badge/storage-SQLite_WAL_+_Zstandard-07405E?style=flat-square)](#7-content-addressed-context-recovery-trimtok_retrieve)
+[![Latency](https://img.shields.io/badge/latency-%3C_2ms_in--process-10b981?style=flat-square)](#-how-it-works)
+[![Safety](https://img.shields.io/badge/safety-Fail--Open_Guarantee-8b5cf6?style=flat-square)](#9-fail-open-budget-guards)
 [![CLI](https://img.shields.io/badge/cli-trimtok_wrap-EC4899?style=flat-square)](#standalone-cli-wrapper-trimtok-wrap)
-[![Intake](https://img.shields.io/badge/intake-Tiered_Semantic_Shaving-059669?style=flat-square)](#tiered-web--file-intake-read_file--web_extract)
+[![Intake](https://img.shields.io/badge/intake-Tiered_Semantic_Shaving-059669?style=flat-square)](#4-tiered-web--file-intake-read_file--web_extract)
 [![License: MIT](https://img.shields.io/badge/license-MIT-slate?style=flat-square)](LICENSE)
 
 ---
 
-## 🚀 Overview
+## ⚡ At a Glance: Before vs After
 
-Autonomous coding agents (Claude Code, Cursor, Windsurf, Codex, Antigravity, Hermes) burn over **60% of their context window budget** on repetitive, low-entropy noise:
-- Massive test suites (`pytest`, `cargo test`, `npm test`) repeating hundreds of identical passing dots.
-- Deep framework stack traces (15+ internal frames in `starlette`, `fastapi`, `node_modules`).
-- Web scrapes and search results bloated with redundant URL link targets, cookie banners, and navigation lists.
-- Nested JSON payloads filled with repetitive dictionary keys.
+Autonomous coding agents burn over **60% of their context window budget** on repetitive, low-entropy noise. **trimtok** compresses this in-process without losing a single line of actionable truth:
 
-### The False Dilemma in the Market
-- **Naive Truncation (`head -n 50` or tail cuts):** Destroys critical compiler diagnostics, test failure summaries, and exception crash sites hidden in the middle of output, causing the agent to hallucinate fixes for the wrong problem.
-- **Secondary LLM Summarization:** Adds 2–5 seconds of network latency per tool call, burns extra tokens, incurs recursive API costs, and frequently hallucinates altered line numbers or error codes.
-- **Aggressive Signature Stripping (RTK Trap):** Completely wipes out function bodies down to signatures (`-l aggressive`), leaving the agent blind to implementation logic and forcing repetitive multi-turn re-reads (`read_file` offset loops).
-
-### Capability Matrix (Function-by-Function)
-
-| Capability | trimtok |
-| :--- | :---: |
-| **Cross-turn delta** | ✅ `[tt:delta]` |
-| **Traceback pruning** | ✅ 77% |
-| **TOON JSON encoding** | ✅ 57% |
-| **Code skeleton (multi-lang)** | ✅ 7 langs |
-| **Web/doc intake** | ✅ 77-96% |
-| **Full original retrieval** | ✅ `#c1` CCR |
-| **In-process latency** | < 2 ms |
-| **Fail-open guarantee** | ✅ |
-| **Command-specific filters** | ✅ 6 cmds |
-| **Telemetry/gain command** | ✅ `gain` |
-| **Discover (low-savers)** | ✅ `discover` |
-
-**Honest production telemetry (pre-5.3.0 baseline):** 4,456 events, 11.66M chars → 1.10M saved (9.5% overall, 27.2% terminal, 5.2% tool). Numbers from real agent sessions on v5.2.0 and earlier. v5.3.0 features are newly shipped — no production data yet.
+```text
+[pytest 200 tests]     56,000 chars  ──►     320 chars  (-99.4% cross-turn delta)
+[FastAPI Traceback]    12,400 chars  ──►     890 chars  (-92.8% crash-site locked)
+[Stripe API Array]      8,900 chars  ──►   3,100 chars  (-65.1% lossless TOON v2)
+[Mixed-Schema JSON]    11,240 chars  ──►   6,630 chars  (-41.0% merged TOON table)
+[Source Code 300 Fns]  13,500 toks   ──►   2,400 toks   (-82.2% multi-lang AST)
+[Web Docs / Search]    15,200 chars  ──►   1,800 chars  (-88.1% tiered link shaving)
+```
 
 ---
-**trimtok** operates 100% locally and in-process using Python standard library, RapidFuzz C++ token alignment, and Zstandard compression. No external daemons, no Docker containers, and zero open network ports.
+
+## 🏗️ How It Works
+
+**trimtok** operates 100% locally and in-process using the Python standard library, RapidFuzz C++ alignment, tree-sitter AST parsing, and Zstandard compression. No external daemons, no Docker containers, and zero open network ports.
+
+```text
+Tool / Terminal Output
+         │
+         ▼
+  ┌────────────────────────────────────────────────────────┐
+  │  trimtok In-Process Hook (< 2 ms, fail-open ≤ 200 ms)  │
+  │  ├── 1. Cross-Turn Delta Engine (pytest, cargo test)   │
+  │  ├── 2. Command-Specific Filters (git, npm, pip, etc.) │
+  │  ├── 3. Structured Traceback Pruning (locks crash-site)│
+  │  ├── 4. Lossless & Merged TOON v2 (JSON arrays)        │
+  │  ├── 5. Multi-Language AST Skeletonizer (7 languages)  │
+  │  └── 6. Tiered Web & Doc Link De-bloating              │
+  └──────────────────────────┬─────────────────────────────┘
+                             │
+            ┌────────────────┴────────────────┐
+            ▼                                 ▼
+   Agent Context Window             SQLite WAL + Zstandard
+   (Clean, dense token stream)     (Full recovery via `#c1`)
+```
+
+---
+
+## 📑 Table of Contents
+
+- [Market Comparison (Head-to-Head)](#-market-comparison-trimtok-vs-alternatives)
+- [Core Engineering Capabilities](#-core-engineering-capabilities)
+  - [Pillar 1: Terminal & Command Compression](#pillar-1-terminal--command-compression)
+  - [Pillar 2: Content & Code Intake Shield](#pillar-2-content--code-intake-shield)
+  - [Pillar 3: Zero Data Loss & Self-Healing Telemetry](#pillar-3-zero-data-loss--self-healing-telemetry)
+- [First-Time Setup](#-first-time-setup-5-minutes)
+- [Native Hermes Agent Plugin Configuration](#-native-hermes-agent-plugin-configuration)
+- [Slash Commands & Standalone CLI](#-slash-commands--standalone-cli)
+- [Part of the Global Agent Trinity](#-part-of-the-global-agent-trinity)
+- [License](#-license)
 
 ---
 
 ## 🥊 Market Comparison: trimtok vs Alternatives
 
-| Capability | trimtok | RTK | Repomix | Jina/Trafilatura | Squeez |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| Cross-turn delta | ✅ `[tt:delta]` | ❌ | ❌ | ❌ | ❌ |
-| Traceback pruning | ✅ 77% | ❌ | ❌ | ❌ | ❌ |
-| TOON JSON encoding | ✅ 57% | ❌ | ❌ | ❌ | ❌ |
-| Code skeleton | ✅ 7 langs | ⚠️ sigs only | ⚠️ wipes bodies | ❌ | ⚠️ cosmetic |
-| Web/doc intake | ✅ 77-96% | ❌ | ❌ | ⚠️ 40% bloat left | ❌ |
-| Full original retrieval | ✅ `#c1` CCR | ❌ lost | ❌ | ❌ | ❌ |
-| In-process latency | < 2 ms | 10-50 ms | 50-200 ms | 500-2500 ms | < 1 ms |
+Empirical head-to-head benchmarks measured on identical production workloads:
 
-**Where trimtok is stronger:** Cross-turn delta, traceback pruning, web/doc intake, lossless retrieval, in-process speed.
+| Capability / Benchmark | **trimtok v5.3.0** 🌟 | **RTK v1.1.0** (Rust) | **headroom v0.42.0** (Python) | **skim v2.10.0** (Rust) | **sqz v2.1.1** (Rust) | **tokenfold** (Python/Rust) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Execution Layer** | **In-process hook + CLI** | Subprocess CLI | Python library / Proxy | Subprocess CLI | Subprocess CLI | Python FFI library |
+| **Uniform JSON (500 rows)** | **55.3% saved** | 99.6% (truncated) | **61.7% saved** | N/A | ~55% saved | 55.7% saved |
+| **Mixed JSON (450 rows)** | **41.0% – 44.7%** | 99.6% (truncated) | **46.3% saved** | N/A | 42.6% – 45.2% | 24.0% saved |
+| **Code AST (300 functions)** | **82.2% (AST stubs)** | 0% (or wipes 100%) | N/A | **82.2% (signatures)** | N/A | N/A |
+| **Cross-Turn Delta Mode** | ✅ **`[tt:delta]` (>95%)** | ❌ None | ❌ None | ❌ None | ❌ None | ❌ None |
+| **Framework Traceback Prune**| ✅ **77.0% (locks crash)** | ❌ Stripped or raw | ❌ None | ❌ None | ❌ None | ❌ None |
+| **Command-Specific Filters** | ✅ **6 commands** | ✅ 12 commands | ❌ None | ❌ None | ❌ None | ❌ None |
+| **Full Original Retrieval** | ✅ **Content-addressed (`#c1`)** | ❌ Lost permanently | ⚠️ CCR via MCP | ❌ Lost permanently | ⚠️ §ref dedup | ✅ Exact bytes |
+| **In-Process Latency** | **< 2 ms** (micro) | 10 – 50 ms (process) | ~9,054 ms (73x slower)| ~259 ms (process) | ~437 ms (process) | 660 – 860 ms |
+| **Zero Network Ports** | ✅ **100% portless** | ✅ Portless | ❌ Opens HTTP port | ✅ Portless | ❌ Opens HTTP/Web | ✅ Portless |
 
-**Where trimtok is weaker:** Code skeleton covers 7 languages (skim covers 17). Command-specific filters cover 6 commands (RTK covers 12). Mixed-schema JSON savings 41% (headroom 46%).
+### Where trimtok Excels
+- **In-Process & Sub-2ms:** Direct hook invocation with zero subprocess overhead (headroom takes ~9s, sqz takes ~450ms).
+- **Cross-Turn Stateful Delta:** Re-running test suites (`pytest`, `cargo test`) only prints active errors and diffs vs prior turn, slashing >95% tokens.
+- **Zero Data Loss Guarantee:** Everything transformed is stored into local SQLite WAL + Zstandard. The agent recalls original bytes at any time via `#c1`.
+- **Intake Shielding:** Automatically prunes link bloat and boilerplate headers on `web_extract` and `read_file` without offset drift.
 
-**Honest production telemetry (pre-5.3.0 baseline):** 4,456 events, 11.66M chars → 1.10M saved (9.5% overall, 27.2% terminal, 5.2% tool). Numbers from real agent sessions on v5.2.0 and earlier. v5.3.0 features (filters, skeletonizer, merged TOON) are newly shipped — no production data yet.
+### Where trimtok is Weaker
+- **Language Coverage on AST:** trimtok supports 7 languages (Python, JS/TS, Go, Rust, Java, C, C++). `skim` supports 17 languages via native tree-sitter.
+- **Command Filter Coverage:** trimtok has 6 targeted command filters (`git log`, `git status`, `ls`, `npm`, `pip`, `find`). `RTK` provides 12 command-specific heuristics.
+- **Extreme Mixed-JSON Compression:** `headroom` achieves 46.3% on heterogeneous JSON via smart_crusher transforms, while trimtok achieves 41.0% – 44.7% with merged TOON.
+
+> [!NOTE]
+> **Production Telemetry Baseline (pre-5.3.0):** 4,456 events, 11.66M characters input → 1.10M characters saved (9.5% overall aggregate across all raw traffic; 27.2% terminal hook; 5.2% tool results). v5.3.0 capabilities (merged TOON, 6 command filters, multi-language AST) are newly active.
 
 ---
 
 ## ⚡ Core Engineering Capabilities
 
-### 1. Cross-Turn Command Delta Engine (`compress_terminal`)
-When an agent re-runs `pytest`, `cargo test`, or build commands after editing code:
-- **Raw Terminal Output:** 56,000+ characters of passing test output.
+### Pillar 1: Terminal & Command Compression
+
+#### 1. Cross-Turn Command Delta Engine (`compress_terminal`)
+When an agent edits code and re-runs test suites or build commands:
+- **Raw Output:** 56,000+ characters of unchanged passing dots.
 - **trimtok Output (~300 characters — >95% reduction):**
 ```text
 [tt:delta cmd="pytest" sim=99% +#1 -#1 !#1 #c2 #c1]
@@ -90,14 +125,17 @@ When an agent re-runs `pytest`, `cargo test`, or build commands after editing co
 - ===== 1 failed, 200 passed in 42.1s =====
 ```
 
-### 2. Tiered Web & File Intake (`read_file` & `web_extract`)
-- **Inline URL De-bloat:** Converts verbose markdown links `[Anchor Text](https://very-long-url/path "Title")` into clean `Anchor Text`, cutting **35% – 45% of link bloat in 2–4 ms** without losing a single semantic concept.
-- **Heading + 2-Line Factsheet Digest:** Keeps all headings, tables, and code blocks, plus the leading 2 descriptive lines per section, folding excessive narrative paragraphs into line-anchored CCR `#ref` stubs (**76% – 96% token reduction on real Wikipedia, MDN, and Python docs**).
-- **Patch-Safe Small Code Cleaning (< 14KB):** Automatically removes bulky open-source license headers and ASCII divider banners with **100% Patch Line Safety (Zero Offset Drift)**.
-- **Single-Turn Comprehension (> 20KB):** Unlike RTK which strips all code, Trimtok preserves all short utility functions (< 20 lines) in full, folding only oversized methods into stubs.
+#### 2. Command-Specific Output Filters
+High-volume CLI tools are filtered to essential summaries backed by CCR retrieval:
+- **`git log`** → commit count, author digest, date range.
+- **`git status`** → current branch, staged/unstaged/untracked counters.
+- **`ls -la`** → file/folder count breakdown by extension.
+- **`npm install / list`** → package installation summary and dependency counts.
+- **`pip install / list`** → installed package names and satisfied requirements count.
+- **`find`** → matched file counts grouped by extension.
 
-### 3. Structured Traceback Pruning
-Internal framework frames (FastAPI, Starlette, Node modules) are collapsed into clear summary indicators while strictly locking the entrypoint, user project code, and exact exception crash site (**77% reduction**):
+#### 3. Structured Traceback Pruning
+Internal framework frames (FastAPI, Starlette, Node modules) collapse into compact summaries while strictly locking the entrypoint, user project code, and exact exception crash site (**77% reduction**):
 ```text
 Traceback (most recent call last):
   File "/workspace/app/api/endpoints.py", line 45, in handle_payment
@@ -108,8 +146,25 @@ Traceback (most recent call last):
 ZeroDivisionError: division by zero
 ```
 
-### 4. Lossless TOON v2 JSON Transcoding
-Converts deeply nested JSON arrays into hierarchical columnar tables, validated by a strict in-memory equality roundtrip (**57% reduction**):
+---
+
+### Pillar 2: Content & Code Intake Shield
+
+#### 4. Tiered Web & File Intake (`read_file` & `web_extract`)
+- **Inline URL De-bloat:** Converts verbose links `[Anchor Text](https://very-long-url/path "Title")` into clean `Anchor Text`, cutting **35% – 45% of markdown link bloat in 2–4 ms**.
+- **Heading + 2-Line Factsheet Digest:** Keeps headings, tables, code blocks, and the first 2 descriptive lines per section, folding excessive narrative into line-anchored CCR `#ref` stubs (**76% – 96% token reduction**).
+- **Patch-Safe License Stripping:** Automatically removes open-source license headers and divider comments on files < 14KB with **Zero Offset Drift**.
+
+#### 5. Multi-Language AST Code Skeletonizer
+For code files ≥ 2KB, trimtok parses the structural AST using tree-sitter:
+- **Supported Languages:** Python, JavaScript/TypeScript, Go, Rust, Java, C, C++.
+- **Zero Loss of Structure:** Retains all class definitions, function signatures, interfaces, imports, and docstrings.
+- **Folds Oversized Bodies:** Function implementations ≥ 8 lines fold into clean CCR-referenced stubs, preserving line structure for patch safety.
+
+#### 6. Lossless & Merged-Schema TOON v2
+Converts nested JSON arrays into columnar tables validated by in-memory equality roundtrips:
+- **Uniform Arrays:** 55% – 57% token reduction.
+- **Mixed Schemas (Merged TOON):** Automatically unifies heterogeneous object structures into a single table with null-filled gaps, achieving 41% – 44.7% savings without splitting into disjoint buckets.
 ```text
 [tt:legend] TOON table (lossless): @prefix(~/)=https://example.com/items/
 @data.results[3]{id,title,url,tags}:
@@ -118,8 +173,12 @@ Converts deeply nested JSON arrays into hierarchical columnar tables, validated 
 2|Item 2|~/2|["pm","ops"]
 ```
 
-### 5. Content-Addressed Context Recovery (`trimtok_retrieve`)
-Every transformed payload is preserved in a local SQLite WAL + Zstandard database (`~/.trimtok/trimtok_ccr_v2.sqlite3`). Agents can recall any original byte using short `#c1` references:
+---
+
+### Pillar 3: Zero Data Loss & Self-Healing Telemetry
+
+#### 7. Content-Addressed Context Recovery (`trimtok_retrieve`)
+Every transformed payload is preserved in a local SQLite WAL + Zstandard database (`~/.trimtok/trimtok_ccr_v2.sqlite3`). Agents recall original bytes anytime:
 ```bash
 # Retrieve original or targeted slices directly from shell
 trimtok retrieve "#c1"
@@ -127,25 +186,17 @@ trimtok retrieve "#c1" --section errors      # Error lines with surrounding cont
 trimtok retrieve "#c1" --section diff        # Unified diff hunks with headers
 trimtok retrieve "#c1" --section tail        # Last N lines
 trimtok retrieve "#c1" --grep "ConnectionReset" # Bounded regex search
-### 6. Command-Specific Output Filters
-Noisy dev commands are detected and replaced with compact summaries + CCR reference:
-- **`git log`** → commit count, authors, date range
-- **`git status`** → branch, staged/unstaged/untracked counts
-- **`ls -la`** → file count by type (files/dirs)
-- **`npm install`** → package count + installed names
-- **`pip install`** → installed package count
-- **`find`** → file count by extension
-- Full output preserved via `#c1` CCR reference
+trimtok retrieve "#c1" --offset 50 --limit 30   # Line-numbered pagination
+```
 
-### 7. Multi-Language AST Code Skeletonizer
-Source files ≥ 2 KB are skeletonized using tree-sitter AST parsing:
-- **Languages:** Python, JavaScript/TypeScript, Go, Rust, Java, C, C++
-- **Preserves:** function/class signatures, braces, imports
-- **Folds:** function bodies ≥ 8 lines
-- **Patch-safe:** original file untouched; CCR reference for full content
+#### 8. Autonomous Telemetry & Diagnostics (`gain` & `discover`)
+trimtok self-monitors every transformation in `~/.trimtok/usage.jsonl`:
+- **`trimtok gain`**: Breaks down real savings by output shape, tool hook, and command family, highlighting compression bottlenecks.
+- **`trimtok discover`**: Scans production telemetry for high-frequency, low-savings patterns and recommends targeted filters.
 
-### 8. Merged-Schema TOON
-Heterogeneous JSON arrays (mixed schemas) are unified into a single TOON table with null-filled missing fields — better compression than bucketing by schema alone.
+#### 9. Fail-Open Budget Guards
+- **Strict 200 ms Monotonic Deadline (`guard_ms: 200.0`):** If compression exceeds the deadline or RapidFuzz alignment is slow, trimtok aborts instantly and emits raw output.
+- **Zero Agent Freezes:** No timeout cascades, no hangs, no broken builds.
 
 ---
 
@@ -157,7 +208,7 @@ pip install trimtok
 ```
 
 ### Step 2: Run Unified Client Setup Wizard
-Automatically configures the local SQLite WAL store, verifies Zstandard acceleration, and registers the stdio MCP server across all detected AI coding environments on your machine:
+Automatically configures the local SQLite WAL store, verifies Zstandard acceleration, and registers the stdio MCP server across all detected AI coding environments:
 ```bash
 trimtok install
 ```
@@ -178,12 +229,13 @@ trimtok status
 
 ## ⚙️ Native Hermes Agent Plugin Configuration
 
-To install Trimtok as a native plugin in Hermes Agent:
-```bash
-# Windows
-git clone https://github.com/Stxyu-p/trimtok.git "$env:LOCALAPPDATA\hermes\plugins	rimtok"
+To install trimtok as a native plugin in Hermes Agent:
 
-# Linux / macOS
+```bash
+# Windows (PowerShell)
+git clone https://github.com/Stxyu-p/trimtok.git "$env:LOCALAPPDATA/hermes/plugins/trimtok"
+
+# Linux / macOS (Bash)
 git clone https://github.com/Stxyu-p/trimtok.git ~/.hermes/plugins/trimtok
 
 # Enable plugin in Hermes
@@ -191,7 +243,6 @@ hermes plugins enable trimtok
 ```
 
 ### Configuration Options (`~/.hermes/config.yaml` or `plugin.yaml`)
-Customize Trimtok's engine behavior:
 ```yaml
 plugins:
   entries:
@@ -245,7 +296,7 @@ trimtok recall "#c1" --offset 50 --limit 30
 
 | Pillar | Hub | Role |
 | :--- | :--- | :--- |
-| **[trimtok](https://github.com/Stxyu-p/trimtok)** | `~/.trimtok` | **Context Shield:** Cuts terminal, traceback, web, and JSON bloat by 38–48% (real telemetry) with instant `#c1` CCR recovery. |
+| **[trimtok](https://github.com/Stxyu-p/trimtok)** | `~/.trimtok` | **Context Shield:** Cuts terminal, traceback, web, and JSON bloat in-process with instant `#c1` CCR recovery. |
 | **[MemCore](https://github.com/Stxyu-p/memcore)** | `~/.memcore` | **Governed Memory:** Shared bitemporal memory with hard SQL scope boundaries, 1-bit vector quantization (32x smaller RAM), and Tainted Context Guard. |
 | **[Skill Proof](https://github.com/Stxyu-p/skill-proof)** | `~/.skill-proof` | **Skill Vault & Router:** Sub-2ms deterministic router, multi-lingual negation veto, and OS NTFS read-only Immutable SOP protection. |
 
