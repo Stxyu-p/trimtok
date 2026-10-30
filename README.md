@@ -46,7 +46,7 @@ Autonomous coding agents (Claude Code, Cursor, Windsurf, Codex, Antigravity, Her
 | **Telemetry/gain command** | ✅ `gain` |
 | **Discover (low-savers)** | ✅ `discover` |
 
-**Honest production telemetry (trimtok):** 4,456 events, 11.66M chars → 1.10M saved (9.5% overall, 27.2% terminal, 5.2% tool). Numbers from real agent sessions.
+**Honest production telemetry (pre-5.3.0 baseline):** 4,456 events, 11.66M chars → 1.10M saved (9.5% overall, 27.2% terminal, 5.2% tool). Numbers from real agent sessions on v5.2.0 and earlier. v5.3.0 features are newly shipped — no production data yet.
 
 ---
 **trimtok** operates 100% locally and in-process using Python standard library, RapidFuzz C++ token alignment, and Zstandard compression. No external daemons, no Docker containers, and zero open network ports.
@@ -69,7 +69,7 @@ Autonomous coding agents (Claude Code, Cursor, Windsurf, Codex, Antigravity, Her
 
 **Where trimtok is weaker:** Code skeleton covers 7 languages (skim covers 17). Command-specific filters cover 6 commands (RTK covers 12). Mixed-schema JSON savings 41% (headroom 46%).
 
-**Honest production telemetry:** 4,456 events, 11.66M chars → 1.10M saved (9.5% overall, 27.2% terminal, 5.2% tool). Numbers from real agent sessions, not synthetic benchmarks.
+**Honest production telemetry (pre-5.3.0 baseline):** 4,456 events, 11.66M chars → 1.10M saved (9.5% overall, 27.2% terminal, 5.2% tool). Numbers from real agent sessions on v5.2.0 and earlier. v5.3.0 features (filters, skeletonizer, merged TOON) are newly shipped — no production data yet.
 
 ---
 
