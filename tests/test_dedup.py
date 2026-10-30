@@ -418,6 +418,13 @@ finally:
     clear_session("span-budget")
     clear_session("line-budget")
 
+import unittest
+
+class TestDedupSuite(unittest.TestCase):
+    def test_dedup_checks_pass(self) -> None:
+        self.assertEqual(check.failed, 0)
+
+
 print(f"\n{check.failed} failures")
 if __name__ == "__main__":
     sys.exit(1 if check.failed else 0)

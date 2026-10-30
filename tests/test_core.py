@@ -405,8 +405,11 @@ from trimtok.core import _normalize_line
 check("status-code-not-stripped", _normalize_line("404 Not Found: /api/v1/users").startswith("404"))
 check("pid-bracket-stripped", not _normalize_line("[12345] Real log message").startswith("[12345]"))
 
-def test_core_suite() -> None:
-    assert check.failed == 0
+import unittest
+
+class TestCoreSuite(unittest.TestCase):
+    def test_core_checks_pass(self) -> None:
+        self.assertEqual(check.failed, 0)
 
 
 print(f"\n{check.failed} failures")

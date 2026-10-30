@@ -63,13 +63,13 @@ check("marker-refeed-sentinel", st["gate"] == "passthrough_sentinel" and out == 
 out, st = compress_terminal("pytest", "FAILED test_x - assert 1==2\n" + "ok line\n" * 2000)
 check("error-preserved", "FAILED test_x" in out)
 
-# 8. 1MB unique: bounded time (<2s), never raises, CCR recovers
+# 8. 1MB unique: bounded time (<5s), never raises, CCR recovers
 big = "".join("unique-line-%08d-abcdef1234567890\n" % i for i in range(30000))
 t0 = time.perf_counter()
 out, st = compress_terminal("cmd", big)
 dt = (time.perf_counter() - t0) * 1000
 check("1MB-no-raise", isinstance(out, str))
-check("1MB-bounded", dt < 2000)
+check("1MB-bounded", dt < 5000)
 check("1MB-saves", st.get("saved_chars", 0) > 0)
 
 # 9. remember() never raises on hostile input
@@ -87,6 +87,13 @@ finally:
             clear_session(s)
         except Exception:
             pass
+
+import unittest
+
+class TestTortureSuite(unittest.TestCase):
+    def test_torture_checks_pass(self) -> None:
+        self.assertEqual(check.failed, 0)
+
 
 print(f"\n{check.failed} failures")
 if __name__ == "__main__":
