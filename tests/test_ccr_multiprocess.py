@@ -2,6 +2,34 @@ import unittest
 from trimtok.ccr import FastCCRStore
 
 class MultiProcessCCRTests(unittest.TestCase):
+    def test_sqlite_lru_does_not_bypass_ttl(self):
+        import tempfile, pathlib
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FastCCRStore(db_dir=pathlib.Path(tmp))
+            try:
+                with mock.patch("trimtok.ccr.time.time", return_value=1_000_000.0):
+                    ref = store.put("TTL payload kept in the SQLite LRU")
+                self.assertTrue(ref)
+                with mock.patch("trimtok.ccr.time.time", return_value=1_000_000.0 + 23 * 3600):
+                    self.assertEqual(store.get(ref, ttl_hours=24), "TTL payload kept in the SQLite LRU")
+                with mock.patch("trimtok.ccr.time.time", return_value=1_000_000.0 + 25 * 3600):
+                    self.assertIsNone(store.get(ref, ttl_hours=24))
+            finally:
+                store.close()
+
+    def test_closed_sqlite_lru_does_not_bypass_ttl(self):
+        import tempfile, pathlib
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FastCCRStore(db_dir=pathlib.Path(tmp))
+            with mock.patch("trimtok.ccr.time.time", return_value=1_000_000.0):
+                ref = store.put("TTL payload in closed SQLite store")
+            self.assertTrue(ref)
+            store.close()
+            with mock.patch("trimtok.ccr.time.time", return_value=1_000_000.0 + 25 * 3600):
+                self.assertIsNone(store.get(ref, ttl_hours=24))
+
     def test_two_independent_stores_never_collide_on_aliases(self):
         import tempfile, pathlib
         with tempfile.TemporaryDirectory() as tmp:

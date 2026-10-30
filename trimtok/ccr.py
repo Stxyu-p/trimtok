@@ -141,6 +141,7 @@ class FastCCRStore:
         self.max_mem_items = max_mem_items
         self._lock = threading.Lock()
         self._mem: OrderedDict[str, str] = OrderedDict()
+        self._mem_created_at: dict[str, float] = {}
         self._alias_mem: dict[str, str] = {}
         self._sha_alias: dict[str, str] = {}
         self._conn: sqlite3.Connection | None = None
@@ -209,11 +210,11 @@ class FastCCRStore:
             try:
                 cur = self._conn.cursor()
                 cur.execute("BEGIN IMMEDIATE")
-                row = cur.execute("SELECT alias FROM chunks WHERE sha=?", (sha,)).fetchone()
+                row = cur.execute("SELECT alias, created_at FROM chunks WHERE sha=?", (sha,)).fetchone()
                 if row:
                     alias = row[0]
                     cur.execute("COMMIT")
-                    self._set_mem(sha, alias, content)
+                    self._set_mem(sha, alias, content, created_at=row[1])
                     return alias
 
                 cur.execute(
@@ -238,7 +239,7 @@ class FastCCRStore:
                     cur.execute("DELETE FROM chunks WHERE created_at < ?", (expire_before,))
 
                 cur.execute("COMMIT")
-                self._set_mem(sha, alias, content)
+                self._set_mem(sha, alias, content, created_at=now)
                 return alias
             except Exception:
                 try:
@@ -263,12 +264,21 @@ class FastCCRStore:
                 sha = self._alias_mem.get(target)
             else:
                 sha = target.lstrip("#")
-            if sha and sha in self._mem and ttl_hours >= 24:
-                self._mem.move_to_end(sha)
-                return self._mem[sha]
+            if sha and sha in self._mem:
+                created_at = self._mem_created_at.get(sha)
+                if (ttl_hours <= 0 or
+                        (created_at is not None and
+                         time.time() - created_at <= ttl_hours * 3600.0)):
+                    self._mem.move_to_end(sha)
+                    return self._mem[sha]
+                expired_alias = self._sha_alias.pop(sha, None)
+                self._mem.pop(sha, None)
+                self._mem_created_at.pop(sha, None)
+                if expired_alias:
+                    self._alias_mem.pop(expired_alias, None)
 
             if not self._writable or self._conn is None:
-                return self._mem.get(sha) if sha else None
+                return None
 
             try:
                 cur = self._conn.cursor()
@@ -305,18 +315,21 @@ class FastCCRStore:
                     decomp = _decompress_payload(blob)
                     if decomp is not None:
                         alias = row_alias or (target if target.startswith("#") else f"#{sha}")
-                        self._set_mem(sha, alias, decomp)
+                        self._set_mem(sha, alias, decomp, created_at=created_at)
                         return decomp
             except Exception:
                 return None
         return None
 
-    def _set_mem(self, sha: str, alias: str, content: str) -> None:
+    def _set_mem(self, sha: str, alias: str, content: str, *, created_at: float | None = None) -> None:
         self._mem[sha] = content
+        if created_at is not None:
+            self._mem_created_at[sha] = float(created_at)
         self._alias_mem[alias] = sha
         self._sha_alias[sha] = alias
         while len(self._mem) > self.max_mem_items:
             old_sha, _ = self._mem.popitem(last=False)
+            self._mem_created_at.pop(old_sha, None)
             old_alias = self._sha_alias.pop(old_sha, None)
             if old_alias:
                 self._alias_mem.pop(old_alias, None)
@@ -345,6 +358,7 @@ class FastCCRStore:
         with self._lock:
             if before_seconds <= 0:
                 self._mem.clear()
+                self._mem_created_at.clear()
                 self._alias_mem.clear()
                 self._sha_alias.clear()
             if self._writable and self._conn is not None:
@@ -359,6 +373,7 @@ class FastCCRStore:
                         count = len(rows)
                         for sha, alias in rows:
                             self._mem.pop(sha, None)
+                            self._mem_created_at.pop(sha, None)
                             self._sha_alias.pop(sha, None)
                             if alias:
                                 self._alias_mem.pop(alias, None)
