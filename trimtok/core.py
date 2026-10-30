@@ -1,4 +1,4 @@
-"""trimtok core: deterministic terminal-output compression (Phase 1 & Trimtok 4.0).
+"""trimtok core: deterministic terminal-output compression.
 
 Stdlib + optional rapidfuzz (fuzzy fold) + optional tiktoken (token estimation).
 Pipeline per SPEC: detect kind -> filter -> token-gate -> error-preservation
@@ -21,7 +21,7 @@ except Exception:
     _Levenshtein = None
     _FUZZY_AVAILABLE = False
 
-VERSION = "5.2.0"
+VERSION = "5.3.0"
 
 try:
     from . import delta_engine
@@ -370,6 +370,26 @@ def compress_terminal(
                     "hidden_lines": output.count("\n"), "dropped_lines": 0,
                     "ms": (time.perf_counter() - t0) * 1000,
                 }
+            # Command-specific filters
+            try:
+                from .filters import try_command_filter
+            except (ImportError, ValueError):
+                from trimtok.filters import try_command_filter
+            filtered = try_command_filter(command, output)
+            if filtered is not None and len(filtered) < len(output):
+                tb = estimate_tokens(output)
+                ta = estimate_tokens(filtered)
+                if ta < tb:
+                    _ref = _ccr_put(output)
+                    ref_tag = f" #{_ref}" if _ref else ""
+                    return f"{filtered}{ref_tag}", {
+                        "gate": "ok", "kind": "cmd_filter", "digest": _ref or "",
+                        "before_chars": len(output), "after_chars": len(filtered),
+                        "saved_chars": len(output) - len(filtered),
+                        "est_tokens_before": tb, "est_tokens_after": ta,
+                        "hidden_lines": output.count("\n"), "dropped_lines": 0,
+                        "ms": (time.perf_counter() - t0) * 1000,
+                    }
         if len(output) < min_chars:
             # v4.2 Tier 0 for the 512..min_chars band: ANSI + hygiene are lossless,
             # so ship the cleaned text with no header at all instead of passing the

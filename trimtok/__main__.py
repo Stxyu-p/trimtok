@@ -136,6 +136,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("mcp", help="Run the stdio MCP server (JSON-RPC 2.0)")
     sub.add_parser("status", help="Show compression savings and CCR cache status")
     sub.add_parser("usage", help="Show detailed hook/tool usage breakdown")
+    sub.add_parser("gain", help="Show detailed token savings gain report").add_argument("--days", type=int, default=0)
+    sub.add_parser("discover", help="Scan telemetry for low-savings shapes and suggest filters")
+    sub.add_parser("recall", help="Retrieve cached original by hash").add_argument("hash", nargs="?", default="")
     sub.add_parser("purge", help="Purge cached CCR originals")
 
     p_ret = sub.add_parser("retrieve", help="Retrieve original content or a targeted section from CCR")
@@ -162,6 +165,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if ns.cmd == "usage":
         print(_handle_ts_command("usage"))
+        return 0
+    if ns.cmd == "gain":
+        days = getattr(ns, "days", 0)
+        print(_handle_ts_command(f"gain {days}" if days else "gain"))
+        return 0
+    if ns.cmd == "discover":
+        print(_handle_ts_command("discover"))
+        return 0
+    if ns.cmd == "recall":
+        h = getattr(ns, "hash", "")
+        print(_handle_ts_command(f"retrieve {h}" if h else "retrieve"))
         return 0
     if ns.cmd == "purge":
         print(_handle_ts_command("purge"))

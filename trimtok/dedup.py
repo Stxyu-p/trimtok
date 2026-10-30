@@ -1,4 +1,4 @@
-"""trimtok Phase 2: tool-result compression (cross-turn span fold + hygiene + AST code skeletonization).
+"""trimtok tool-result compression (cross-turn span fold + hygiene + AST code skeletonization).
 
 Stdlib only, pure functions + tiny module-level session corpus.
 Never raises.
@@ -726,6 +726,58 @@ def invalidate_shell_mutations(command: str, session_id: str = "") -> int:
         return 0
 
 
+def _try_merged_toon(text: str) -> str | None:
+    """Try merged-schema JSON array: unify all schemas into one TOON table with
+    null-filled missing fields. Returns compressed string or None."""
+    if len(text) > 65536 or not text.lstrip().startswith("["):
+        return None
+    try:
+        from .toon_codec import toon_decode, strict_eq, encode
+        value = _json.loads(text)
+        if not isinstance(value, list) or len(value) < 3 or not all(isinstance(r, dict) for r in value):
+            return None
+        for row in value:
+            if "__tt_row__" in row:
+                return None
+        schemas = set(frozenset(r.keys()) for r in value)
+        if len(schemas) < 2:
+            return None  # uniform — handled by fold_json_to_toon
+        all_keys = list(dict.fromkeys(k for r in value for k in r.keys()))
+        tagged = []
+        for i, row in enumerate(value):
+            merged = {"__tt_row__": i}
+            for k in all_keys:
+                merged[k] = row.get(k)
+            tagged.append(merged)
+        toon = encode(tagged)
+        if toon is None or len(toon) >= len(text):
+            return None
+        # Verify round-trip: reconstruct original by stripping filled-in nulls
+        decoded = toon_decode(toon)
+        if not isinstance(decoded, list) or len(decoded) != len(tagged):
+            return None
+        restored = [None] * len(value)
+        for rec in decoded:
+            idx = rec.pop("__tt_row__", None)
+            if not isinstance(idx, int) or idx < 0 or idx >= len(restored) or restored[idx] is not None:
+                return None
+            orig_keys = set(value[idx].keys())
+            cleaned = {}
+            for k, v in rec.items():
+                if v is None and k not in orig_keys:
+                    continue
+                cleaned[k] = v
+            restored[idx] = cleaned
+        if not strict_eq(restored, value):
+            return None
+        ref = _ccr_put(text)
+        if not ref:
+            return None
+        candidate = f"[tt:json_toon_merged rows={len(value)} schemas={len(schemas)}]\n" + toon
+        return f"[@{ref}]\n" + candidate
+    except Exception:
+        return None
+
 def _try_mixed_schema_toon(text: str) -> str | None:
     """Try mixed-schema JSON array bucketing. Returns compressed string or None."""
     if len(text) > 65536 or not text.lstrip().startswith("["):
@@ -1408,10 +1460,20 @@ def compress_tool_result(
         sk_saved = 0
         if ss_saved == 0 and f_saved == 0 and i_saved == 0 and dt_saved == 0:
             # AST Code Skeletonizer check
-            if len(folded) >= 2048 and (tool_name in ("view_file", "cat", "get_file") or "\ndef " in folded or "\nclass " in folded):
+            if len(folded) >= 2048 and (tool_name in ("view_file", "cat", "get_file") or "\ndef " in folded or "\nclass " in folded or "\nfunction " in folded or "\nfunc " in folded or "\nfn " in folded or "\npublic class " in folded):
                 try:
-                    sk_cand = skeletonize_code(folded)
-                    if len(sk_cand) < len(folded):
+                    sk_cand = None
+                    try:
+                        from .ts_skeleton import skeletonize_code_multilang
+                        sk_cand = skeletonize_code_multilang(folded)
+                    except Exception:
+                        pass
+                    if sk_cand is None or len(sk_cand) >= len(folded):
+                        try:
+                            sk_cand = skeletonize_code(folded)
+                        except Exception:
+                            sk_cand = folded
+                    if sk_cand is not None and len(sk_cand) < len(folded):
                         sk_saved = len(folded) - len(sk_cand)
                         folded = sk_cand
                 except Exception:
@@ -1430,21 +1492,37 @@ def compress_tool_result(
         remember(text, session_id, owner=_rh)
         if toon_enabled:
             try:
-                # Mixed-schema JSON arrays: bucket by schema, tag rows, fold each.
-                _mixed = _try_mixed_schema_toon(folded)
-                if _mixed is not None and len(_mixed) < len(folded):
-                    _cand = _TOON_LEGEND + "\n" + _mixed if _TOON_LEGEND not in _mixed else _mixed
+                # Merged-schema JSON arrays: unify all schemas into one TOON table.
+                _merged = _try_merged_toon(folded)
+                if _merged is not None and len(_merged) < len(folded):
+                    _cand = _TOON_LEGEND + "\n" + _merged if _TOON_LEGEND not in _merged else _merged
                     if len(_cand) < len(folded) and estimate_bpe_gain(folded, _cand) >= 4:
                         t_saved = len(folded) - len(_cand)
                         folded = _cand
                         toon_used = True
-                        toon_kind = "json_toon_buckets"
-                        # Skip uniform TOON below
+                        toon_kind = "json_toon_merged"
                         raise StopIteration
             except StopIteration:
                 pass
             except Exception:
                 pass
+            if not toon_used:
+                try:
+                    # Mixed-schema JSON arrays: bucket by schema, tag rows, fold each.
+                    _mixed = _try_mixed_schema_toon(folded)
+                    if _mixed is not None and len(_mixed) < len(folded):
+                        _cand = _TOON_LEGEND + "\n" + _mixed if _TOON_LEGEND not in _mixed else _mixed
+                        if len(_cand) < len(folded) and estimate_bpe_gain(folded, _cand) >= 4:
+                            t_saved = len(folded) - len(_cand)
+                            folded = _cand
+                            toon_used = True
+                            toon_kind = "json_toon_buckets"
+                            # Skip uniform TOON below
+                            raise StopIteration
+                except StopIteration:
+                    pass
+                except Exception:
+                    pass
             if not toon_used:
                 try:
                     _cand = fold_json_to_toon(folded)

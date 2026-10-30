@@ -149,7 +149,9 @@ def _after_chars(stats: dict, before: int) -> int:
 
 def _terminal_shape(stats: dict) -> str:
     kind = str(stats.get("kind") or stats.get("toon_kind") or "")
-    if kind in ("json", "json_toon", "json_toon_buckets"):
+    if kind == "cmd_filter":
+        return "cmd-filter"
+    if kind in ("json", "json_toon", "json_toon_buckets", "json_toon_merged"):
         return "json"
     if stats.get("partial") or stats.get("omitted_errors"):
         return "err-dense"
@@ -164,7 +166,7 @@ def _tool_shape(stats: dict) -> str:
     kind = str(stats.get("kind") or stats.get("toon_kind") or "")
     if kind == "lockfile":
         return "lockfile"
-    if kind in ("json_toon", "json_toon_buckets"):
+    if kind in ("json_toon", "json_toon_buckets", "json_toon_merged"):
         return "json"
     if kind == "file_structure":
         return "doc-structure"
@@ -751,6 +753,204 @@ def _ok(data: dict) -> str:
         return json.dumps(data, ensure_ascii=False)
 
 
+def _discover_summary() -> str:
+    """Scan telemetry to find shapes/tools with low savings and suggest filters."""
+    try:
+        path = _usage_path()
+        backup = path.with_name(path.name + ".1")
+        rows = []
+        with _AUDIT_LOCK:
+            for f in (backup, path):
+                if f.exists():
+                    for ln in f.read_text(encoding="utf-8").splitlines():
+                        s = ln.strip()
+                        if s.startswith("{"):
+                            try:
+                                rows.append(json.loads(s))
+                            except Exception:
+                                pass
+        if not rows:
+            return f"trimtok v{VERSION}: no usage logged yet."
+        terminal_rows = [r for r in rows if r.get("hook") in ("terminal", "tool")]
+        if not terminal_rows:
+            return f"trimtok v{VERSION}: no terminal/tool events yet."
+
+        # By shape
+        by_shape: dict = {}
+        for r in terminal_rows:
+            sh = str(r.get("shape") or "?")
+            if sh not in by_shape:
+                by_shape[sh] = {"count": 0, "before": 0, "saved": 0}
+            by_shape[sh]["count"] += 1
+            by_shape[sh]["before"] += int(r.get("before") or 0)
+            by_shape[sh]["saved"] += int(r.get("saved") or 0)
+
+        # By tool/cmd
+        by_cmd: dict = {}
+        for r in terminal_rows:
+            c = str(r.get("cmd") or r.get("tool") or "?")[:50]
+            if c not in by_cmd:
+                by_cmd[c] = {"count": 0, "before": 0, "saved": 0}
+            by_cmd[c]["count"] += 1
+            by_cmd[c]["before"] += int(r.get("before") or 0)
+            by_cmd[c]["saved"] += int(r.get("saved") or 0)
+
+        out = [f"trimtok v{VERSION} discover: {len(terminal_rows)} events analyzed"]
+        out.append("")
+
+        # Low-savings shapes
+        low_shapes = [(sh, d) for sh, d in by_shape.items()
+                      if d["before"] > 0 and (d["saved"] / d["before"]) < 0.3 and d["count"] >= 2]
+        if low_shapes:
+            out.append("  shapes with <30% savings (need filters):")
+            for sh, d in sorted(low_shapes, key=lambda kv: kv[1]["count"], reverse=True):
+                pct = (d["saved"] / d["before"] * 100) if d["before"] > 0 else 0.0
+                out.append(f"    {sh}: {d['count']} events, {pct:.1f}% saved ({d['before']:,} chars)")
+                if sh == "json":
+                    out.append("      -> merged TOON already helps; consider command-specific JSON filters")
+                elif sh == "ref-verbatim":
+                    out.append("      -> AST code skeletonizer needed")
+                elif sh == "mixed":
+                    out.append("      -> command-specific filters needed")
+            out.append("")
+
+        # High-volume low-savings commands
+        low_cmds = [(c, d) for c, d in by_cmd.items()
+                    if d["before"] > 10000 and (d["saved"] / d["before"]) < 0.2 and d["count"] >= 2]
+        if low_cmds:
+            out.append("  high-volume commands with <20% savings:")
+            for c, d in sorted(low_cmds, key=lambda kv: kv[1]["before"], reverse=True)[:10]:
+                pct = (d["saved"] / d["before"] * 100) if d["before"] > 0 else 0.0
+                out.append(f"    {c}: {d['count']}x, {pct:.1f}% saved ({d['before']:,} chars)")
+            out.append("")
+
+        # Summary recommendations
+        out.append("  recommendations:")
+        if any(sh == "json" for sh, _ in low_shapes):
+            out.append("    1. JSON shape: merged TOON active; next: command-specific JSON filters")
+        if any(sh == "ref-verbatim" for sh, _ in low_shapes):
+            out.append("    2. ref-verbatim: implement AST code skeletonizer")
+        if any(sh == "mixed" for sh, _ in low_shapes):
+            out.append("    3. mixed shape: implement command-specific filters")
+        out.append("    4. Run 'trimtok gain' for detailed breakdown")
+        return "\n".join(out)
+    except Exception as e:
+        return f"trimtok v{VERSION}: discover unavailable ({e})."
+def _gain_summary(days: int = 0) -> str:
+    """Detailed gain report: savings by shape, tool, and bottleneck analysis."""
+    try:
+        path = _usage_path()
+        backup = path.with_name(path.name + ".1")
+        rows = []
+        with _AUDIT_LOCK:
+            for f in (backup, path):
+                if f.exists():
+                    for ln in f.read_text(encoding="utf-8").splitlines():
+                        s = ln.strip()
+                        if s.startswith("{"):
+                            try:
+                                r = json.loads(s)
+                                rows.append(r)
+                            except Exception:
+                                pass
+        if not rows:
+            return f"trimtok v{VERSION}: no usage logged yet."
+
+        # Filter by days if specified
+        if days > 0:
+            cutoff = time.time() - (days * 86400)
+            rows = [r for r in rows if int(r.get("ts") or 0) >= cutoff]
+
+        if not rows:
+            return f"trimtok v{VERSION}: no usage in last {days} days."
+
+        # Overall stats
+        terminal_rows = [r for r in rows if r.get("hook") in ("terminal", "tool")]
+        n_events = len(rows)
+        n_folds = sum(1 for r in terminal_rows if r.get("gate") == "ok")
+        total_before = sum(int(r.get("before") or 0) for r in terminal_rows)
+        total_after = sum(int(r.get("after") or 0) for r in terminal_rows)
+        total_saved = sum(int(r.get("saved") or 0) for r in terminal_rows)
+        overall_pct = (total_saved / total_before * 100) if total_before > 0 else 0.0
+        avg_ms = sum(float(r.get("ms") or 0) for r in terminal_rows) / max(len(terminal_rows), 1)
+        retrieve_rows = [r for r in rows if r.get("hook") == "retrieve"]
+        hits = sum(1 for r in retrieve_rows if r.get("hit"))
+
+        # Savings by shape
+        by_shape: dict = {}
+        for r in terminal_rows:
+            sh = str(r.get("shape") or "?")
+            if sh not in by_shape:
+                by_shape[sh] = {"count": 0, "before": 0, "after": 0, "saved": 0, "ms": 0.0, "ok": 0}
+            by_shape[sh]["count"] += 1
+            by_shape[sh]["before"] += int(r.get("before") or 0)
+            by_shape[sh]["after"] += int(r.get("after") or 0)
+            by_shape[sh]["saved"] += int(r.get("saved") or 0)
+            by_shape[sh]["ms"] += float(r.get("ms") or 0)
+            if r.get("gate") == "ok":
+                by_shape[sh]["ok"] += 1
+
+        # Savings by tool/cmd
+        by_cmd: dict = {}
+        for r in terminal_rows:
+            c = str(r.get("cmd") or r.get("tool") or "?")[:40]
+            if c not in by_cmd:
+                by_cmd[c] = {"count": 0, "before": 0, "after": 0, "saved": 0, "ms": 0.0}
+            by_cmd[c]["count"] += 1
+            by_cmd[c]["before"] += int(r.get("before") or 0)
+            by_cmd[c]["after"] += int(r.get("after") or 0)
+            by_cmd[c]["saved"] += int(r.get("saved") or 0)
+            by_cmd[c]["ms"] += float(r.get("ms") or 0)
+
+        out = []
+        out.append(f"trimtok v{VERSION} gain report ({len(rows)} events, {n_folds} folds)")
+        if days > 0:
+            out.append(f"  period: last {days} days")
+        out.append(f"  total: {total_before:,} -> {total_after:,} chars ({overall_pct:.1f}% saved, {total_saved:,} chars)")
+        out.append(f"  avg latency: {avg_ms:.1f}ms per transform")
+        out.append(f"  retrieve: {hits}/{len(retrieve_rows)} hits")
+
+        # Shape breakdown
+        out.append("")
+        out.append("  savings by shape:")
+        out.append(f"  {'shape':<16} {'count':>6} {'before':>10} {'saved':>10} {'%':>7} {'avg_ms':>8}")
+        out.append("  " + "-" * 62)
+        for sh, d in sorted(by_shape.items(), key=lambda kv: -kv[1]["saved"]):
+            pct = (d["saved"] / d["before"] * 100) if d["before"] > 0 else 0.0
+            avg = d["ms"] / max(d["count"], 1)
+            out.append(f"  {sh:<16} {d['count']:>6} {d['before']:>10,} {d['saved']:>10,} {pct:>6.1f}% {avg:>7.1f}")
+
+        # Tool/cmd breakdown (top 10)
+        out.append("")
+        out.append("  savings by tool/cmd (top 10):")
+        out.append(f"  {'cmd/tool':<40} {'count':>6} {'saved':>10} {'%':>7}")
+        out.append("  " + "-" * 68)
+        for c, d in sorted(by_cmd.items(), key=lambda kv: -kv[1]["saved"])[:10]:
+            pct = (d["saved"] / d["before"] * 100) if d["before"] > 0 else 0.0
+            out.append(f"  {c:<40} {d['count']:>6} {d['saved']:>10,} {pct:>6.1f}%")
+
+        # Bottleneck analysis
+        low_savers = [(sh, d) for sh, d in by_shape.items()
+                      if d["before"] > 0 and (d["saved"] / d["before"]) < 0.1 and d["count"] >= 3]
+        if low_savers:
+            out.append("")
+            out.append("  bottlenecks (shapes with <10% savings, 3+ events):")
+            for sh, d in sorted(low_savers, key=lambda kv: kv[1]["count"], reverse=True):
+                pct = (d["saved"] / d["before"] * 100) if d["before"] > 0 else 0.0
+                out.append(f"    {sh}: {d['count']} events, {pct:.1f}% saved ({d['before']:,} chars)")
+            out.append("  -> consider adding command-specific filters or TOON improvements for these shapes")
+
+        # Gate breakdown
+        gates: dict = {}
+        for r in terminal_rows:
+            g = str(r.get("gate") or "?")
+            gates[g] = gates.get(g, 0) + 1
+        out.append("")
+        out.append("  gates: " + ", ".join(f"{k}={v}" for k, v in sorted(gates.items(), key=lambda kv: -kv[1])))
+
+        return "\n".join(out)
+    except Exception as e:
+        return f"trimtok v{VERSION}: gain unavailable ({e})."
 def _usage_summary() -> str:
     try:
         path = _usage_path()
@@ -821,6 +1021,23 @@ def _handle_ts_command(raw_args: str) -> str:
         return _handle_ts_command("status")
     if arg == "usage":
         return _usage_summary()
+    if arg.startswith("gain"):
+        parts = arg.split()
+        days = 0
+        if len(parts) >= 2:
+            try:
+                days = int(parts[1])
+            except ValueError:
+                pass
+        return _gain_summary(days=days)
+    if arg.startswith("discover"):
+        return _discover_summary()
+    if arg.startswith("recall"):
+        h = arg.partition(" ")[2].strip()
+        parts = h.split()
+        if len(parts) >= 2 and parts[1] in ("errors", "diff", "summary", "tail"):
+            return _handle_retrieve({"hash": parts[0], "section": parts[1]})
+        return _handle_retrieve({"hash": parts[0] if parts else ""})
     if arg == "purge":
         purged = ccr_purge()
         return f"trimtok v{VERSION}: purged {purged} cached original files."
@@ -830,7 +1047,7 @@ def _handle_ts_command(raw_args: str) -> str:
         if len(parts) >= 2 and parts[1] in ("errors", "diff", "summary", "tail"):
             return _handle_retrieve({"hash": parts[0], "section": parts[1]})
         return _handle_retrieve({"hash": parts[0] if parts else ""})
-    return "Usage: /trimtok [status|stats|usage|purge|retrieve <hash> [section]]"
+    return "Usage: /trimtok [status|stats|usage|gain|discover|recall|purge|retrieve <hash> [section]]"
 
 
 def _on_session_reset(session_id: Any = None, **kw: Any) -> None:

@@ -2,6 +2,29 @@
 
 All notable changes to trimtok are documented here.
 
+## [5.3.0] - 2026-10-30
+
+### Added
+- **Command-Specific Filters:**
+  - 6 command-specific filters: `git log`, `git status`, `ls`, `npm`, `pip`, `find` → compact summary + CCR `#ref` for full retrieval.
+  - `discover` command: scans telemetry → identifies low-savings shapes/tools → suggests targeted filters.
+  - `gain` command: detailed savings breakdown by shape, tool, cmd + bottleneck analysis.
+  - `recall` command: ergonomic alias for `retrieve` with section filters.
+- **Multi-Language AST Code Skeletonizer:**
+  - tree-sitter based skeletonizer for JavaScript/TypeScript, Go, Rust, Java, C, C++ (Python uses existing ast-based).
+  - Preserves signatures/braces, folds only function bodies ≥ 8 lines.
+  - Integrated into `compress_tool_result` pipeline alongside existing Python skeletonizer.
+- **Merged-Schema TOON:**
+  - Single-table merge for heterogeneous JSON arrays with null-filled missing fields.
+  - Tries merged before bucketed; exact reconstruction verified.
+- **Telemetry Coverage Upgrade:**
+  - Added `toon_saved`, `toon_kind`, `toon_used` fields to terminal and tool telemetry.
+  - Updated shape classifiers for `json_toon_merged`, `cmd_filter` kinds.
+
+### Changed
+- Version bumped to 5.3.0 (core.py + pyproject.toml single-source).
+- Expanded skeleton trigger condition to include non-Python code patterns.
+
 ## [5.2.0] - 2026-10-29
 
 ### Added

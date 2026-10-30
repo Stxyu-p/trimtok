@@ -30,7 +30,25 @@ Autonomous coding agents (Claude Code, Cursor, Windsurf, Codex, Antigravity, Her
 - **Secondary LLM Summarization:** Adds 2–5 seconds of network latency per tool call, burns extra tokens, incurs recursive API costs, and frequently hallucinates altered line numbers or error codes.
 - **Aggressive Signature Stripping (RTK Trap):** Completely wipes out function bodies down to signatures (`-l aggressive`), leaving the agent blind to implementation logic and forcing repetitive multi-turn re-reads (`read_file` offset loops).
 
-### The Trimtok Solution: Deterministic In-Process Compression in ~1–2 ms
+### Capability Matrix (Function-by-Function)
+
+| Capability | trimtok |
+| :--- | :---: |
+| **Cross-turn delta** | ✅ `[tt:delta]` |
+| **Traceback pruning** | ✅ 77% |
+| **TOON JSON encoding** | ✅ 57% |
+| **Code skeleton (multi-lang)** | ✅ 7 langs |
+| **Web/doc intake** | ✅ 77-96% |
+| **Full original retrieval** | ✅ `#c1` CCR |
+| **In-process latency** | < 2 ms |
+| **Fail-open guarantee** | ✅ |
+| **Command-specific filters** | ✅ 6 cmds |
+| **Telemetry/gain command** | ✅ `gain` |
+| **Discover (low-savers)** | ✅ `discover` |
+
+**Honest production telemetry (trimtok):** 4,456 events, 11.66M chars → 1.10M saved (9.5% overall, 27.2% terminal, 5.2% tool). Numbers from real agent sessions.
+
+---
 **trimtok** operates 100% locally and in-process using Python standard library, RapidFuzz C++ token alignment, and Zstandard compression. No external daemons, no Docker containers, and zero open network ports.
 
 ---
