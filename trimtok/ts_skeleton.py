@@ -1,6 +1,8 @@
 """Multi-language AST code skeletonizer using tree-sitter.
 
+Extracts signatures, classes, interfaces, and folds large function bodies.
 Falls back to Python's built-in ast for .py files when tree-sitter unavailable.
+All operations are 100% fail-open, non-recursive, and never raise.
 """
 import os
 import re
@@ -22,13 +24,15 @@ _LANG_MAP = {
     ".hpp": "cpp",
 }
 
-_TS_LANGS = {}
+_TS_LANGS: dict = {}
 
 
 def _get_ts_lang(lang: str):
+    """Load and cache tree-sitter language parser. Caches None on failure."""
     if lang in _TS_LANGS:
         return _TS_LANGS[lang]
     try:
+        mod = None
         if lang == "python":
             import tree_sitter_python as mod
         elif lang == "javascript":
@@ -43,57 +47,74 @@ def _get_ts_lang(lang: str):
             import tree_sitter_c as mod
         elif lang == "cpp":
             import tree_sitter_cpp as mod
-        else:
+
+        if mod is None:
+            _TS_LANGS[lang] = None
             return None
+
         from tree_sitter import Language, Parser
         language = Language(mod.language())
         parser = Parser(language)
         _TS_LANGS[lang] = (language, parser)
         return _TS_LANGS[lang]
     except Exception:
+        _TS_LANGS[lang] = None
         return None
 
 
 def detect_language(code: str, filename: str = "") -> str:
+    """Detect programming language from file extension or content patterns."""
     if filename:
         ext = os.path.splitext(filename)[1].lower()
         if ext in _LANG_MAP:
             return _LANG_MAP[ext]
-    # Heuristic from content
-    if "def " in code and "import " in code:
+    if not code or not isinstance(code, str):
+        return "unknown"
+    # Content-based heuristics (check unique language markers first)
+    if "def " in code and ("import " in code or "self" in code or "class " in code):
         return "python"
-    if "function " in code or "const " in code or "=>" in code:
-        return "javascript"
-    if "func " in code and "package " in code:
-        return "go"
-    if "fn " in code and "let mut" in code:
+    if "fn " in code and ("pub fn " in code or "let mut " in code or "impl " in code or "use " in code or "->" in code):
         return "rust"
-    if "public class" in code or "public static void main" in code:
+    if "func " in code and ("package " in code or "import (" in code):
+        return "go"
+    if ("#include <" in code or '#include "' in code) and (
+        "int main(" in code or "void " in code or "class " in code or "std::" in code
+    ):
+        return "cpp" if "std::" in code or "class " in code else "c"
+    if ("public class " in code or "public static void main" in code or "package " in code) and "System.out" in code:
         return "java"
+    if ("function " in code or "const " in code or "=>" in code or "let " in code) and (
+        "console." in code or "require(" in code or "export " in code or "{" in code
+    ):
+        return "javascript"
     return "unknown"
 
 
 def _skeletonize_ts(code: str, lang: str, min_body_lines: int = 8) -> str:
-    """Extract signatures and fold bodies using tree-sitter."""
+    """Extract signatures and fold function bodies using tree-sitter. Iterative & fail-open."""
     ts = _get_ts_lang(lang)
     if ts is None:
         return code
     _, parser = ts
     try:
-        tree = parser.parse(code.encode("utf-8"))
+        raw_bytes = code.encode("utf-8", errors="replace")
+        tree = parser.parse(raw_bytes)
     except Exception:
+        return code
+
+    if tree is None or tree.root_node is None:
         return code
 
     lines = code.split("\n")
     n = len(lines)
 
-    # Collect ranges to fold: (start_line_1idx, end_line_1idx, indent, name)
+    # Collect ranges to fold: (start_line_1idx, end_line_1idx, indent_str, name)
     fold_ranges = []
 
-    def _walk(node, depth=0):
-        if node is None:
-            return
-        # Look for function/method definitions
+    # Iterative depth-first traversal to avoid recursion limits
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
         node_type = node.type
         is_func = node_type in (
             "function_definition", "function_declaration", "method_definition",
@@ -101,46 +122,39 @@ def _skeletonize_ts(code: str, lang: str, min_body_lines: int = 8) -> str:
             "constructor_declaration", "arrow_function",
         )
         if is_func:
-            start = node.start_point[0] + 1  # 1-indexed
-            end = node.end_point[0] + 1
-            # Find body
             body = None
             for child in node.children:
-                if child.type in ("block", "statement_block", "compound_statement",
-                                  "function_body", "constructor_body", "body"):
+                if child.type in (
+                    "block", "statement_block", "compound_statement",
+                    "function_body", "constructor_body", "body"
+                ):
                     body = child
                     break
             if body is not None:
-                # Find first and last statement children (skip braces)
-                stmts = [c for c in body.children
-                         if c.type not in ("{", "}", "comment")]
-                if not stmts:
-                    pass
-                else:
+                stmts = [c for c in body.children if c.type not in ("{", "}", "comment")]
+                if stmts:
                     body_start = stmts[0].start_point[0] + 1
                     body_end = stmts[-1].end_point[0] + 1
                     span = body_end - body_start + 1
                     if span >= min_body_lines:
-                        # Get function name
                         name = "<anon>"
                         for child in node.children:
-                            if child.type in ("identifier", "property_identifier", "name"):
+                            if child.type in ("identifier", "property_identifier", "name", "field_identifier"):
                                 name = code[child.start_byte:child.end_byte]
                                 break
-                        # Get indent
                         line_text = lines[body_start - 1] if body_start - 1 < n else ""
                         indent = len(line_text) - len(line_text.lstrip())
                         indent_str = " " * indent
                         fold_ranges.append((body_start, body_end, indent_str, name))
-        for child in node.children:
-            _walk(child, depth + 1)
 
-    _walk(tree.root_node)
+        # Push children in reverse order to preserve original document traversal order
+        for child in reversed(node.children):
+            stack.append(child)
 
     if not fold_ranges:
         return code
 
-    # Sort and drop overlapping
+    # Sort ranges: ascending start line, descending span
     fold_ranges.sort(key=lambda r: (r[0], -(r[1] - r[0])))
     merged = []
     last_end = 0
@@ -150,7 +164,11 @@ def _skeletonize_ts(code: str, lang: str, min_body_lines: int = 8) -> str:
         merged.append((s, e, ind, fn))
         last_end = e
 
-    # Build output
+    if not merged:
+        return code
+
+    # Build folded output
+    is_python = (lang == "python")
     out = []
     cur = 1
     for s, e, ind, fn in merged:
@@ -158,7 +176,10 @@ def _skeletonize_ts(code: str, lang: str, min_body_lines: int = 8) -> str:
             out.append(lines[cur - 1])
             cur += 1
         omitted = e - s + 1
-        marker = f"{ind}pass  # [tt:body L{s}-L{e} ({omitted}L of {fn}) -> read_file(offset={s}, limit={omitted})]"
+        if is_python:
+            marker = f"{ind}pass  # [tt:body L{s}-L{e} ({omitted}L of {fn}) -> read_file(offset={s}, limit={omitted})]"
+        else:
+            marker = f"{ind}// [tt:body L{s}-L{e} ({omitted}L of {fn}) -> read_file(offset={s}, limit={omitted})]"
         out.append(marker)
         cur = e + 1
 
@@ -174,13 +195,15 @@ def _skeletonize_ts(code: str, lang: str, min_body_lines: int = 8) -> str:
 
 def skeletonize_code_multilang(code: str, filename: str = "", min_body_lines: int = 8) -> str:
     """Skeletonize code in any supported language. Falls back to original if no savings."""
+    if not code or len(code) < 512:
+        return code
     lang = detect_language(code, filename)
     if lang == "python":
-        # Use existing Python ast-based skeletonizer
+        # First try Python's standard ast pruner
         try:
             from .pruners import smart_skeletonize_code
             result, saved, _ = smart_skeletonize_code(code)
-            if saved > 0:
+            if saved > 0 and len(result) < len(code):
                 return result
         except Exception:
             pass

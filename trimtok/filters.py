@@ -1,19 +1,36 @@
 """Command-specific terminal output filters for trimtok.
 
 Each filter parses a known command's output into a compact summary.
-Returns (summary, stats) or None if the command/output doesn't match.
+Returns summary string or None if the command/output doesn't match.
+All operations are strictly fail-open and never raise.
 """
-import re
 import os
+import re
+
+# Pre-compiled regexes for maximum throughput
+_RE_GIT_LOG_COMMITS = re.compile(r"^commit [0-9a-f]{7,}", re.M)
+_RE_GIT_LOG_AUTHORS = re.compile(r"^Author:\s*(.+)", re.M)
+_RE_GIT_LOG_DATES = re.compile(r"^Date:\s*(.+)", re.M)
+
+_RE_GIT_STATUS_MOD = re.compile(r"^\s*modified:\s*(.+)", re.M)
+_RE_GIT_STATUS_ADD = re.compile(r"^\s*new file:\s*(.+)", re.M)
+_RE_GIT_STATUS_DEL = re.compile(r"^\s*deleted:\s*(.+)", re.M)
+_RE_GIT_STATUS_UNT = re.compile(r"^	(.+)$", re.M)
+
+_RE_NPM_ADDED = re.compile(r"added \d+ packages")
+_RE_NPM_TREE = re.compile(r"^\s*[+`├└]--\s*(.+)", re.M)
+
+_RE_PIP_INSTALLED = re.compile(r"Successfully installed (.+)")
+_RE_PIP_SATISFIED = re.compile(r"Requirement already satisfied: (.+)")
 
 
 def _git_log_filter(output: str) -> str | None:
     """git log → commit count, authors, date range."""
-    commits = re.findall(r"^commit [0-9a-f]{7,}", output, re.M)
+    commits = _RE_GIT_LOG_COMMITS.findall(output)
     if len(commits) < 3:
         return None
-    authors = set(re.findall(r"^Author:\s*(.+)", output, re.M))
-    dates = re.findall(r"^Date:\s*(.+)", output, re.M)
+    authors = set(_RE_GIT_LOG_AUTHORS.findall(output))
+    dates = _RE_GIT_LOG_DATES.findall(output)
     lines = [
         f"[tt:git_log] {len(commits)} commits, {len(authors)} authors",
     ]
@@ -26,10 +43,10 @@ def _git_log_filter(output: str) -> str | None:
 
 def _git_status_filter(output: str) -> str | None:
     """git status → modified/added/deleted counts."""
-    modified = re.findall(r"^\s*modified:\s*(.+)", output, re.M)
-    added = re.findall(r"^\s*new file:\s*(.+)", output, re.M)
-    deleted = re.findall(r"^\s*deleted:\s*(.+)", output, re.M)
-    untracked = re.findall(r"^\t(.+)$", output, re.M)
+    modified = _RE_GIT_STATUS_MOD.findall(output)
+    added = _RE_GIT_STATUS_ADD.findall(output)
+    deleted = _RE_GIT_STATUS_DEL.findall(output)
+    untracked = _RE_GIT_STATUS_UNT.findall(output)
     total = len(modified) + len(added) + len(deleted) + len(untracked)
     if total < 3:
         return None
@@ -65,15 +82,13 @@ def _ls_filter(output: str) -> str | None:
 
 def _npm_filter(output: str) -> str | None:
     """npm install/list → summary."""
-    added = re.findall(r"added \d+ packages", output)
-    if not added and "up to date" not in output.lower():
-        return None
     lines = output.strip().splitlines()
-    if len(lines) < 5:
+    if len(lines) < 4:
         return None
-    pkgs = re.findall(r"^\s*[+├└]--\s*(.+)", output, re.M)
+    pkgs = _RE_NPM_TREE.findall(output)
     if pkgs and len(pkgs) >= 3:
         return f"[tt:npm] {len(pkgs)} packages listed"
+    added = _RE_NPM_ADDED.findall(output)
     if added:
         return f"[tt:npm] {added[0]}"
     if "up to date" in output.lower():
@@ -83,11 +98,11 @@ def _npm_filter(output: str) -> str | None:
 
 def _pip_filter(output: str) -> str | None:
     """pip install/list → summary."""
-    installed = re.findall(r"Successfully installed (.+)", output)
+    installed = _RE_PIP_INSTALLED.findall(output)
     if installed:
         pkgs = installed[0].split()
         return f"[tt:pip] installed {len(pkgs)} packages: {', '.join(pkgs[:5])}"
-    reqs = re.findall(r"Requirement already satisfied: (.+)", output)
+    reqs = _RE_PIP_SATISFIED.findall(output)
     if len(reqs) >= 3:
         return f"[tt:pip] {len(reqs)} requirements already satisfied"
     return None
@@ -106,6 +121,8 @@ def _find_filter(output: str) -> str | None:
         return None
     parts = [f"{ext}: {n}" for ext, n in sorted(exts.items(), key=lambda x: -x[1])[:5]]
     return f"[tt:find] {len(lines)} files — {', '.join(parts)}"
+
+
 _FILTERS = [
     (re.compile(r"\bgit\s+log\b", re.I), _git_log_filter),
     (re.compile(r"\bgit\s+status\b", re.I), _git_status_filter),
@@ -117,10 +134,15 @@ _FILTERS = [
 
 
 def try_command_filter(command: str, output: str) -> str | None:
-    """Try all registered filters. Returns summary or None."""
+    """Try all registered filters. Returns summary or None. Never raises."""
+    if not command or not output or not isinstance(output, str) or len(output) < 32:
+        return None
     for pattern, fn in _FILTERS:
-        if pattern.search(command or ""):
-            result = fn(output)
-            if result is not None:
-                return result
+        try:
+            if pattern.search(command):
+                res = fn(output)
+                if res is not None:
+                    return res
+        except Exception:
+            continue
     return None

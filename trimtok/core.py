@@ -64,6 +64,15 @@ except (ImportError, ValueError):
     from trimtok.pruners import prune_traceback, prune_unified_diff, collapse_success_output
     from trimtok.ccr import put as _ccr_put
 
+try:
+    from .filters import try_command_filter
+except Exception:
+    try:
+        from trimtok.filters import try_command_filter
+    except Exception:
+        def try_command_filter(c, o):  # type: ignore
+            return None
+
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][AB0]")
 
 _TS_PREFIX_RE = re.compile(
@@ -371,10 +380,6 @@ def compress_terminal(
                     "ms": (time.perf_counter() - t0) * 1000,
                 }
             # Command-specific filters
-            try:
-                from .filters import try_command_filter
-            except (ImportError, ValueError):
-                from trimtok.filters import try_command_filter
             filtered = try_command_filter(command, output)
             if filtered is not None and len(filtered) < len(output):
                 tb = estimate_tokens(output)

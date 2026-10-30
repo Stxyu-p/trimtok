@@ -743,6 +743,8 @@ def _try_merged_toon(text: str) -> str | None:
         if len(schemas) < 2:
             return None  # uniform — handled by fold_json_to_toon
         all_keys = list(dict.fromkeys(k for r in value for k in r.keys()))
+        if len(all_keys) > 64:
+            return None  # Schema too sparse, merged table would be mostly nulls
         tagged = []
         for i, row in enumerate(value):
             merged = {"__tt_row__": i}
@@ -1501,9 +1503,6 @@ def compress_tool_result(
                         folded = _cand
                         toon_used = True
                         toon_kind = "json_toon_merged"
-                        raise StopIteration
-            except StopIteration:
-                pass
             except Exception:
                 pass
             if not toon_used:
@@ -1517,10 +1516,6 @@ def compress_tool_result(
                             folded = _cand
                             toon_used = True
                             toon_kind = "json_toon_buckets"
-                            # Skip uniform TOON below
-                            raise StopIteration
-                except StopIteration:
-                    pass
                 except Exception:
                     pass
             if not toon_used:

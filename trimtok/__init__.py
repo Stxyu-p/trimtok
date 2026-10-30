@@ -753,27 +753,36 @@ def _ok(data: dict) -> str:
         return json.dumps(data, ensure_ascii=False)
 
 
-def _discover_summary() -> str:
-    """Scan telemetry to find shapes/tools with low savings and suggest filters."""
+def _iter_usage_rows():
+    """Stream telemetry rows from backup and current usage files. Never raises."""
     try:
         path = _usage_path()
         backup = path.with_name(path.name + ".1")
-        rows = []
         with _AUDIT_LOCK:
             for f in (backup, path):
-                if f.exists():
-                    for ln in f.read_text(encoding="utf-8").splitlines():
-                        s = ln.strip()
-                        if s.startswith("{"):
-                            try:
-                                rows.append(json.loads(s))
-                            except Exception:
-                                pass
-        if not rows:
-            return f"trimtok v{VERSION}: no usage logged yet."
-        terminal_rows = [r for r in rows if r.get("hook") in ("terminal", "tool")]
+                if not f.exists():
+                    continue
+                try:
+                    with open(f, "r", encoding="utf-8", errors="replace") as fh:
+                        for line in fh:
+                            line = line.strip()
+                            if line.startswith("{"):
+                                try:
+                                    yield json.loads(line)
+                                except Exception:
+                                    pass
+                except Exception:
+                    pass
+    except Exception:
+        return
+
+
+def _discover_summary() -> str:
+    """Scan telemetry to find shapes/tools with low savings and suggest filters."""
+    try:
+        terminal_rows = [r for r in _iter_usage_rows() if r.get("hook") in ("terminal", "tool")]
         if not terminal_rows:
-            return f"trimtok v{VERSION}: no terminal/tool events yet."
+            return f"trimtok v{VERSION}: no terminal/tool events logged yet."
 
         # By shape
         by_shape: dict = {}
@@ -839,30 +848,14 @@ def _discover_summary() -> str:
 def _gain_summary(days: int = 0) -> str:
     """Detailed gain report: savings by shape, tool, and bottleneck analysis."""
     try:
-        path = _usage_path()
-        backup = path.with_name(path.name + ".1")
+        cutoff = (time.time() - (days * 86400)) if days > 0 else 0.0
         rows = []
-        with _AUDIT_LOCK:
-            for f in (backup, path):
-                if f.exists():
-                    for ln in f.read_text(encoding="utf-8").splitlines():
-                        s = ln.strip()
-                        if s.startswith("{"):
-                            try:
-                                r = json.loads(s)
-                                rows.append(r)
-                            except Exception:
-                                pass
+        for r in _iter_usage_rows():
+            if cutoff and float(r.get("ts") or 0.0) < cutoff:
+                continue
+            rows.append(r)
         if not rows:
-            return f"trimtok v{VERSION}: no usage logged yet."
-
-        # Filter by days if specified
-        if days > 0:
-            cutoff = time.time() - (days * 86400)
-            rows = [r for r in rows if int(r.get("ts") or 0) >= cutoff]
-
-        if not rows:
-            return f"trimtok v{VERSION}: no usage in last {days} days."
+            return f"trimtok v{VERSION} gain: no usage logged yet."
 
         # Overall stats
         terminal_rows = [r for r in rows if r.get("hook") in ("terminal", "tool")]
@@ -953,19 +946,7 @@ def _gain_summary(days: int = 0) -> str:
         return f"trimtok v{VERSION}: gain unavailable ({e})."
 def _usage_summary() -> str:
     try:
-        path = _usage_path()
-        backup = path.with_name(path.name + ".1")
-        rows = []
-        with _AUDIT_LOCK:
-            for f in (backup, path):
-                if f.exists():
-                    for ln in f.read_text(encoding="utf-8").splitlines():
-                        s = ln.strip()
-                        if s.startswith("{"):
-                            try:
-                                rows.append(json.loads(s))
-                            except Exception:
-                                pass
+        rows = list(_iter_usage_rows())
         if not rows:
             return f"trimtok v{VERSION}: no usage logged yet."
         n_ok = sum(1 for r in rows if r.get("gate") == "ok")
