@@ -432,6 +432,11 @@ _ANCHOR_RE = re.compile(
 
 def score_anchor_preservation(original: str, candidate: str) -> float:
     # Navigation anchors (file:line, test names, errors) must survive compression
+    # Cheap prefilter: skip regex scan when no anchor-looking substring exists.
+    if ":" not in original and not any(
+        h in original for h in ("Error", "Exception", "FAILED", "PASSED", "ERROR:", "test_")
+    ):
+        return 1.0
     orig_anchors = set(_ANCHOR_RE.findall(original))
     if not orig_anchors:
         return 1.0

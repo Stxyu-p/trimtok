@@ -559,10 +559,16 @@ def compress_terminal(
                 "ms": (time.perf_counter() - t0) * 1000,
             }
         saved_chars = len(output) - len(new_output)
-        if saved_chars >= 0.80 * len(output) and kind not in ("log", "repeat"):
-            # Guard against over-compression destroying navigation anchors on code/diff/test outputs
+        if (
+            saved_chars >= 0.80 * len(output)
+            and kind not in ("log", "repeat")
+            and len(output) < 50_000
+        ):
+            # Guard against over-compression destroying navigation anchors on code/diff/test outputs.
+            # The check only matters below 50 KB: at/above it the revert never fires, so scoring
+            # multi-megabyte outputs (~2 s on 1 MB) is dead work for no decision.
             anchor_score = score_anchor_preservation(output, new_output)
-            if anchor_score < 0.70 and len(output) < 50_000:
+            if anchor_score < 0.70:
                 return output, {
                     "gate": "reverted_gate", "kind": kind, "reason": "low_anchor_preservation",
                     "before_chars": len(output), "after_chars": len(output),
