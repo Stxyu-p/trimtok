@@ -148,7 +148,8 @@ def _after_chars(stats: dict, before: int) -> int:
 
 
 def _terminal_shape(stats: dict) -> str:
-    if str(stats.get("kind") or "") in ("json", "json_toon", "json_toon_buckets"):
+    kind = str(stats.get("kind") or stats.get("toon_kind") or "")
+    if kind in ("json", "json_toon", "json_toon_buckets"):
         return "json"
     if stats.get("partial") or stats.get("omitted_errors"):
         return "err-dense"
@@ -160,7 +161,7 @@ def _terminal_shape(stats: dict) -> str:
 
 
 def _tool_shape(stats: dict) -> str:
-    kind = str(stats.get("kind") or "")
+    kind = str(stats.get("kind") or stats.get("toon_kind") or "")
     if kind == "lockfile":
         return "lockfile"
     if kind in ("json_toon", "json_toon_buckets"):
@@ -208,6 +209,9 @@ def _usage_terminal(command: Any, output: Any, stats: dict, ctx: Any) -> None:
             "hash": str(stats.get("digest") or ""),
             "shape": _terminal_shape(stats),
             "reason": stats.get("reason"),
+            "toon_saved": int(stats.get("toon_saved") or 0),
+            "toon_kind": stats.get("toon_kind"),
+            "toon_used": bool(stats.get("toon_used", False)),
         }, ctx=ctx)
     except Exception:
         pass
@@ -232,6 +236,9 @@ def _usage_tool(tool_name: Any, result: Any, stats: dict, ctx: Any) -> None:
             "fold": int(stats.get("fold_saved") or 0),
             "intra": int(stats.get("intra_saved") or 0),
             "skeleton": int(stats.get("skeleton_saved") or 0),
+            "toon_saved": int(stats.get("toon_saved") or 0),
+            "toon_kind": stats.get("toon_kind"),
+            "toon_used": bool(stats.get("toon_used", False)),
             "reason": stats.get("reason"),
         }, ctx=ctx)
     except Exception:

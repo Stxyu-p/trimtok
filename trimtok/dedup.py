@@ -726,6 +726,47 @@ def invalidate_shell_mutations(command: str, session_id: str = "") -> int:
         return 0
 
 
+def _try_mixed_schema_toon(text: str) -> str | None:
+    """Try mixed-schema JSON array bucketing. Returns compressed string or None."""
+    if len(text) > 65536 or not text.lstrip().startswith("["):
+        return None
+    try:
+        from .toon_codec import toon_decode, strict_eq
+        value = _json.loads(text)
+        if not isinstance(value, list) or len(value) < 3 or not all(isinstance(r, dict) for r in value):
+            return None
+        shapes: dict = {}
+        for index, row in enumerate(value):
+            if "__tt_row__" in row:
+                return None
+            shapes.setdefault(tuple(sorted(row)), []).append((index, row))
+        if len(shapes) < 2:
+            return None  # uniform — handled by fold_json_to_toon
+        blocks: list[str] = []
+        restored: list = [None] * len(value)
+        for bucket, indexed_rows in enumerate(shapes.values(), 1):
+            tagged = [{"__tt_row__": index, **row} for index, row in indexed_rows]
+            raw_bucket = _json.dumps(tagged, ensure_ascii=False, separators=(",", ":"))
+            table = fold_json_to_toon(raw_bucket)
+            parsed = toon_decode(table) if table != raw_bucket else _json.loads(raw_bucket)
+            if not strict_eq(parsed, tagged):
+                return None
+            for row in parsed:
+                index = row.pop("__tt_row__", None)
+                if not isinstance(index, int) or index < 0 or index >= len(restored) or restored[index] is not None:
+                    return None
+                restored[index] = row
+            blocks.append(f"##bucket {bucket} rows={len(indexed_rows)}\n" + (table if table != raw_bucket else raw_bucket))
+        if not strict_eq(restored, value):
+            return None
+        candidate = "\n".join(["[tt:json_toon_buckets]", _TOON_LEGEND, *blocks])
+        # CCR store
+        ref = _ccr_put(text)
+        if not ref:
+            return None
+        return f"[@{ref}]\n" + candidate.replace("[tt:json_toon_buckets]", f"[tt:json_toon_buckets rows={len(value)} groups={len(shapes)}; restore order by __tt_row__]", 1)
+    except Exception:
+        return None
 def _extract_file_args(args: Any) -> tuple[str, int | None, int | None]:
     """Extract normalized (file_path, offset, limit) from tool arguments."""
     if isinstance(args, str) and args.strip().startswith("{"):
@@ -1349,6 +1390,7 @@ def compress_tool_result(
         grouped, ss_saved = group_search_hits(text, owner=_rh, deadline=deadline)
         t_saved = 0
         toon_used = False
+        toon_kind = ""
         f_saved = 0
         i_saved = 0
         dt_saved = 0
@@ -1388,15 +1430,33 @@ def compress_tool_result(
         remember(text, session_id, owner=_rh)
         if toon_enabled:
             try:
-                _cand = fold_json_to_toon(folded)
-                if _cand != folded:
-                    _cand = _TOON_LEGEND + "\n" + _cand
+                # Mixed-schema JSON arrays: bucket by schema, tag rows, fold each.
+                _mixed = _try_mixed_schema_toon(folded)
+                if _mixed is not None and len(_mixed) < len(folded):
+                    _cand = _TOON_LEGEND + "\n" + _mixed if _TOON_LEGEND not in _mixed else _mixed
                     if len(_cand) < len(folded) and estimate_bpe_gain(folded, _cand) >= 4:
                         t_saved = len(folded) - len(_cand)
                         folded = _cand
                         toon_used = True
+                        toon_kind = "json_toon_buckets"
+                        # Skip uniform TOON below
+                        raise StopIteration
+            except StopIteration:
+                pass
             except Exception:
                 pass
+            if not toon_used:
+                try:
+                    _cand = fold_json_to_toon(folded)
+                    if _cand != folded:
+                        _cand = _TOON_LEGEND + "\n" + _cand
+                        if len(_cand) < len(folded) and estimate_bpe_gain(folded, _cand) >= 4:
+                            t_saved = len(folded) - len(_cand)
+                            folded = _cand
+                            toon_used = True
+                            toon_kind = "json_toon"
+                except Exception:
+                    pass
         if len(folded) >= len(result):
             failed_hashes.add(_rh)
             return result, {
@@ -1446,6 +1506,7 @@ def compress_tool_result(
             "hygiene_saved": h_saved, "volatile_saved": v_saved,
             "minify_saved": m_saved, "toon_saved": t_saved,
             "toon_used": toon_used,
+            "toon_kind": toon_kind if toon_used else "",
             "fold_saved": f_saved, "intra_saved": i_saved,
             "intra_template_saved": dt_saved,
             "search_saved": ss_saved,
