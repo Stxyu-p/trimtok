@@ -43,8 +43,6 @@ from .pruners import (
     prune_unified_diff,
     skeletonize_code,
 )
-from .prerewrite import rewrite_command
-from .compaction import stash_old_tool_results
 
 _MAX_GREP_PATTERN_CHARS = 256
 _MAX_GREP_INPUT_CHARS = 1_000_000
@@ -150,7 +148,7 @@ def _after_chars(stats: dict, before: int) -> int:
 
 
 def _terminal_shape(stats: dict) -> str:
-    if str(stats.get("kind") or "") == "json":
+    if str(stats.get("kind") or "") in ("json", "json_toon", "json_toon_buckets"):
         return "json"
     if stats.get("partial") or stats.get("omitted_errors"):
         return "err-dense"
@@ -162,6 +160,10 @@ def _terminal_shape(stats: dict) -> str:
 
 
 def _tool_shape(stats: dict) -> str:
+    if stats.get("kind") == "lockfile":
+        return "lockfile"
+    if str(stats.get("kind") or "") in ("json_toon", "json_toon_buckets"):
+        return "json"
     if stats.get("gate") == "passthrough_reference":
         # read_file verbatim band: its own shape, or it vanishes into "mixed"
         # and hides 15% of all tokens sitting at 0% saving.

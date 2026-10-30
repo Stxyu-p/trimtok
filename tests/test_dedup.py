@@ -2,7 +2,9 @@
 
 import os
 import sys
+import tempfile
 
+os.environ.setdefault("TRIMTOK_DATA_DIR", tempfile.mkdtemp(prefix="trimtok-test-dedup-"))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from trimtok.dedup import (
@@ -18,6 +20,10 @@ from trimtok.dedup import (
     note_turn,
     remember,
 )
+from trimtok.ccr import default_dir as _ccr_default_dir
+from trimtok.ccr import get as ccr_get
+from trimtok.signals import SENTINEL_RE
+from pathlib import Path as _Path
 
 
 def check(name, cond):
@@ -25,6 +31,8 @@ def check(name, cond):
     if not cond:
         check.failed += 1
 check.failed = 0
+
+check("direct-test-ccr-isolated", _Path(_ccr_default_dir()) == _Path(os.environ["TRIMTOK_DATA_DIR"]))
 
 SID = "test-session"
 
@@ -94,6 +102,30 @@ check("read-verbatim", out3 == big_read and st3["gate"] == "passthrough_referenc
 out4, st4 = compress_tool_result(
     "search_files", ("content line\n" * 500) + "w" * 1000, session_id=SID + "2")
 check("fold-against-read", st4["gate"] == "ok" and "[@#" in out4)
+
+# 4b. repeated slice and small file reads in same session collapse to cache hits
+_slice_content = "10|def foo():\n11|    return 42\n" + ("12|    # comment\n" * 40)
+_slice_args = {"path": "module/foo.py", "offset": 10, "limit": 42}
+_s_out1, _s_st1 = compress_tool_result("read_file", _slice_content, args=_slice_args, session_id="slice-dedup")
+check("read-file-slice-cold-verbatim", _s_out1 == _slice_content and _s_st1["gate"] == "passthrough_reference")
+_s_out2, _s_st2 = compress_tool_result("read_file", _slice_content, args=_slice_args, session_id="slice-dedup")
+check("read-file-slice-repeat-hit", _s_st2.get("gate") == "ok" and _s_st2.get("kind") == "file_cache_hit" and "[tt:file_unchanged" in _s_out2)
+
+_small_file = "1|print('hello')\n" + ("2|# small\n" * 30)
+_small_args = {"path": "config.py", "offset": 1, "limit": 2000}
+_sf_out1, _sf_st1 = compress_tool_result("read_file", _small_file, args=_small_args, session_id="small-file-dedup")
+check("read-file-small-cold-verbatim", _sf_out1 == _small_file and _sf_st1["gate"] == "passthrough_reference")
+_sf_out2, _sf_st2 = compress_tool_result("read_file", _small_file, args=_small_args, session_id="small-file-dedup")
+check("read-file-small-repeat-hit", _sf_st2.get("gate") == "ok" and _sf_st2.get("kind") == "file_cache_hit" and "[tt:file_unchanged" in _sf_out2)
+
+# 4c. lockfile collapse: large machine-generated lockfile collapses to a CCR-backed stub
+_lock_body = __import__("json").dumps({"name": "app", "version": "1.0.0", "packages": {f"pkg-{i}": {"v": f"0.{i}"} for i in range(300)}}, indent=2)
+_lock_lines = "\n".join(f"{i+1}|{l}" for i, l in enumerate(_lock_body.splitlines()))
+_lock_args = {"path": "package-lock.json", "offset": 1, "limit": 2000}
+_lk_out, _lk_st = compress_tool_result("read_file", _lock_lines, args=_lock_args, session_id="lockfile-collapse")
+check("lockfile-collapses", _lk_st.get("gate") == "ok" and _lk_st.get("kind") == "lockfile" and len(_lk_out) < len(_lock_lines) * 0.2)
+_lk_refs = [r for m in SENTINEL_RE.finditer(_lk_out) for r in __import__("re").findall(r"#(c[0-9A-Za-z]+)", m.group())]
+check("lockfile-ref-resolves", bool(_lk_refs) and ccr_get(_lk_refs[0]) == _lock_lines)
 
 # 5. sentinel passthrough
 out5, st5 = compress_tool_result("search_files", out2, session_id=SID)

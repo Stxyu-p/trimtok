@@ -4,11 +4,15 @@ import os
 import sys
 import tempfile
 import time
+from pathlib import Path as _Path
 
+os.environ.setdefault("TRIMTOK_DATA_DIR", tempfile.mkdtemp(prefix="trimtok-test-core-"))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from trimtok.core import LEGEND, SENTINEL_RE, compress_terminal, detect_kind, is_important, strip_ansi
 from trimtok.ccr import get as ccr_get, put as ccr_put, stats as ccr_stats
+from trimtok.ccr import default_dir as ccr_default_dir
+import trimtok as plugin
 
 
 def check(name, cond):
@@ -16,6 +20,12 @@ def check(name, cond):
     if not cond:
         check.failed += 1
 check.failed = 0
+
+check("direct-test-ccr-isolated", ccr_default_dir() == _Path(os.environ["TRIMTOK_DATA_DIR"]))
+check("terminal-json-toon-shape", plugin._terminal_shape({"kind": "json_toon"}) == "json")
+check("terminal-mixed-toon-shape", plugin._terminal_shape({"kind": "json_toon_buckets"}) == "json")
+check("tool-json-toon-shape", plugin._tool_shape({"kind": "json_toon"}) == "json")
+check("tool-mixed-toon-shape", plugin._tool_shape({"kind": "json_toon_buckets"}) == "json")
 
 
 # 1. small output passthrough

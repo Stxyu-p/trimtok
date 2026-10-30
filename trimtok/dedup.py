@@ -692,6 +692,11 @@ _READ_FILE_TOOLS = frozenset({
 _DEFAULT_LIMIT_FLOOR = 500   # Hermes default limit=2000; an explicit slice <500 is targeted
 _FILE_KEEP_TURNS = 8         # file bodies stay relevant far longer than 2 tool steps
 _NUMBERED_LINE_RE = re.compile(r"^(\s*(\d+)\|)(.*)$")
+_LOCKFILE_NAMES = frozenset({
+    "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "cargo.lock",
+    "poetry.lock", "pipfile.lock", "composer.lock", "gemfile.lock", "flake.lock",
+})
+_LOCKFILE_MIN_CHARS = 4096
 
 # Shell commands that can change files on disk -> the cached file body is stale.
 _MUTATING_SHELL_RE = re.compile(
@@ -926,28 +931,71 @@ def _handle_read_file_v42(
     so the payload is unwrapped to raw source first and the original line
     numbers are re-attached to whatever we emit.
     """
+    json_envelope = None
+    file_body = result
+    if result.lstrip().startswith("{"):
+        try:
+            parsed = fast_json_loads(result)
+            if isinstance(parsed, dict) and "content" in parsed and isinstance(parsed["content"], str):
+                json_envelope = parsed
+                file_body = parsed["content"]
+        except Exception:
+            pass
+
+    def _pack(s: str) -> str:
+        if json_envelope is not None:
+            try:
+                return _json.dumps(dict(json_envelope, content=s))
+            except Exception:
+                pass
+        return s
+
     norm_path, offset, limit = _extract_file_args(args)
     digest = hashlib.sha256(result.encode("utf-8", "replace")).hexdigest()[:12]
-    raw_body, prefixes, line_nos, headers, footers = _unwrap_numbered_lines(result)
+    raw_body, prefixes, line_nos, headers, footers = _unwrap_numbered_lines(file_body)
     clean_text, _ = hygiene(raw_body)
     remember(clean_text, session_id, owner=digest)
 
+    fname = os.path.basename(norm_path).lower() if norm_path else ""
+    if (fname in _LOCKFILE_NAMES or fname.endswith(".lock")) and len(result) >= _LOCKFILE_MIN_CHARS:
+        _lk_ref = _ccr_put(result)
+        if _lk_ref:
+            lines = file_body.splitlines()
+            head_lines = lines[:8]
+            tail_lines = lines[-4:] if len(lines) > 12 else []
+            body_preview = "\n".join(head_lines + [f"  [... {len(lines) - len(head_lines) - len(tail_lines)} lines collapsed ...]"] + tail_lines)
+            stub = (
+                f"[@#{_lk_ref.lstrip('#')}]\n"
+                f"[tt:lockfile path=\"{norm_path}\" "
+                f"({len(lines)}L, {len(result)} chars) — machine-generated lockfile collapsed -> trimtok_retrieve \"#{_lk_ref.lstrip('#')}\"]\n"
+                f"{body_preview}"
+            )
+            final_stub = _pack(stub)
+            tb, ta = _tok_pair(result, final_stub)
+            if len(final_stub) < len(result) and ta < tb:
+                return final_stub, {
+                    "gate": "ok",
+                    "kind": "lockfile",
+                    "digest": _lk_ref.lstrip("#"),
+                    "before_chars": len(result),
+                    "after_chars": len(final_stub),
+                    "saved_chars": len(result) - len(final_stub),
+                    "est_tokens_before": tb,
+                    "est_tokens_after": ta,
+                    "fold_saved": len(result) - len(final_stub),
+                    "ms": (time.perf_counter() - t0) * 1000,
+                }
+
     first_line_no = line_nos[0] if line_nos else (offset if offset and offset > 0 else 1)
     n_lines = len(line_nos) if line_nos else (raw_body.count("\n") + 1)
-
-    # Rule 0: a targeted slice (or a small file) stays verbatim so that a
-    # subsequent patch is never handed a mangled body.
-    if len(result) < min_chars or _is_targeted_slice(offset, limit, first_line_no, n_lines):
-        return result, {
-            "gate": "passthrough_reference", "digest": digest,
-            "reason": "small" if len(result) < min_chars else "targeted_slice",
-            "ms": (time.perf_counter() - t0) * 1000,
-        }
+    is_slice = _is_targeted_slice(offset, limit, first_line_no, n_lines)
+    is_small = len(result) < min_chars
 
     with _SEEN_LOCK:
         seen = _seen(session_id)
         file_cache: dict[str, dict] = seen.setdefault("files", {})
-        cache_key = norm_path or f"__anon_{digest}"
+        slice_tag = f"::L{first_line_no}+{n_lines}" if is_slice else ""
+        cache_key = f"{norm_path}{slice_tag}" if norm_path else f"__anon_{digest}"
         prev_entry = file_cache.get(cache_key)
 
         # Case A: the same file is read again with identical content.
@@ -969,27 +1017,49 @@ def _handle_read_file_v42(
                 }
             prev_entry["reads"] = prev_entry.get("reads", 1) + 1
             prev_entry["stub_hits"] = prev_entry.get("stub_hits", 0) + 1
+            _ref = _ccr_put(result)
+            _ref_tag = _ref.lstrip("#") if _ref else digest
             outline = _build_file_outline(raw_body, line_nos=line_nos)
             stub = (
-                f"[tt:file_unchanged #{digest} path=\"{norm_path or 'file'}\" "
+                f"[tt:file_unchanged #{_ref_tag} path=\"{norm_path or 'file'}\" "
                 f"({len(result)} chars, {n_lines}L) — identical to prior read in active context]\n"
                 f"Outline (read_file offset/limit for exact lines):\n"
                 f"{outline}"
             )
-            tb, ta = _tok_pair(result, stub)
-            if len(stub) < len(result) and ta < tb:
-                return stub, {
+            final_stub = _pack(stub)
+            tb, ta = _tok_pair(result, final_stub)
+            if len(final_stub) < len(result) and ta < tb:
+                return final_stub, {
                     "gate": "ok",
                     "kind": "file_cache_hit",
-                    "digest": digest,
+                    "digest": _ref_tag,
                     "before_chars": len(result),
-                    "after_chars": len(stub),
-                    "saved_chars": len(result) - len(stub),
+                    "after_chars": len(final_stub),
+                    "saved_chars": len(result) - len(final_stub),
                     "est_tokens_before": tb,
                     "est_tokens_after": ta,
-                    "fold_saved": len(result) - len(stub),
+                    "fold_saved": len(result) - len(final_stub),
                     "ms": (time.perf_counter() - t0) * 1000,
                 }
+
+        # Rule 0: cold targeted slices or small files pass through verbatim on first read.
+        if is_small or is_slice:
+            if len(file_cache) >= _MAX_FILE_CACHE:
+                for _old_key in list(file_cache.keys())[: len(file_cache) - _MAX_FILE_CACHE + 1]:
+                    file_cache.pop(_old_key, None)
+            file_cache[cache_key] = {
+                "digest": digest, "text": result, "raw_body": raw_body,
+                "reads": 1, "stub_hits": 0, "expired": False, "skeleton_only": False,
+            }
+            try:
+                _ccr_put(result)
+            except Exception:
+                pass
+            return result, {
+                "gate": "passthrough_reference", "digest": digest,
+                "reason": "small" if is_small else "targeted_slice",
+                "ms": (time.perf_counter() - t0) * 1000,
+            }
 
         # Case B: the file was modified since the last read -> contextual delta.
         if norm_path and prev_entry is not None and prev_entry.get("digest") != digest:
