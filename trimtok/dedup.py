@@ -1041,6 +1041,25 @@ def _handle_read_file_v42(
                     "fold_saved": len(result) - len(final_stub),
                     "ms": (time.perf_counter() - t0) * 1000,
                 }
+            # Minimal pointer fallback: outline overhead can exceed savings on small files.
+            minimal_stub = _pack(
+                f"[tt:file_unchanged #{_ref_tag} path=\"{norm_path or 'file'}\" "
+                f"({len(result)} chars, {n_lines}L)]"
+            )
+            tb2, ta2 = _tok_pair(result, minimal_stub)
+            if len(minimal_stub) < len(result) and ta2 < tb2:
+                return minimal_stub, {
+                    "gate": "ok",
+                    "kind": "file_cache_hit",
+                    "digest": _ref_tag,
+                    "before_chars": len(result),
+                    "after_chars": len(minimal_stub),
+                    "saved_chars": len(result) - len(minimal_stub),
+                    "est_tokens_before": tb2,
+                    "est_tokens_after": ta2,
+                    "fold_saved": len(result) - len(minimal_stub),
+                    "ms": (time.perf_counter() - t0) * 1000,
+                }
 
         # Rule 0: cold targeted slices or small files pass through verbatim on first read.
         if is_small or is_slice:

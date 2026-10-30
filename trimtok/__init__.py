@@ -160,10 +160,19 @@ def _terminal_shape(stats: dict) -> str:
 
 
 def _tool_shape(stats: dict) -> str:
-    if stats.get("kind") == "lockfile":
+    kind = str(stats.get("kind") or "")
+    if kind == "lockfile":
         return "lockfile"
-    if str(stats.get("kind") or "") in ("json_toon", "json_toon_buckets"):
+    if kind in ("json_toon", "json_toon_buckets"):
         return "json"
+    if kind == "file_structure":
+        return "doc-structure"
+    if kind == "file_cache_hit":
+        return "cache-hit"
+    if kind == "file_delta":
+        return "delta"
+    if kind == "file_clean":
+        return "minify"
     if stats.get("gate") == "passthrough_reference":
         # read_file verbatim band: its own shape, or it vanishes into "mixed"
         # and hides 15% of all tokens sitting at 0% saving.
@@ -211,6 +220,7 @@ def _usage_tool(tool_name: Any, result: Any, stats: dict, ctx: Any) -> None:
             "ts": int(time.time()),
             "hook": "tool",
             "tool": str(tool_name or "tool"),
+            "kind": stats.get("kind"),
             "gate": stats.get("gate"),
             "before": len(res),
             "after": _after_chars(stats, len(res)),
