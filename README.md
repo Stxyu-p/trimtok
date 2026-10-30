@@ -53,21 +53,23 @@ Autonomous coding agents (Claude Code, Cursor, Windsurf, Codex, Antigravity, Her
 
 ---
 
-## 🥊 Market Comparison: Trimtok vs Industry Alternatives
+## 🥊 Market Comparison: trimtok vs Alternatives
 
-Real empirical benchmarks measured across 16 authentic production payloads (234,176 characters):
-
-| Feature / Metric | **trimtok v5.2.0** 🌟 | RTK (Rust Token Killer) | Repomix | Jina Reader / Trafilatura | Squeez |
+| Capability | trimtok | RTK | Repomix | Jina/Trafilatura | Squeez |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **Execution Layer** | **In-Process Hook + CLI** | External CLI Proxy | AST Code Packager | Web Scraping API | Hook Minifier |
-| **Cross-Turn Stateful Delta** | ✅ **`[tt:delta]` (>95% saved)** | ❌ None | ❌ None | ❌ None | ❌ None |
-| **Framework Traceback Pruning** | ✅ **77.0% reduction** (locks crash site) | ❌ Raw or stripped | ❌ None | ❌ None | ❌ None |
-| **Lossless JSON Transcoding** | ✅ **TOON v2 (57.0% reduction)** | ❌ None | ❌ None | ❌ None | ❌ None |
-| **`read_file` Code Compression** | ✅ **Tiered Shaving (100% Patch Safe)** | ⚠️ Wipes 100% of bodies | ⚠️ Wipes bodies | ❌ None | ⚠️ Cosmetic only |
-| **Web Docs & Search Scrapes** | ✅ **76.8% – 96.1% saved** | ❌ None | ❌ None | ⚠️ Leaves 40% URL bloat | ❌ None |
-| **Single-Turn Comprehension** | ✅ **Keeps short helpers (<20L)** | ❌ 0% kept (Forces extra turns) | ❌ 0% kept | ⚠️ Full narrative bloat | ✅ 100% kept |
-| **Full Original Retrieval** | ✅ **Content-Addressed (`#c1`)** | ❌ Lost permanently | ❌ None | ❌ None | ❌ None |
-| **Average In-Process Latency** | **< 2 ms** | 10–50 ms | 50–200 ms | 500–2,500 ms (Cloud) | < 1 ms |
+| Cross-turn delta | ✅ `[tt:delta]` | ❌ | ❌ | ❌ | ❌ |
+| Traceback pruning | ✅ 77% | ❌ | ❌ | ❌ | ❌ |
+| TOON JSON encoding | ✅ 57% | ❌ | ❌ | ❌ | ❌ |
+| Code skeleton | ✅ 7 langs | ⚠️ sigs only | ⚠️ wipes bodies | ❌ | ⚠️ cosmetic |
+| Web/doc intake | ✅ 77-96% | ❌ | ❌ | ⚠️ 40% bloat left | ❌ |
+| Full original retrieval | ✅ `#c1` CCR | ❌ lost | ❌ | ❌ | ❌ |
+| In-process latency | < 2 ms | 10-50 ms | 50-200 ms | 500-2500 ms | < 1 ms |
+
+**Where trimtok is stronger:** Cross-turn delta, traceback pruning, web/doc intake, lossless retrieval, in-process speed.
+
+**Where trimtok is weaker:** Code skeleton covers 7 languages (skim covers 17). Command-specific filters cover 6 commands (RTK covers 12). Mixed-schema JSON savings 41% (headroom 46%).
+
+**Honest production telemetry:** 4,456 events, 11.66M chars → 1.10M saved (9.5% overall, 27.2% terminal, 5.2% tool). Numbers from real agent sessions, not synthetic benchmarks.
 
 ---
 
@@ -125,8 +127,25 @@ trimtok retrieve "#c1" --section errors      # Error lines with surrounding cont
 trimtok retrieve "#c1" --section diff        # Unified diff hunks with headers
 trimtok retrieve "#c1" --section tail        # Last N lines
 trimtok retrieve "#c1" --grep "ConnectionReset" # Bounded regex search
-trimtok retrieve "#c1" --offset 50 --limit 30   # Line-numbered pagination
-```
+### 6. Command-Specific Output Filters
+Noisy dev commands are detected and replaced with compact summaries + CCR reference:
+- **`git log`** → commit count, authors, date range
+- **`git status`** → branch, staged/unstaged/untracked counts
+- **`ls -la`** → file count by type (files/dirs)
+- **`npm install`** → package count + installed names
+- **`pip install`** → installed package count
+- **`find`** → file count by extension
+- Full output preserved via `#c1` CCR reference
+
+### 7. Multi-Language AST Code Skeletonizer
+Source files ≥ 2 KB are skeletonized using tree-sitter AST parsing:
+- **Languages:** Python, JavaScript/TypeScript, Go, Rust, Java, C, C++
+- **Preserves:** function/class signatures, braces, imports
+- **Folds:** function bodies ≥ 8 lines
+- **Patch-safe:** original file untouched; CCR reference for full content
+
+### 8. Merged-Schema TOON
+Heterogeneous JSON arrays (mixed schemas) are unified into a single TOON table with null-filled missing fields — better compression than bucketing by schema alone.
 
 ---
 
@@ -198,7 +217,10 @@ plugins:
 ### Hermes In-Chat Slash Commands
 - **`/trimtok status`**: Displays active CCR database size, cache entries, Zstandard compression metrics, and engine health.
 - **`/trimtok usage`**: Shows live telemetry breakdown across terminal and tool hooks (events, folds, chars saved, top gates).
+- **`/trimtok gain`**: Detailed savings breakdown by shape, tool, and command — identifies bottlenecks.
+- **`/trimtok discover`**: Scans telemetry → finds low-savings shapes/tools → suggests targeted filters.
 - **`/trimtok purge`**: Purges expired cache entries and vacuums the SQLite WAL database.
+- **`/trimtok recall <#ref>`**: Retrieves original output by CCR reference (alias for `retrieve`).
 
 ### Standalone CLI Wrapper (`trimtok wrap`)
 Run noisy developer commands directly in your terminal or CI/CD pipelines without Hermes:
@@ -209,6 +231,10 @@ trimtok wrap -- cargo test
 
 # Strictly preserves child process exit code
 trimtok wrap -- npm test || echo "Failed with exit code $?"
+
+# Retrieve original output anytime
+trimtok retrieve "#c1"
+trimtok recall "#c1" --offset 50 --limit 30
 ```
 
 ---
