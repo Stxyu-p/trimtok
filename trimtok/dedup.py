@@ -1252,6 +1252,19 @@ def _handle_read_file_v42(
             )
             sk_kind = "file_skeleton"
             _ext = (norm_path or "").rsplit(".", 1)[-1].lower() if "." in (norm_path or "") else ""
+            if not (sk_saved > 200 and fn_count > 0):
+                try:
+                    from .ts_skeleton import skeletonize_code_full
+                    sk_cand, sk_cand_saved, sk_cand_count = skeletonize_code_full(
+                        raw_body, filename=norm_path, ref=f"#{_sk_ref.lstrip('#')}",
+                        line_prefixes=prefixes, line_nos=line_nos,
+                    )
+                    if sk_cand_saved > 200 and sk_cand_count > 0:
+                        sk_body = sk_cand
+                        sk_saved = sk_cand_saved
+                        fn_count = sk_cand_count
+                except Exception:
+                    pass
             if not (sk_saved > 200 and fn_count > 0) and _ext in _TEXT_STRUCT_EXTS:
                 # Not Python (markdown/yaml/rst/jsonl): the AST lane has nothing to
                 # say, so fold prose instead of shipping the whole file verbatim.

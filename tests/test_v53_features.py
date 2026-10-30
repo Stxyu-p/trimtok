@@ -168,5 +168,68 @@ class TestMergedTOON(unittest.TestCase):
         self.assertIsNone(res)
 
 
+class TestReadFileMultiLangAST(unittest.TestCase):
+    def test_read_file_typescript_skeletonizer(self):
+        from trimtok.dedup import _handle_read_file_v42
+        import time
+
+        funcs = []
+        for i in range(50):
+            funcs.append(f"""function compute_{i}(req, res) {{
+    const a = {i};
+    const b = a * 2;
+    const c = b * 3;
+    const d = c + 4;
+    const e = d - 5;
+    const f = e * 6;
+    const g = f / 7;
+    const h = g + 8;
+    return h;
+}}""")
+        raw = "\n\n".join(funcs)
+        lines = raw.split("\n")
+        numbered = "\n".join(f"{i+1}|{lines[i]}" for i in range(len(lines)))
+
+        out, stats = _handle_read_file_v42(
+            numbered, "sess_ts_test", {"path": "server.ts", "offset": 1, "limit": 2000},
+            min_chars=2048, t0=time.perf_counter()
+        )
+        self.assertEqual(stats.get("gate"), "ok")
+        self.assertEqual(stats.get("kind"), "file_skeleton")
+        self.assertGreater(stats.get("saved_chars", 0), 3000)
+        self.assertIn("// [tt:body L", out)
+        self.assertNotIn("pass  #", out)
+
+    def test_read_file_go_skeletonizer(self):
+        from trimtok.dedup import _handle_read_file_v42
+        import time
+
+        funcs = []
+        for i in range(50):
+            funcs.append(f"""func HandleItem_{i}(w http.ResponseWriter, r *http.Request) {{
+    val := {i}
+    doubled := val * 2
+    tripled := doubled * 3
+    added := tripled + 4
+    subbed := added - 5
+    mult := subbed * 6
+    div := mult / 7
+    result := div + 8
+    fmt.Fprintf(w, "Result: %d", result)
+}}""")
+        raw = "package main\n\nimport (\n\t\"fmt\"\n\t\"net/http\"\n)\n\n" + "\n\n".join(funcs)
+        lines = raw.split("\n")
+        numbered = "\n".join(f"{i+1}|{lines[i]}" for i in range(len(lines)))
+
+        out, stats = _handle_read_file_v42(
+            numbered, "sess_go_test", {"path": "main.go", "offset": 1, "limit": 2000},
+            min_chars=2048, t0=time.perf_counter()
+        )
+        self.assertEqual(stats.get("gate"), "ok")
+        self.assertEqual(stats.get("kind"), "file_skeleton")
+        self.assertGreater(stats.get("saved_chars", 0), 3000)
+        self.assertIn("// [tt:body L", out)
+
+
 if __name__ == "__main__":
     unittest.main()

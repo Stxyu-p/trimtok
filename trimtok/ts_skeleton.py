@@ -1,8 +1,8 @@
 """Multi-language AST code skeletonizer using tree-sitter.
 
 Extracts signatures, classes, interfaces, and folds large function bodies.
-Falls back to Python's built-in ast for .py files when tree-sitter unavailable.
-All operations are 100% fail-open, non-recursive, and never raise.
+Supports Python, JavaScript/TypeScript, Go, Rust, Java, C, and C++.
+All operations are 100% fail-open, non-recursive, patch-safe, and never raise.
 """
 import os
 import re
@@ -90,23 +90,36 @@ def detect_language(code: str, filename: str = "") -> str:
     return "unknown"
 
 
-def _skeletonize_ts(code: str, lang: str, min_body_lines: int = 8) -> str:
-    """Extract signatures and fold function bodies using tree-sitter. Iterative & fail-open."""
+def _skeletonize_ts_core(
+    code: str,
+    lang: str,
+    min_body_lines: int = 8,
+    ref: str = "",
+    line_prefixes: list[str] | None = None,
+    line_nos: list[int] | None = None,
+) -> tuple[str, int, int]:
+    """Extract signatures and fold function bodies using tree-sitter. Returns (text, saved_chars, count)."""
     ts = _get_ts_lang(lang)
     if ts is None:
-        return code
+        return code, 0, 0
     _, parser = ts
     try:
         raw_bytes = code.encode("utf-8", errors="replace")
         tree = parser.parse(raw_bytes)
     except Exception:
-        return code
+        return code, 0, 0
 
     if tree is None or tree.root_node is None:
-        return code
+        return code, 0, 0
 
     lines = code.split("\n")
-    n = len(lines)
+    total_lines = len(lines)
+    use_prefixes = (
+        line_prefixes is not None
+        and line_nos is not None
+        and len(line_prefixes) == total_lines
+        and len(line_nos) == total_lines
+    )
 
     # Collect ranges to fold: (start_line_1idx, end_line_1idx, indent_str, name)
     fold_ranges = []
@@ -142,7 +155,7 @@ def _skeletonize_ts(code: str, lang: str, min_body_lines: int = 8) -> str:
                             if child.type in ("identifier", "property_identifier", "name", "field_identifier"):
                                 name = code[child.start_byte:child.end_byte]
                                 break
-                        line_text = lines[body_start - 1] if body_start - 1 < n else ""
+                        line_text = lines[body_start - 1] if body_start - 1 < total_lines else ""
                         indent = len(line_text) - len(line_text.lstrip())
                         indent_str = " " * indent
                         fold_ranges.append((body_start, body_end, indent_str, name))
@@ -152,7 +165,7 @@ def _skeletonize_ts(code: str, lang: str, min_body_lines: int = 8) -> str:
             stack.append(child)
 
     if not fold_ranges:
-        return code
+        return code, 0, 0
 
     # Sort ranges: ascending start line, descending span
     fold_ranges.sort(key=lambda r: (r[0], -(r[1] - r[0])))
@@ -165,50 +178,79 @@ def _skeletonize_ts(code: str, lang: str, min_body_lines: int = 8) -> str:
         last_end = e
 
     if not merged:
-        return code
+        return code, 0, 0
 
     # Build folded output
+    ref_tag = f" {ref}" if ref else ""
     is_python = (lang == "python")
     out = []
     cur = 1
     for s, e, ind, fn in merged:
-        while cur < s and cur <= n:
-            out.append(lines[cur - 1])
+        while cur < s and cur <= total_lines:
+            prefix = line_prefixes[cur - 1] if use_prefixes else ""
+            out.append(f"{prefix}{lines[cur - 1]}")
             cur += 1
-        omitted = e - s + 1
+        file_s = line_nos[s - 1] if use_prefixes else s
+        file_e = line_nos[e - 1] if use_prefixes else e
+        omitted = file_e - file_s + 1
+        marker_prefix = line_prefixes[s - 1] if use_prefixes else ""
         if is_python:
-            marker = f"{ind}pass  # [tt:body L{s}-L{e} ({omitted}L of {fn}) -> read_file(offset={s}, limit={omitted})]"
+            marker = f"{marker_prefix}{ind}pass  # [tt:body L{file_s}-L{file_e} ({omitted}L of {fn}){ref_tag} -> read_file(offset={file_s}, limit={omitted})]"
         else:
-            marker = f"{ind}// [tt:body L{s}-L{e} ({omitted}L of {fn}) -> read_file(offset={s}, limit={omitted})]"
+            marker = f"{marker_prefix}{ind}// [tt:body L{file_s}-L{file_e} ({omitted}L of {fn}){ref_tag} -> read_file(offset={file_s}, limit={omitted})]"
         out.append(marker)
         cur = e + 1
 
-    while cur <= n:
-        out.append(lines[cur - 1])
+    while cur <= total_lines:
+        prefix = line_prefixes[cur - 1] if use_prefixes else ""
+        out.append(f"{prefix}{lines[cur - 1]}")
         cur += 1
 
     new_text = "\n".join(out)
-    if len(new_text) >= len(code):
-        return code
-    return new_text
+    if use_prefixes:
+        orig_len = sum(len(line_prefixes[i]) + len(lines[i]) + 1 for i in range(total_lines)) - 1
+    else:
+        orig_len = len(code)
+    saved = orig_len - len(new_text)
+    if saved <= 0:
+        return code, 0, 0
+    return new_text, saved, len(merged)
 
 
-def skeletonize_code_multilang(code: str, filename: str = "", min_body_lines: int = 8) -> str:
-    """Skeletonize code in any supported language. Falls back to original if no savings."""
+def skeletonize_code_full(
+    code: str,
+    filename: str = "",
+    ref: str = "",
+    line_prefixes: list[str] | None = None,
+    line_nos: list[int] | None = None,
+    min_body_lines: int = 8,
+) -> tuple[str, int, int]:
+    """Full multi-language code skeletonizer with exact line prefixes and line numbers.
+    Returns: (skeleton_text, saved_chars, folded_functions_count)
+    """
     if not code or len(code) < 512:
-        return code
+        return code, 0, 0
     lang = detect_language(code, filename)
     if lang == "python":
-        # First try Python's standard ast pruner
         try:
             from .pruners import smart_skeletonize_code
-            result, saved, _ = smart_skeletonize_code(code)
-            if saved > 0 and len(result) < len(code):
-                return result
+            res, saved, count = smart_skeletonize_code(
+                code, ref=ref, min_body_lines=min_body_lines,
+                line_prefixes=line_prefixes, line_nos=line_nos
+            )
+            if saved > 0 and count > 0:
+                return res, saved, count
         except Exception:
             pass
     if lang in ("python", "javascript", "go", "rust", "java", "c", "cpp"):
-        result = _skeletonize_ts(code, lang, min_body_lines)
-        if result != code and len(result) < len(code):
-            return result
-    return code
+        return _skeletonize_ts_core(
+            code, lang=lang, min_body_lines=min_body_lines, ref=ref,
+            line_prefixes=line_prefixes, line_nos=line_nos
+        )
+    return code, 0, 0
+
+
+def skeletonize_code_multilang(code: str, filename: str = "", min_body_lines: int = 8) -> str:
+    """Skeletonize code in any supported language without line numbers. Falls back to original if no savings."""
+    res, saved, _ = skeletonize_code_full(code, filename=filename, min_body_lines=min_body_lines)
+    return res if saved > 0 else code
