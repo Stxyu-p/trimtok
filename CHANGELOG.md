@@ -2,6 +2,31 @@
 
 All notable changes to trimtok are documented here.
 
+## [5.3.3] - 2026-11-04
+
+### Added
+- **Multi-Language Tree-Sitter Parsers:** Activated prebuilt bindings for JavaScript/TypeScript, Go, Rust, and Python in venv.
+- **Docker Command Filter:** Added `_docker_ps_filter` for `docker ps` and `docker container ls` → compact summary of running containers, images, and service names backed by CCR (`[tt:docker_ps]`, ~72% reduction).
+- **Pre-execution Rewriting CLI Integration:** Wired `rewrite_command` into `trimtok wrap -- <cmd>` to inject concise flags (`pytest -q --tb=short`, `git log --oneline -n 25`) before execution.
+
+### Fixed
+- **Go AST Statement Folding:** Fixed `_skeletonize_ts_core` handling of `statement_list` so closing braces `}` are strictly preserved.
+- **Version Uniformity Invariant:** Added `plugin.yaml` to `test_version_sync.py` to prevent version drift between package, plugin, and docs.
+
+### Verification
+- 61/61 unit tests passing (0 skipped, 0 failures).
+- 18/18 Sadist torture attacks passing (100% pass rate, 11,605 tokens saved).
+
+## [5.3.2] - 2026-11-04
+
+### Fixed
+- **Silent Data Loss in Git Diff:** Fixed `_PROGRESS_RE` matching bare `-` as progress spinners which dropped deleted code lines in `git diff`; explicitly protected unified diff hunks and additions/deletions in `compress_terminal`.
+- **Sentinel Regex Hardening:** Expanded `SENTINEL_RE` to match all v4/v5 sentinel tags (`[a-z_]+`) ensuring `file_unchanged`, `lockfile`, and `skill_cached` markers are recognized and never re-processed.
+
+### Added
+- **Edge-Case Sadist Torture Harness:** Added 18-attack adversarial torture suites across 7 hostile taxonomies (`eval/eval_sadist_suite.py` and `eval/eval_sadist_wave2.py`).
+- **README Dashboard & Anchors:** Replaced plain TOC with 3-column navigation grid and explicit `<a id="...">` anchors for 100% verified link resolution; added Before vs After visual SVG banner.
+
 ## [5.3.1] - 2026-10-31
 
 ### Added
