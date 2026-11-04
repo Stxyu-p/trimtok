@@ -160,13 +160,15 @@ class FastCCRStore:
             cur.execute("PRAGMA wal_autocheckpoint=100;")
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS chunks ("
-                " sha TEXT PRIMARY KEY, alias TEXT UNIQUE, content BLOB, created_at REAL)"
+                " sha TEXT PRIMARY KEY, alias TEXT UNIQUE, content BLOB, created_at REAL, pinned INTEGER DEFAULT 0)"
             )
-            # Migrate legacy schema (sha12 column) to new (sha) column.
+            # Migrate legacy schema (sha12 column) to new (sha) column and ensure pinned exists.
             try:
                 cols = {r[1] for r in cur.execute("PRAGMA table_info(chunks)").fetchall()}
                 if "sha" not in cols and "sha12" in cols:
                     cur.execute("ALTER TABLE chunks RENAME COLUMN sha12 TO sha;")
+                if "pinned" not in cols:
+                    cur.execute("ALTER TABLE chunks ADD COLUMN pinned INTEGER DEFAULT 0;")
             except Exception:
                 pass
             cur.execute("CREATE INDEX IF NOT EXISTS idx_alias ON chunks(alias);")
@@ -235,7 +237,7 @@ class FastCCRStore:
                 # Opportunistic TTL sweep (at most once every 50 writes)
                 if ttl_hours > 0 and (seq_num % 50 == 0):
                     expire_before = now - (ttl_hours * 3600.0)
-                    cur.execute("DELETE FROM chunks WHERE created_at < ?", (expire_before,))
+                    cur.execute("DELETE FROM chunks WHERE created_at < ? AND (pinned IS NULL OR pinned = 0)", (expire_before,))
 
                 cur.execute("COMMIT")
                 self._set_mem(sha, alias, content)
@@ -274,24 +276,26 @@ class FastCCRStore:
                 cur = self._conn.cursor()
                 if is_alias:
                     row = cur.execute(
-                        "SELECT sha, alias, content, created_at FROM chunks WHERE alias=?",
+                        "SELECT sha, alias, content, created_at, pinned FROM chunks WHERE alias=?",
                         (target,),
                     ).fetchone()
                 elif len(sha) < 64:
                     row = cur.execute(
-                        "SELECT sha, alias, content, created_at FROM chunks WHERE substr(sha,1,?)=?",
+                        "SELECT sha, alias, content, created_at, pinned FROM chunks WHERE substr(sha,1,?)=?",
                         (len(sha), sha),
                     ).fetchone()
                 else:
                     row = cur.execute(
-                        "SELECT sha, alias, content, created_at FROM chunks WHERE sha=?",
+                        "SELECT sha, alias, content, created_at, pinned FROM chunks WHERE sha=?",
                         (sha,),
                     ).fetchone()
 
                 if row:
                     sha, row_alias, blob, created_at = row[0], row[1], row[2], row[3]
+                    is_pinned = bool(row[4]) if len(row) > 4 else False
                     if (
                         ttl_hours > 0
+                        and not is_pinned
                         and created_at is not None
                         and (time.time() - float(created_at)) > (ttl_hours * 3600.0)
                     ):
@@ -441,6 +445,54 @@ class FastCCRStore:
                     except Exception:
                         pass
         return count
+
+    def pin(self, ref: str) -> bool:
+        """Mark a chunk as pinned so it will not be deleted by TTL sweep."""
+        if not ref:
+            return False
+        target = ref.strip()
+        if re.match(r"^c[0-9A-Za-z]+$", target) and len(target) <= 8:
+            target = f"#{target}"
+        with self._lock:
+            if not self._writable or self._conn is None:
+                return False
+            try:
+                cur = self._conn.cursor()
+                if target.startswith("#c") or (target.startswith("#") and not _is_hex_digest(target.lstrip("#"))):
+                    cur.execute("UPDATE chunks SET pinned = 1 WHERE alias = ?", (target,))
+                else:
+                    sha = target.lstrip("#")
+                    cur.execute("UPDATE chunks SET pinned = 1 WHERE sha = ? OR substr(sha,1,?) = ?", (sha, len(sha), sha))
+                self._conn.commit()
+                return cur.rowcount > 0
+            except Exception:
+                return False
+
+    def unpin(self, ref: str) -> bool:
+        """Unpin a chunk, allowing it to expire according to TTL."""
+        if not ref:
+            return False
+        target = ref.strip()
+        if re.match(r"^c[0-9A-Za-z]+$", target) and len(target) <= 8:
+            target = f"#{target}"
+        with self._lock:
+            if not self._writable or self._conn is None:
+                return False
+            try:
+                cur = self._conn.cursor()
+                if target.startswith("#c") or (target.startswith("#") and not _is_hex_digest(target.lstrip("#"))):
+                    row = cur.execute("SELECT sha FROM chunks WHERE alias = ?", (target,)).fetchone()
+                    sha = row[0] if row else ""
+                    cur.execute("UPDATE chunks SET pinned = 0 WHERE alias = ?", (target,))
+                else:
+                    sha = target.lstrip("#")
+                    cur.execute("UPDATE chunks SET pinned = 0 WHERE sha = ? OR substr(sha,1,?) = ?", (sha, len(sha), sha))
+                if sha:
+                    self._mem.pop(sha, None)
+                self._conn.commit()
+                return cur.rowcount > 0
+            except Exception:
+                return False
 
 
 # ---------------------------------------------------------------------------
@@ -721,3 +773,21 @@ def resolve_hash(ref: str) -> str | None:
             except Exception:
                 pass
     return target if _HEX12_RE.match(target) else None
+
+
+def pin(ref: str, *, dir: Path | None = None) -> bool:
+    """Pin a CCR chunk by ref or hash to prevent TTL eviction."""
+    try:
+        base = Path(dir) if dir else default_dir()
+        return _get_store(base).pin(ref)
+    except Exception:
+        return False
+
+
+def unpin(ref: str, *, dir: Path | None = None) -> bool:
+    """Unpin a CCR chunk by ref or hash."""
+    try:
+        base = Path(dir) if dir else default_dir()
+        return _get_store(base).unpin(ref)
+    except Exception:
+        return False

@@ -122,6 +122,23 @@ with tempfile.TemporaryDirectory() as td:
         expiry_ok = False
     check("ccr-stats-removes-expired", expiry_ok)
 
+    # CCR Pinning protects chunks from TTL sweep
+    from trimtok.ccr import _get_store, pin as ccr_pin, unpin as ccr_unpin
+    pin_d = d / "pinning"
+    pin_d.mkdir()
+    store = _get_store(pin_d)
+    pin_ref = store.put("important pinned content")
+    cur = store._conn.cursor()
+    cur.execute("UPDATE chunks SET created_at = ? WHERE alias = ?", (time.time() - 48 * 3600, pin_ref))
+    store._conn.commit()
+    pinned_ok = ccr_pin(pin_ref, dir=pin_d)
+    retrieved_pinned = store.get(pin_ref, ttl_hours=24)
+    unpinned_ok = ccr_unpin(pin_ref, dir=pin_d)
+    retrieved_expired = store.get(pin_ref, ttl_hours=24)
+    check("ccr-pin-protects-from-ttl", pinned_ok and retrieved_pinned == "important pinned content")
+    check("ccr-unpin-allows-expiry", unpinned_ok and retrieved_expired is None)
+    store.close()
+
     # Failed cache storage must leave terminal and tool outputs uncompressed.
     import trimtok as plugin
     class _Config:
