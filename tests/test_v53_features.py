@@ -99,6 +99,19 @@ Requirement already satisfied: idna in /site-packages (3.4)
         self.assertIn("[tt:find] 6 files", res)
         self.assertIn(".js: 3", res)
 
+    def test_docker_ps_filter(self):
+        docker_out = """CONTAINER ID   IMAGE          COMMAND                  CREATED         STATUS         PORTS                    NAMES
+8a7b6c5d4e3f   postgres:16    "docker-entrypoint.s…"   2 hours ago     Up 2 hours     0.0.0.0:5432->5432/tcp   my_db
+9f8e7d6c5b4a   redis:alpine   "docker-entrypoint.s…"   2 hours ago     Up 2 hours     0.0.0.0:6379->6379/tcp   cache
+1a2b3c4d5e6f   node:20        "npm start"              2 hours ago     Up 2 hours     0.0.0.0:3000->3000/tcp   web
+"""
+        res = try_command_filter("docker ps", docker_out)
+        self.assertIsNotNone(res)
+        assert isinstance(res, str)
+        self.assertIn("[tt:docker_ps] 3 containers", res)
+        self.assertIn("postgres:16", res)
+        self.assertIn("my_db", res)
+
     def test_fail_open_invariants(self):
         # Non-matching, empty, short, or invalid inputs must safely return None
         self.assertIsNone(try_command_filter("", "some output"))

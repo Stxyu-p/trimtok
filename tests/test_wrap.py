@@ -29,6 +29,15 @@ class TestWrapCommand(unittest.TestCase):
         self.assertEqual(code, 42)
         self.assertIn("failing child", stdout.getvalue())
 
+    def test_wrap_applies_prerewrite_on_pytest(self):
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.Mock(stdout="ok", stderr="", returncode=0)
+            main(["wrap", "--", "pytest"])
+            mock_run.assert_called_once()
+            args = mock_run.call_args[0][0]
+            self.assertIn("-q", args)
+            self.assertIn("--tb=short", args)
+
 
 if __name__ == "__main__":
     unittest.main()

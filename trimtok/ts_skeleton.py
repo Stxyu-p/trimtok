@@ -144,7 +144,12 @@ def _skeletonize_ts_core(
                     body = child
                     break
             if body is not None:
-                stmts = [c for c in body.children if c.type not in ("{", "}", "comment")]
+                stmts = []
+                for c in body.children:
+                    if c.type == "statement_list":
+                        stmts.extend([sc for sc in c.children if sc.type not in ("{", "}", "comment")])
+                    elif c.type not in ("{", "}", "comment"):
+                        stmts.append(c)
                 if stmts:
                     body_start = stmts[0].start_point[0] + 1
                     body_end = stmts[-1].end_point[0] + 1

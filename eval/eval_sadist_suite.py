@@ -8,6 +8,12 @@ import os
 import sys
 import threading
 import time
+from pathlib import Path
+
+# Ensure workspace root is first in sys.path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 import tiktoken
 
 import trimtok as tt
@@ -16,7 +22,7 @@ from trimtok.dedup import compress_tool_result, _try_merged_toon
 from trimtok.toon_codec import fold_json_to_toon, toon_decode
 from trimtok.ccr import get as ccr_get, put as ccr_put
 from trimtok.signals import Deadline
-from trimtok.eval.eval_real import refs_in
+from eval_real import refs_in
 
 enc = tiktoken.get_encoding("cl100k_base")
 

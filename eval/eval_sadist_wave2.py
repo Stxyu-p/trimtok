@@ -8,6 +8,12 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
+
+# Ensure workspace root is first in sys.path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 import tiktoken
 import traceback
 

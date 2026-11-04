@@ -123,6 +123,28 @@ def _find_filter(output: str) -> str | None:
     return f"[tt:find] {len(lines)} files — {', '.join(parts)}"
 
 
+_RE_DOCKER_PS_HDR = re.compile(r"CONTAINER ID\s+IMAGE", re.I)
+
+def _docker_ps_filter(output: str) -> str | None:
+    """docker ps → container count, running images, names."""
+    lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
+    if len(lines) < 2 or not _RE_DOCKER_PS_HDR.search(lines[0]):
+        return None
+    rows = lines[1:]
+    if len(rows) < 2:
+        return None
+    images, names = [], []
+    for r in rows:
+        parts = r.split()
+        if len(parts) >= 2:
+            images.append(parts[1])
+        if len(parts) >= 7:
+            names.append(parts[-1])
+    uniq_images = sorted(set(images))[:4]
+    name_snippet = f", names: {', '.join(names[:4])}" if names else ""
+    return f"[tt:docker_ps] {len(rows)} containers ({', '.join(uniq_images)}{name_snippet})"
+
+
 _FILTERS = [
     (re.compile(r"\bgit\s+log\b", re.I), _git_log_filter),
     (re.compile(r"\bgit\s+status\b", re.I), _git_status_filter),
@@ -130,6 +152,7 @@ _FILTERS = [
     (re.compile(r"\bnpm\b", re.I), _npm_filter),
     (re.compile(r"\bpip\b", re.I), _pip_filter),
     (re.compile(r"\bfind\b", re.I), _find_filter),
+    (re.compile(r"\bdocker\s+(?:container\s+)?(?:ps|ls)\b", re.I), _docker_ps_filter),
 ]
 
 
