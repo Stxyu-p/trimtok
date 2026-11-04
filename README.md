@@ -21,6 +21,7 @@
 
 ---
 
+<a id="at-a-glance"></a>
 ## ⚡ At a Glance: Before vs After
 
 Autonomous coding agents burn over **60% of their context window budget** on repetitive, low-entropy noise. **trimtok** compresses this in-process without losing a single line of actionable truth:
@@ -36,6 +37,7 @@ Autonomous coding agents burn over **60% of their context window budget** on rep
 
 ---
 
+<a id="how-it-works"></a>
 ## 🏗️ How It Works
 
 **trimtok** operates 100% locally and in-process using the Python standard library, RapidFuzz C++ alignment, tree-sitter AST parsing, and Zstandard compression. No external daemons, no Docker containers, and zero open network ports.
@@ -64,24 +66,62 @@ Tool / Terminal Output
 
 ## 📑 Table of Contents
 
-- [Market Comparison (Head-to-Head)](#-market-comparison-trimtok-vs-alternatives)
-- [Core Engineering Capabilities](#-core-engineering-capabilities)
-  - [Pillar 1: Terminal & Command Compression](#pillar-1-terminal--command-compression)
-  - [Pillar 2: Content & Code Intake Shield](#pillar-2-content--code-intake-shield)
-  - [Pillar 3: Zero Data Loss & Self-Healing Telemetry](#pillar-3-zero-data-loss--self-healing-telemetry)
-- [First-Time Setup](#-first-time-setup-5-minutes)
-- [Native Hermes Agent Plugin Configuration](#-native-hermes-agent-plugin-configuration)
-- [Slash Commands & Standalone CLI](#-slash-commands--standalone-cli)
-- [Part of the Global Agent Trinity](#-part-of-the-global-agent-trinity)
-- [License](#-license)
+<table width="100%">
+<tr>
+<td width="33%" valign="top">
+
+#### 🏛️ Architecture & Benchmarks
+- [⚡ At a Glance: Before vs After](#at-a-glance)
+- [🏗️ How It Works](#how-it-works)
+- [🥊 Market Comparison (Head-to-Head)](#market-comparison)
+  - [Where trimtok Excels](#where-trimtok-excels)
+  - [Where trimtok is Weaker](#where-trimtok-is-weaker)
+
+</td>
+<td width="34%" valign="top">
+
+#### ⚡ 3 Engineering Pillars
+- **[Pillar 1: Terminal Compression](#pillar-1-terminal)**
+  - [Cross-Turn Delta Engine](#1-cross-turn-delta)
+  - [Command-Specific Filters](#2-command-filters)
+  - [Structured Traceback Pruning](#3-traceback-pruning)
+- **[Pillar 2: Intake Shield](#pillar-2-intake)**
+  - [Tiered Web & File Intake](#4-tiered-web-intake)
+  - [AST Code Skeletonizer](#5-ast-skeletonizer)
+  - [Lossless TOON v2 (JSON)](#6-toon-v2)
+- **[Pillar 3: Zero Data Loss](#pillar-3-zero-data-loss)**
+  - [CCR Recovery (`#ref`)](#7-ccr-recovery)
+  - [Telemetry & Diagnostics](#8-telemetry-diagnostics)
+  - [Fail-Open Budget Guards](#9-fail-open-guards)
+
+</td>
+<td width="33%" valign="top">
+
+#### 🛠️ Setup & Operations
+- **[First-Time Setup (5 Mins)](#first-time-setup)**
+  - [Step 1: Install Trimtok](#step-1-install)
+  - [Step 2: Setup Wizard](#step-2-wizard)
+  - [Step 3: Health Verification](#step-3-health)
+- **[Hermes Plugin Setup](#hermes-configuration)**
+  - [Configuration Options](#hermes-config-options)
+- **[Slash Commands & CLI](#slash-commands-cli)**
+  - [In-Chat Slash Commands](#hermes-slash-commands)
+  - [Standalone Wrapper (`wrap`)](#standalone-cli-wrapper)
+- **[Global Agent Trinity](#global-agent-trinity)**
+- **[License (MIT)](#license)**
+
+</td>
+</tr>
+</table>
 
 ---
 
+<a id="market-comparison"></a>
 ## 🥊 Market Comparison: trimtok vs Alternatives
 
 Empirical head-to-head benchmarks measured on identical production workloads:
 
-| Capability / Benchmark | **trimtok v5.3.0** 🌟 | **RTK v1.1.0** (Rust) | **headroom v0.42.0** (Python) | **skim v2.10.0** (Rust) | **sqz v2.1.1** (Rust) | **tokenfold** (Python/Rust) |
+| Capability / Benchmark | **trimtok v5.3.2** 🌟 | **RTK v1.1.0** (Rust) | **headroom v0.42.0** (Python) | **skim v2.10.0** (Rust) | **sqz v2.1.1** (Rust) | **tokenfold** (Python/Rust) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
 | **Execution Layer** | **In-process hook + CLI** | Subprocess CLI | Python library / Proxy | Subprocess CLI | Subprocess CLI | Python FFI library |
 | **Uniform JSON (500 rows)** | **55.3% saved** | 99.6% (truncated) | **61.7% saved** | N/A | ~55% saved | 55.7% saved |
@@ -94,12 +134,14 @@ Empirical head-to-head benchmarks measured on identical production workloads:
 | **In-Process Latency** | **< 2 ms** (micro) | 10 – 50 ms (process) | ~9,054 ms (73x slower)| ~259 ms (process) | ~437 ms (process) | 660 – 860 ms |
 | **Zero Network Ports** | ✅ **100% portless** | ✅ Portless | ❌ Opens HTTP port | ✅ Portless | ❌ Opens HTTP/Web | ✅ Portless |
 
+<a id="where-trimtok-excels"></a>
 ### Where trimtok Excels
 - **In-Process & Sub-2ms:** Direct hook invocation with zero subprocess overhead (headroom takes ~9s, sqz takes ~450ms).
 - **Cross-Turn Stateful Delta:** Re-running test suites (`pytest`, `cargo test`) only prints active errors and diffs vs prior turn, slashing >95% tokens.
 - **Zero Data Loss Guarantee:** Everything transformed is stored into local SQLite WAL + Zstandard. The agent recalls original bytes at any time via `#c1`.
 - **Intake Shielding:** Automatically prunes link bloat and boilerplate headers on `web_extract` and `read_file` without offset drift.
 
+<a id="where-trimtok-is-weaker"></a>
 ### Where trimtok is Weaker
 - **Language Coverage on AST:** trimtok supports 7 languages (Python, JS/TS, Go, Rust, Java, C, C++). `skim` supports 17 languages via native tree-sitter.
 - **Command Filter Coverage:** trimtok has 6 targeted command filters (`git log`, `git status`, `ls`, `npm`, `pip`, `find`). `RTK` provides 12 command-specific heuristics.
@@ -110,10 +152,13 @@ Empirical head-to-head benchmarks measured on identical production workloads:
 
 ---
 
+<a id="core-capabilities"></a>
 ## ⚡ Core Engineering Capabilities
 
+<a id="pillar-1-terminal"></a>
 ### Pillar 1: Terminal & Command Compression
 
+<a id="1-cross-turn-delta"></a>
 #### 1. Cross-Turn Command Delta Engine (`compress_terminal`)
 When an agent edits code and re-runs test suites or build commands:
 - **Raw Output:** 56,000+ characters of unchanged passing dots.
@@ -129,6 +174,7 @@ When an agent edits code and re-runs test suites or build commands:
 - ===== 1 failed, 200 passed in 42.1s =====
 ```
 
+<a id="2-command-filters"></a>
 #### 2. Command-Specific Output Filters
 High-volume CLI tools are filtered to essential summaries backed by CCR retrieval:
 - **`git log`** → commit count, author digest, date range.
@@ -138,6 +184,7 @@ High-volume CLI tools are filtered to essential summaries backed by CCR retrieva
 - **`pip install / list`** → installed package names and satisfied requirements count.
 - **`find`** → matched file counts grouped by extension.
 
+<a id="3-traceback-pruning"></a>
 #### 3. Structured Traceback Pruning
 Internal framework frames (FastAPI, Starlette, Node modules) collapse into compact summaries while strictly locking the entrypoint, user project code, and exact exception crash site (**77% reduction**):
 ```text
@@ -152,19 +199,23 @@ ZeroDivisionError: division by zero
 
 ---
 
+<a id="pillar-2-intake"></a>
 ### Pillar 2: Content & Code Intake Shield
 
+<a id="4-tiered-web-intake"></a>
 #### 4. Tiered Web & File Intake (`read_file` & `web_extract`)
 - **Inline URL De-bloat:** Converts verbose links `[Anchor Text](https://very-long-url/path "Title")` into clean `Anchor Text`, cutting **35% – 45% of markdown link bloat in 2–4 ms**.
 - **Heading + 2-Line Factsheet Digest:** Keeps headings, tables, code blocks, and the first 2 descriptive lines per section, folding excessive narrative into line-anchored CCR `#ref` stubs (**76% – 96% token reduction**).
 - **Patch-Safe License Stripping:** Automatically removes open-source license headers and divider comments on files < 14KB with **Zero Offset Drift**.
 
+<a id="5-ast-skeletonizer"></a>
 #### 5. Multi-Language AST Code Skeletonizer
 For code files ≥ 2KB, trimtok parses the structural AST using tree-sitter:
 - **Supported Languages:** Python, JavaScript/TypeScript, Go, Rust, Java, C, C++.
 - **Zero Loss of Structure:** Retains all class definitions, function signatures, interfaces, imports, and docstrings.
 - **Folds Oversized Bodies:** Function implementations ≥ 8 lines fold into clean CCR-referenced stubs, preserving line structure for patch safety.
 
+<a id="6-toon-v2"></a>
 #### 6. Lossless & Merged-Schema TOON v2
 Converts nested JSON arrays into columnar tables validated by in-memory equality roundtrips:
 - **Uniform Arrays:** 55% – 57% token reduction.
@@ -179,8 +230,10 @@ Converts nested JSON arrays into columnar tables validated by in-memory equality
 
 ---
 
+<a id="pillar-3-zero-data-loss"></a>
 ### Pillar 3: Zero Data Loss & Self-Healing Telemetry
 
+<a id="7-ccr-recovery"></a>
 #### 7. Content-Addressed Context Recovery (`trimtok_retrieve`)
 Every transformed payload is preserved in a local SQLite WAL + Zstandard database (`~/.trimtok/trimtok_ccr_v2.sqlite3`). Agents recall original bytes anytime:
 ```bash
@@ -193,24 +246,29 @@ trimtok retrieve "#c1" --grep "ConnectionReset" # Bounded regex search
 trimtok retrieve "#c1" --offset 50 --limit 30   # Line-numbered pagination
 ```
 
+<a id="8-telemetry-diagnostics"></a>
 #### 8. Autonomous Telemetry & Diagnostics (`gain` & `discover`)
 trimtok self-monitors every transformation in `~/.trimtok/usage.jsonl`:
 - **`trimtok gain`**: Breaks down real savings by output shape, tool hook, and command family, highlighting compression bottlenecks.
 - **`trimtok discover`**: Scans production telemetry for high-frequency, low-savings patterns and recommends targeted filters.
 
+<a id="9-fail-open-guards"></a>
 #### 9. Fail-Open Budget Guards
 - **Strict 200 ms Monotonic Deadline (`guard_ms: 200.0`):** If compression exceeds the deadline or RapidFuzz alignment is slow, trimtok aborts instantly and emits raw output.
 - **Zero Agent Freezes:** No timeout cascades, no hangs, no broken builds.
 
 ---
 
+<a id="first-time-setup"></a>
 ## 🛠️ First-Time Setup (5 Minutes)
 
+<a id="step-1-install"></a>
 ### Step 1: Install Trimtok
 ```bash
 pip install trimtok
 ```
 
+<a id="step-2-wizard"></a>
 ### Step 2: Run Unified Client Setup Wizard
 Automatically configures the local SQLite WAL store, verifies Zstandard acceleration, and registers the stdio MCP server across all detected AI coding environments:
 ```bash
@@ -223,6 +281,7 @@ Auto-detects and registers:
 - **Gemini CLI** (`settings.json`) & **Codex CLI** (`config.toml`)
 - **OpenCode** & **Cline**
 
+<a id="step-3-health"></a>
 ### Step 3: Verify Registration & Storage Health
 ```bash
 trimtok clients
@@ -231,6 +290,7 @@ trimtok status
 
 ---
 
+<a id="hermes-configuration"></a>
 ## ⚙️ Native Hermes Agent Plugin Configuration
 
 To install trimtok as a native plugin in Hermes Agent:
@@ -246,6 +306,7 @@ git clone https://github.com/Stxyu-p/trimtok.git ~/.hermes/plugins/trimtok
 hermes plugins enable trimtok
 ```
 
+<a id="hermes-config-options"></a>
 ### Configuration Options (`~/.hermes/config.yaml` or `plugin.yaml`)
 ```yaml
 plugins:
@@ -267,8 +328,10 @@ plugins:
 
 ---
 
+<a id="slash-commands-cli"></a>
 ## 💻 Slash Commands & Standalone CLI
 
+<a id="hermes-slash-commands"></a>
 ### Hermes In-Chat Slash Commands
 - **`/trimtok status`**: Displays active CCR database size, cache entries, Zstandard compression metrics, and engine health.
 - **`/trimtok usage`**: Shows live telemetry breakdown across terminal and tool hooks (events, folds, chars saved, top gates).
@@ -277,6 +340,7 @@ plugins:
 - **`/trimtok purge`**: Purges expired cache entries and vacuums the SQLite WAL database.
 - **`/trimtok recall <#ref>`**: Retrieves original output by CCR reference (alias for `retrieve`).
 
+<a id="standalone-cli-wrapper"></a>
 ### Standalone CLI Wrapper (`trimtok wrap`)
 Run noisy developer commands directly in your terminal or CI/CD pipelines without Hermes:
 ```bash
@@ -294,6 +358,7 @@ trimtok recall "#c1" --offset 50 --limit 30
 
 ---
 
+<a id="global-agent-trinity"></a>
 ## 🌐 Part of the Global Agent Trinity
 
 **trimtok** forms the **Global Agent Trinity** alongside **MemCore** and **Skill Proof** — unifying context, governed memory, and local skills across all your AI coding agents without daemons or open network ports:
@@ -312,6 +377,7 @@ trimtok install && memcore install && skill-proof install
 
 ---
 
+<a id="license"></a>
 ## 📄 License
 
 Distributed under the [MIT License](LICENSE). Designed and crafted for robust, high-leverage autonomous software engineering.
