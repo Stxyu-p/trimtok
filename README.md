@@ -5,13 +5,17 @@
 </p>
 
 <p align="center">
-  <a href="https://pypi.org/project/trimtok/"><img src="https://img.shields.io/pypi/v/trimtok?style=flat-square&color=blue" alt="PyPI" /></a>
+  <a href="https://pypi.org/project/trimtok/"><img src="https://img.shields.io/badge/pypi-v5.3.5-blue?style=flat-square" alt="PyPI" /></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10+-blue?style=flat-square" alt="Python" /></a>
-  <a href="#7-content-addressed-context-recovery-trimtok_retrieve"><img src="https://img.shields.io/badge/storage-SQLite_WAL_+_Zstandard-07405E?style=flat-square" alt="Storage" /></a>
-  <a href="#-how-it-works"><img src="https://img.shields.io/badge/latency-%3C_2ms_in--process-10b981?style=flat-square" alt="Latency" /></a>
-  <a href="#9-fail-open-budget-guards"><img src="https://img.shields.io/badge/safety-Fail--Open_Guarantee-8b5cf6?style=flat-square" alt="Safety" /></a>
-  <a href="#standalone-cli-wrapper-trimtok-wrap"><img src="https://img.shields.io/badge/cli-trimtok_wrap-EC4899?style=flat-square" alt="CLI" /></a>
-  <a href="#4-tiered-web--file-intake-read_file--web_extract"><img src="https://img.shields.io/badge/intake-Tiered_Semantic_Shaving-059669?style=flat-square" alt="Intake" /></a>
+  <a href="#7-ccr-recovery"><img src="https://img.shields.io/badge/storage-SQLite_WAL_+_Zstandard-07405E?style=flat-square" alt="Storage" /></a>
+  <a href="#how-it-works"><img src="https://img.shields.io/badge/latency-%3C_2ms_in--process-10b981?style=flat-square" alt="Latency" /></a>
+  <a href="#9-fail-open-guards"><img src="https://img.shields.io/badge/safety-Fail--Open_Guarantee-8b5cf6?style=flat-square" alt="Safety" /></a>
+  <a href="#10-content-policy"><img src="https://img.shields.io/badge/policy-Secrets_Stay_Verbatim-dc2626?style=flat-square" alt="Policy" /></a>
+  <a href="#11-adaptive-level"><img src="https://img.shields.io/badge/level-Adaptive_Compression-f59e0b?style=flat-square" alt="Adaptive" /></a>
+  <a href="#12-model-aware"><img src="https://img.shields.io/badge/output-Model--Aware_TOON-6366f1?style=flat-square" alt="Model-Aware" /></a>
+  <a href="#standalone-cli-wrapper"><img src="https://img.shields.io/badge/cli-trimtok_wrap-EC4899?style=flat-square" alt="CLI" /></a>
+  <a href="#4-tiered-web-intake"><img src="https://img.shields.io/badge/intake-Tiered_Semantic_Shaving-059669?style=flat-square" alt="Intake" /></a>
+  <a href="#14-fix-accuracy"><img src="https://img.shields.io/badge/verified-8%2F8_fix_locate-0ea5e9?style=flat-square" alt="Fix Accuracy" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-slate?style=flat-square" alt="License" /></a>
 </p>
 
@@ -33,7 +37,13 @@ Autonomous coding agents burn over **60% of their context window budget** on rep
 [Mixed-Schema JSON]    11,240 chars  ──►   6,630 chars  (-41.0% merged TOON table)
 [Source Code 300 Fns]  13,500 toks   ──►   2,400 toks   (-82.2% multi-lang AST)
 [Web Docs / Search]    15,200 chars  ──►   1,800 chars  (-88.1% tiered link shaving)
+[JSON File 50 Cols]    12,002 toks   ──►   6,225 toks   (-48.1% file TOON)
+[OpenAPI Document]      2,746 toks   ──►   1,367 toks   (-50.2% JSON minify)
+[Build Log 400 Lines]  15,960 toks   ──►   4,869 toks   (-69.5% adaptive budget)
+[22k-token source]     21,999 toks   ──►     571 toks   (-97.4% intent retrieval)
 ```
+
+Measured across a 32-payload production corpus (1,135,441 characters): **73.2% reduction with zero gate failures**, of which every removed character is verifiable through `trimtok_retrieve`. Retrieval is billed only when the agent asks a question, taking the same corpus from 74.8% to **89.1%** saved.
 
 ---
 
@@ -48,6 +58,7 @@ Tool / Terminal Output
          ▼
   ┌────────────────────────────────────────────────────────┐
   │  trimtok In-Process Hook (< 2 ms, fail-open ≤ 200 ms)  │
+  │  ├── 0. Content Policy Gate (secrets / edits verbatim) │
   │  ├── 1. Cross-Turn Delta Engine (pytest, cargo test)   │
   │  ├── 2. Command-Specific Filters (git, npm, pip, etc.) │
   │  ├── 3. Structured Traceback Pruning (locks crash-site)│
@@ -55,7 +66,8 @@ Tool / Terminal Output
   │  ├── 5. Multi-Language AST Skeletonizer (7 languages)  │
   │  └── 6. Tiered Web & Doc Link De-bloating              │
   └──────────────────────────┬─────────────────────────────┘
-                             │
+                             │  level: light │ normal │ aggressive
+                             │  format: TOON │ minified JSON
             ┌────────────────┴────────────────┐
             ▼                                 ▼
    Agent Context Window             SQLite WAL + Zstandard
@@ -80,7 +92,7 @@ Tool / Terminal Output
 </td>
 <td width="34%" valign="top">
 
-#### ⚡ 3 Engineering Pillars
+#### ⚡ 4 Engineering Pillars
 - **[Pillar 1: Terminal Compression](#pillar-1-terminal)**
   - [Cross-Turn Delta Engine](#1-cross-turn-delta)
   - [Command-Specific Filters](#2-command-filters)
@@ -93,6 +105,12 @@ Tool / Terminal Output
   - [CCR Recovery (`#ref`)](#7-ccr-recovery)
   - [Telemetry & Diagnostics](#8-telemetry-diagnostics)
   - [Fail-Open Budget Guards](#9-fail-open-guards)
+- **[Pillar 4: Policy, Adaptivity & Verification](#pillar-4-policy)**
+  - [Content Policy Gate](#10-content-policy)
+  - [Adaptive Compression Level](#11-adaptive-level)
+  - [Model-Aware Output Format](#12-model-aware)
+  - [Retention Controls](#13-retention)
+  - [Fix-Accuracy Verification](#14-fix-accuracy)
 
 </td>
 <td width="33%" valign="top">
@@ -107,7 +125,9 @@ Tool / Terminal Output
 - **[Slash Commands & CLI](#slash-commands-cli)**
   - [In-Chat Slash Commands](#hermes-slash-commands)
   - [Standalone Wrapper (`wrap`)](#standalone-cli-wrapper)
+  - [Command Rewriting (`rewrite`)](#rewrite-cli)
 - **[Global Agent Trinity](#global-agent-trinity)**
+- **[Verification](#verification)**
 - **[License (MIT)](#license)**
 
 </td>
@@ -129,8 +149,13 @@ Empirical head-to-head benchmarks measured on identical production workloads:
 | **Code AST (300 functions)** | **82.2% (AST stubs)** | 0% (or wipes 100%) | N/A | **82.2% (signatures)** | N/A | N/A |
 | **Cross-Turn Delta Mode** | ✅ **`[tt:delta]` (>95%)** | ❌ None | ❌ None | ❌ None | ❌ None | ❌ None |
 | **Framework Traceback Prune**| ✅ **77.0% (locks crash)** | ❌ Stripped or raw | ❌ None | ❌ None | ❌ None | ❌ None |
-| **Command-Specific Filters** | ✅ **6 commands** | ✅ 12 commands | ❌ None | ❌ None | ❌ None | ❌ None |
+| **Command-Specific Filters** | ✅ **7 commands** | ✅ 12 commands | ❌ None | ❌ None | ❌ None | ❌ None |
 | **Full Original Retrieval** | ✅ **Content-addressed (`#c1`)** | ❌ Lost permanently | ⚠️ CCR via MCP | ❌ Lost permanently | ⚠️ §ref dedup | ✅ Exact bytes |
+| **Intent-Addressed Retrieval** | ✅ **`--intent` (93–97%)** | Not documented | Not documented | Not documented | Not documented | Not documented |
+| **Content Policy Gate** | ✅ **Secrets & edits verbatim** | Not documented | Not documented | Not documented | Not documented | Not documented |
+| **Adaptive Level** | ✅ **Pressure-scaled** | Not documented | Not documented | Not documented | Not documented | Not documented |
+| **Model-Aware Format** | ✅ **`auto` / `always` / `never`** | Not documented | Not documented | Not documented | Not documented | Not documented |
+| **Fix-Accuracy Benchmark** | ✅ **8/8 locate** | Not documented | Not documented | Not documented | Not documented | Not documented |
 | **In-Process Latency** | **< 2 ms** (micro) | 10 – 50 ms (process) | ~9,054 ms (73x slower)| ~259 ms (process) | ~437 ms (process) | 660 – 860 ms |
 | **Zero Network Ports** | ✅ **100% portless** | ✅ Portless | ❌ Opens HTTP port | ✅ Portless | ❌ Opens HTTP/Web | ✅ Portless |
 
@@ -144,11 +169,13 @@ Empirical head-to-head benchmarks measured on identical production workloads:
 <a id="where-trimtok-is-weaker"></a>
 ### Where trimtok is Weaker
 - **Language Coverage on AST:** trimtok supports 7 languages (Python, JS/TS, Go, Rust, Java, C, C++). `skim` supports 17 languages via native tree-sitter.
-- **Command Filter Coverage:** trimtok has 6 targeted command filters (`git log`, `git status`, `ls`, `npm`, `pip`, `find`). `RTK` provides 12 command-specific heuristics.
+- **Command Filter Coverage:** trimtok has 7 targeted command filters (`git log`, `git status`, `ls`, `npm`, `pip`, `find`, `docker ps`). `RTK` provides 12 command-specific heuristics.
 - **Extreme Mixed-JSON Compression:** `headroom` achieves 46.3% on heterogeneous JSON via smart_crusher transforms, while trimtok achieves 41.0% – 44.7% with merged TOON.
+- **Model-Awareness is a Heuristic:** `toon_mode: auto` keys off the model *family name*, not a measured per-model capability. TOON is plain text and every model can read it; the setting only decides which format is likely to survive a long context best.
+- **Fix-Accuracy Needs a Live Model:** the `LOCATE` stage runs offline and deterministically, but the `FIX` stage that proves a patch actually works requires a reachable model endpoint.
 
 > [!NOTE]
-> **Production Telemetry Baseline (pre-5.3.0):** 4,456 events, 11.66M characters input → 1.10M characters saved (9.5% overall aggregate across all raw traffic; 27.2% terminal hook; 5.2% tool results). v5.3.0 capabilities (merged TOON, 6 command filters, multi-language AST) are newly active.
+> **Production Telemetry Baseline (pre-5.3.0):** 4,456 events, 11.66M characters input → 1.10M characters saved (9.5% overall aggregate across all raw traffic; 27.2% terminal hook; 5.2% tool results). Capabilities added since v5.3.0 — merged TOON, 7 command filters, multi-language AST, JSON file intake, content policy, adaptive levels — are active in current releases but not reflected in this historical baseline.
 
 ---
 
@@ -221,6 +248,9 @@ For code files ≥ 2KB, trimtok parses the structural AST using tree-sitter:
 Converts nested JSON arrays into columnar tables validated by in-memory equality roundtrips:
 - **Uniform Arrays:** 55% – 57% token reduction.
 - **Mixed Schemas (Merged TOON):** Automatically unifies heterogeneous object structures into a single table with null-filled gaps, achieving 41% – 44.7% savings without splitting into disjoint buckets.
+- **Wide Tables:** Up to 128 columns columnarize losslessly (50 columns × 20 rows: **48.1%**).
+- **Deep Cells:** Nested objects longer than the inline cap are stored behind an explicit `=` marker instead of rejecting the whole table, so GitHub- and Stripe-shaped payloads compress too (**28.8%** on a 60-row repository listing).
+- **JSON Files:** `read_file` on a `.json` path routes through the same codec, or whole-document minification for non-uniform objects (OpenAPI document: **50.2%**). Both paths are round-trip verified and leave a resolvable `#ref`.
 ```text
 [tt:legend] TOON table (lossless): @prefix(~/)=https://example.com/items/
 @data.results[3]{id,title,url,tags}:
@@ -245,7 +275,12 @@ trimtok retrieve "#c1" --section diff        # Unified diff hunks with headers
 trimtok retrieve "#c1" --section tail        # Last N lines
 trimtok retrieve "#c1" --grep "ConnectionReset" # Bounded regex search
 trimtok retrieve "#c1" --offset 50 --limit 30   # Line-numbered pagination
+
+# Answer a question instead of paging through the file
+trimtok retrieve "#c1" --intent "which functions parse JSON" --intent-budget 80
 ```
+
+`--intent` ranks lines by stemmed token overlap with the question and boosts definition and heading lines, so a signature arrives with its body. On a 21,999-token source file, *"which functions does this file define"* returns **1,458 tokens (93.4% saved)** and *"how is json minified"* returns **571 tokens (97.4% saved)**, each containing the answer line rather than a truncated guess.
 
 <a id="8-telemetry-diagnostics"></a>
 #### 8. Autonomous Telemetry & Diagnostics (`gain` & `discover`)
@@ -257,6 +292,69 @@ trimtok self-monitors every transformation in `~/.trimtok/usage.jsonl`:
 #### 9. Fail-Open Budget Guards
 - **Strict 200 ms Monotonic Deadline (`guard_ms: 200.0`):** If compression exceeds the deadline or RapidFuzz alignment is slow, trimtok aborts instantly and emits raw output.
 - **Zero Agent Freezes:** No timeout cascades, no hangs, no broken builds.
+
+---
+
+<a id="pillar-4-policy"></a>
+### Pillar 4: Policy, Adaptivity & Verification
+
+<a id="10-content-policy"></a>
+#### 10. Content Policy Gate
+Not every payload should be compressed. Before any transformation runs, trimtok classifies the input and keeps byte-exact what would lose its meaning if a single character moved. These return `gate=passthrough_policy` with a named reason, never a silently mangled payload:
+
+| Class | Matched by | Reason |
+| :--- | :--- | :--- |
+| **Credentials** | `.env`, `.npmrc`, `.netrc`, `*.pem`, `*.key`, `id_rsa`, `credentials.*` | `secret_path` |
+| **Inline secrets** | AWS `AKIA…`, GitHub `ghp_…`, OpenAI `sk-…`, Slack `xox…`, JWT `eyJ…`, PEM blocks, `password = …` | `secret_value` |
+| **Security policy data** | `security/`, `policies/`, `auth/`, `rbac/` containing YAML, JSON, TOML, INI, Rego or Terraform | `security_path` |
+| **Edit instructions** | `patch`, `edit_file`, `write_file`, `apply_patch`, or any unified diff | `edit_tool` / `patch_payload` |
+
+Source code under `security/` or `auth/` still compresses, because the AST skeletonizer keeps every signature and leaves a resolvable `#ref` — a 2,000-line `auth.py` remains navigable rather than being excluded wholesale. Detection is deliberately narrow: a false positive costs one uncompressed payload, while a false negative would rewrite a credential in place and make it impossible to copy verbatim.
+
+<a id="11-adaptive-level"></a>
+#### 11. Adaptive Compression Level
+Compression strength follows the remaining context budget instead of applying one fixed policy to every turn. `context_pressure` (0.0 – 1.0, supplied per call by the host hook or set in config) selects a level that scales the terminal line budget and the AST body-fold threshold:
+
+| Pressure | Level | Line budget | Body fold threshold |
+| :--- | :--- | :---: | :---: |
+| < 0.35 | `light` | ×1.6 | 20 lines |
+| 0.35 – 0.75 | `normal` | ×1.0 | 8 lines |
+| > 0.75 | `aggressive` | ×0.55 | 4 lines |
+
+Measured on a 400-line unique build log (15,960 tokens): **light 51.5%** (195 lines kept), **normal 69.5%** (123 lines), **aggressive 83.1%** (69 lines). Set `adaptive_enabled: false` to pin the level at `normal`.
+
+<a id="12-model-aware"></a>
+#### 12. Model-Aware Output Format
+TOON is plain text, so every model can read it; what differs is how well a model holds a columnar table together over a long context. `toon_mode` decides which format the agent receives:
+
+| Mode | Behaviour |
+| :--- | :--- |
+| `auto` *(default)* | TOON for model families with a track record on columnar text; minified JSON otherwise |
+| `always` | TOON whenever it wins on tokens |
+| `never` | Always minified JSON |
+
+`model_family` supplies the target (e.g. `claude`, `gpt`, `qwen`). When it is unset, `auto` keeps TOON enabled so no existing deployment silently changes format. Both formats are lossless: the same 30 × 20 JSON payload produced 3,881 characters as TOON versus 8,401 as minified JSON, with identical round-trip equality.
+
+<a id="13-retention"></a>
+#### 13. Retention Controls
+Recovery storage is bounded explicitly rather than growing until someone notices:
+
+```bash
+trimtok purge --older-than 24     # Remove entries older than 24 hours
+trimtok purge --max-mb 50         # Evict oldest entries until the store is under 50 MB
+trimtok purge --ttl-hours 72      # Persist a 72-hour retention window
+```
+
+`--max-mb` alone evicts by age without wiping the store first, and the TTL is stored in the database `meta` table so it survives restarts. Defaults: 1,000 entries, 50 MB, 24 hours.
+
+<a id="14-fix-accuracy"></a>
+#### 14. Fix-Accuracy Verification
+Token counts say nothing about whether an agent can still do the job. `eval/fix_accuracy.py` injects a known regression into a real module, compresses it, and asks whether the bug is still fixable:
+
+- **`LOCATE`** *(default, no model required)* — verifies the buggy line, its enclosing signature, its line number and neighbour context are either visible in the compressed view or reachable through `#ref`. A payload that hides the bug without a reference fails, because the agent would have to re-read the file.
+- **`FIX`** *(`--llm`)* — sends the compressed view to a model, takes back the corrected line, patches the real module, imports it and runs a behavioural predicate. A pass means the repaired code works, not that the text looks plausible.
+
+Current result: **8/8 locate accuracy** across Python, TOON codec, dedup and sentinel modules, at **53.8% token reduction**. The suite includes a negative control (`test_wrong_patch_fails`) so a benchmark that cannot fail is itself caught.
 
 ---
 
@@ -319,10 +417,18 @@ plugins:
         guard_ms: 200.0             # Monotonic deadline budget (fail-open if exceeded)
         min_chars: 2048             # Minimum character threshold before compression fires
         toon_enabled: true          # Enable Lossless TOON v2 JSON transcoding
+        toon_mode: auto             # Model-aware format: auto | always | never
+        model_family: ""            # Target model family (claude, gpt, qwen); empty keeps TOON on
+        policy_enabled: true        # Keep secrets, security data and edit payloads byte-exact
+        adaptive_enabled: true      # Scale compression strength with context pressure
+        context_pressure: 0.0       # Fraction of context window used (0.0 - 1.0)
         delta_enabled: true         # Enable Cross-Turn Command Delta engine
         delta_threshold: 0.65       # Similarity ratio threshold for delta mode (0.50 - 1.00)
         mask_enabled: true          # Enable stale turn span expiration
         mask_keep_turns: 2          # Retain full unmasked history for N active turns
+        ccr_ttl_hours: 24           # Retention window for the recovery store
+        ccr_max_bytes: 52428800     # Hard ceiling for the recovery store (50 MB)
+        ccr_max_entries: 1000       # Maximum cached payloads
         excluded_commands: []       # Exact command stems to bypass compression
         excluded_tools: []          # Tool names to leave 100% untouched
 ```
@@ -338,7 +444,7 @@ plugins:
 - **`/trimtok usage`**: Shows live telemetry breakdown across terminal and tool hooks (events, folds, chars saved, top gates).
 - **`/trimtok gain`**: Detailed savings breakdown by shape, tool, and command — identifies bottlenecks.
 - **`/trimtok discover`**: Scans telemetry → finds low-savings shapes/tools → suggests targeted filters.
-- **`/trimtok purge`**: Purges expired cache entries and vacuums the SQLite WAL database.
+- **`/trimtok purge`**: Purges expired cache entries and vacuums the SQLite WAL database. Accepts `--older-than <hours>`, `--max-mb <size>` and `--ttl-hours <hours>`.
 - **`/trimtok recall <#ref>`**: Retrieves original output by CCR reference (alias for `retrieve`).
 
 <a id="standalone-cli-wrapper"></a>
@@ -356,6 +462,33 @@ trimtok wrap -- npm test || echo "Failed with exit code $?"
 trimtok retrieve "#c1"
 trimtok recall "#c1" --offset 50 --limit 30
 ```
+
+<a id="rewrite-cli"></a>
+### Command Rewriting (`trimtok rewrite`)
+Prints a noise-reduced form of a command without executing it, for use in shell aliases or CI scripts:
+```bash
+trimtok rewrite -- pytest tests/    # -> pytest tests/ -q --tb=short
+trimtok rewrite -- git log          # -> git log --oneline -n 25
+```
+Explicit flags are respected: `trimtok rewrite -- pytest -v` returns `pytest -v` unchanged. `trimtok wrap` applies the same rewrite before execution.
+
+---
+
+<a id="verification"></a>
+## 🧪 Verification
+
+Every number in this README is reproducible from the repository:
+
+```bash
+python eval/eval_real.py        # Per-payload reduction + gate failures on the 32-payload corpus
+python eval/audit_honesty.py    # Claimed vs proven reduction; unproven characters must be 0
+python eval/steps.py            # raw -> hook -> intent retrieval, per payload
+python eval/fix_accuracy.py     # Can an agent still fix the bug? (LOCATE, no model needed)
+python eval/probe_ceiling.py    # Are folded lines announced and ref-reachable?
+python -m unittest discover -s tests/   # 94 unit tests
+```
+
+The honesty audit is the load-bearing check: it recomputes the claimed reduction from the recovery store and reports any character that was removed without a resolvable reference. Run `eval_real.py` immediately before `audit_honesty.py` against a fresh store — pointing both at the same empty `TRIMTOK_DATA_DIR` — so the audit scores exactly the corpus the first script produced. Current state — **73.19% claimed, 73.19% proven, 0 unproven characters**, 0 gate failures, 0 silent line loss, 0 unannounced faults, 94/94 tests passing.
 
 ---
 
