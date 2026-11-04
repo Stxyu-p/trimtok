@@ -134,6 +134,10 @@ def _usage(entry: dict, ctx: Any = None) -> None:
     if ctx is not None and not _bool_cfg(ctx, "usage_enabled", True):
         return
     try:
+        if "trace_id" not in entry:
+            tid = os.environ.get("TRINITY_TRACE_ID") or (_str_cfg(ctx, "trace_id", "") if ctx else "")
+            if tid:
+                entry["trace_id"] = str(tid)[:64]
         path = _usage_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         line = json.dumps(entry, ensure_ascii=False) + "\n"

@@ -337,6 +337,18 @@ with tempfile.TemporaryDirectory() as td:
         uback = usage_path2.with_name(usage_path2.name + ".1")
         check("usage-rotates-with-cap", usage_path2.stat().st_size <= 400 and uback.exists())
 
+# Trinity trace correlation
+with tempfile.TemporaryDirectory() as td:
+    from pathlib import Path as _PT
+    from unittest.mock import patch as _patchT
+    usage_pt = _PT(td) / "usage.jsonl"
+    with _patchT.object(plugin, "_usage_path", return_value=usage_pt), \
+         _patchT.dict(os.environ, {"TRINITY_TRACE_ID": "trinity-trace-test-123"}):
+        plugin._usage({"gate": "ok", "hook": "terminal"})
+        tlines = usage_pt.read_text(encoding="utf-8").splitlines()
+        trow = json.loads(tlines[0]) if tlines else {}
+        check("usage-carries-trinity-trace-id", trow.get("trace_id") == "trinity-trace-test-123")
+
 # 10. determinism: same input -> same bytes
 a1, _ = compress_terminal("pytest", big)
 a2, _ = compress_terminal("pytest", big)
