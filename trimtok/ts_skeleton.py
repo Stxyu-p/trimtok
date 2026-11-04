@@ -9,10 +9,15 @@ import re
 
 _LANG_MAP = {
     ".py": "python",
+    ".pyw": "python",
     ".js": "javascript",
+    ".mjs": "javascript",
+    ".cjs": "javascript",
     ".jsx": "javascript",
     ".ts": "javascript",
     ".tsx": "javascript",
+    ".mts": "javascript",
+    ".cts": "javascript",
     ".go": "go",
     ".rs": "rust",
     ".java": "java",
@@ -22,6 +27,14 @@ _LANG_MAP = {
     ".cc": "cpp",
     ".cxx": "cpp",
     ".hpp": "cpp",
+    ".cs": "csharp",
+    ".sh": "bash",
+    ".bash": "bash",
+    ".zsh": "bash",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".toml": "toml",
+    ".json": "json",
 }
 
 _TS_LANGS: dict = {}
@@ -47,6 +60,16 @@ def _get_ts_lang(lang: str):
             import tree_sitter_c as mod
         elif lang == "cpp":
             import tree_sitter_cpp as mod
+        elif lang == "csharp":
+            import tree_sitter_c_sharp as mod
+        elif lang == "bash":
+            import tree_sitter_bash as mod
+        elif lang == "yaml":
+            import tree_sitter_yaml as mod
+        elif lang == "toml":
+            import tree_sitter_toml as mod
+        elif lang == "json":
+            import tree_sitter_json as mod
 
         if mod is None:
             _TS_LANGS[lang] = None
@@ -83,6 +106,12 @@ def detect_language(code: str, filename: str = "") -> str:
         return "cpp" if "std::" in code or "class " in code else "c"
     if ("public class " in code or "public static void main" in code or "package " in code) and "System.out" in code:
         return "java"
+    if "#include <" in code and ("void main" in code or "int main" in code):
+        return "c"
+    if ("public " in code or "class " in code) and ("using " in code or "namespace " in code or ".cs" in filename):
+        return "csharp"
+    if "#!/" in code or (code.startswith("#!/usr/bin/env") or code.startswith("#!/bin/")):
+        return "bash"
     if ("function " in code or "const " in code or "=>" in code or "let " in code) and (
         "console." in code or "require(" in code or "export " in code or "{" in code
     ):
@@ -247,7 +276,7 @@ def skeletonize_code_full(
                 return res, saved, count
         except Exception:
             pass
-    if lang in ("python", "javascript", "go", "rust", "java", "c", "cpp"):
+    if lang in ("python", "javascript", "go", "rust", "java", "c", "cpp", "csharp", "bash"):
         return _skeletonize_ts_core(
             code, lang=lang, min_body_lines=min_body_lines, ref=ref,
             line_prefixes=line_prefixes, line_nos=line_nos

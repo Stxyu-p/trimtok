@@ -121,7 +121,7 @@ Tool / Terminal Output
 
 Empirical head-to-head benchmarks measured on identical production workloads:
 
-| Capability / Benchmark | **trimtok v5.3.3** 🌟 | **RTK v1.1.0** (Rust) | **headroom v0.42.0** (Python) | **skim v2.10.0** (Rust) | **sqz v2.1.1** (Rust) | **tokenfold** (Python/Rust) |
+| Capability / Benchmark | **trimtok v5.3.4** 🌟 | **RTK v1.1.0** (Rust) | **headroom v0.42.0** (Python) | **skim v2.10.0** (Rust) | **sqz v2.1.1** (Rust) | **tokenfold** (Python/Rust) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
 | **Execution Layer** | **In-process hook + CLI** | Subprocess CLI | Python library / Proxy | Subprocess CLI | Subprocess CLI | Python FFI library |
 | **Uniform JSON (500 rows)** | **55.3% saved** | 99.6% (truncated) | **61.7% saved** | N/A | ~55% saved | 55.7% saved |

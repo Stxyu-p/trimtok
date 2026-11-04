@@ -99,6 +99,23 @@ RETRIEVE_SCHEMA = {
                     "limited to 256 pattern characters, 1 MB input, 1000 matches, and 100 KB output."
                 ),
             },
+            "intent": {
+                "type": "string",
+                "description": (
+                    "Free-text task description, e.g. 'what HTTP errors occurred' or "
+                    "'which functions does this file define'. The store ranks every line by "
+                    "token overlap with the intent and returns the top `limit` most relevant "
+                    "lines (intent_budget default 400 lines / 8KB). Use this instead of grep "
+                    "when you cannot write a regex; data stays in the CCR vault."
+                ),
+            },
+            "intent_budget": {
+                "type": "integer",
+                "description": (
+                    "Max number of intent-ranked lines to return (default 400). Lower it for "
+                    "smaller answers; the ranking is deterministic."
+                ),
+            },
         },
         "required": ["hash"],
     },
@@ -397,6 +414,115 @@ def _compile_grep(source: str) -> re.Pattern[str]:
     return re.compile(source, re.IGNORECASE)
 
 
+# ---------------------------------------------------------------------------
+# Intent ranking (deterministic, zero-model): rank lines by token overlap with
+# a free-text task description. This is the "smart selector" lane the E2E run
+# showed buying ~14 more points of reduction without touching the compressor.
+# ---------------------------------------------------------------------------
+_INTENT_STOP = frozenset(
+    "the a an and or of to in for on with what which when where who how "
+    "does do did is are was were this that these those it they them their "
+    "you your file line lines list show tell me give answer only value name "
+    "any all each per new old first last most least from at by as if then out run".split()
+)
+_INTENT_TTERMS = re.compile(r"[a-z0-9_][a-z0-9_-]*", re.I)
+# Definition lines carry the outline an agent needs even when the intent says
+# "functions"/"signatures" and no code line contains that word.
+_DEF_LINE_RE = re.compile(
+    r"^\s*(?:\d+\|)?\s*(?:async\s+)?"
+    r"(?:def|class|function|func|fn|interface|struct|impl|public|private|export|type)\b"
+)
+_DEF_INTENT = frozenset(
+    "function functions def method methods class classes signature signatures "
+    "define defines definition interface api outline symbol symbols".split()
+)
+# Headings answer "which versions/sections/releases" even when the heading text
+# shares no vocabulary with the question.
+_HEAD_LINE_RE = re.compile(r"^\s*(?:\d+\|)?\s*#{1,6}\s")
+_HEAD_INTENT = frozenset(
+    "version versions release releases changelog heading headings section sections "
+    "title titles milestone milestones date dates".split()
+)
+
+
+def _stem(t: str) -> str:
+    """Crude suffix strip so 'functions' matches 'function' and 'errors' 'error'."""
+    for suf in ("ations", "ation", "ings", "ing", "ies", "es", "s"):
+        if len(t) > len(suf) + 3 and t.endswith(suf):
+            return t[: -len(suf)]
+    return t
+
+
+def _intent_terms(intent: str) -> set[str]:
+    terms: set[str] = set()
+    for t in _INTENT_TTERMS.findall(intent):
+        tl = t.lower()
+        if len(tl) >= 3 and tl not in _INTENT_STOP:
+            terms.add(_stem(tl))
+    return terms
+
+
+def _line_terms(line: str) -> set[str]:
+    # For code lines prefer the raw token span; strip path noise but keep
+    # identifiers and hex/digits.  This is a cheap bag-of-words overlap.
+    return {_stem(t.lower()) for t in _INTENT_TTERMS.findall(line) if len(t) >= 2}
+
+
+def _intent_rank(content: str, intent: str, budget: int, args: dict, ctx: Any) -> str:
+    """Return the top-k lines most relevant to a free-text intent.
+
+    Deterministic, O(n) bag-of-words overlap (exact token match only; no
+    embedding model, no network). Keeps line-number prefixes and a compact
+    header. Never raises -- falls back to head of the document.
+    """
+    terms = _intent_terms(intent)
+    lines = content.splitlines()
+    total = len(lines)
+    wants_defs = bool(terms & _DEF_INTENT)
+    wants_heads = bool(terms & _HEAD_INTENT)
+    try:
+        if not terms:
+            raise ValueError("no usable terms")
+        scored: list[tuple[int, int, str]] = []
+        for i, line in enumerate(lines):
+            if not line.strip():
+                continue
+            lt = _line_terms(line)
+            if not lt:
+                continue
+            overlap = len(lt & terms)
+            # A definition line answers "what does this file define" even when
+            # the intent word never appears in the source.
+            if wants_defs and _DEF_LINE_RE.match(line):
+                overlap += 2
+            if wants_heads and _HEAD_LINE_RE.match(line):
+                overlap += 2
+            if overlap > 0:
+                scored.append((overlap, i, line))
+        scored.sort(key=lambda x: (-x[0], x[1]))
+        chosen = scored[:max(1, min(budget, len(scored)))]
+        if not chosen:
+            chosen = [(0, i, l) for i, l in enumerate(lines[:min(budget, total)]) if l.strip()]
+        # One line of context below each hit keeps a signature's body readable
+        # without paying for the whole function.
+        idx = {i for _, i, _ in chosen}
+        for i in list(idx):
+            if i + 1 < total and (i + 1) not in idx and len(idx) < budget:
+                idx.add(i + 1)
+        out_lines = [f"{i + 1}|{lines[i]}" for i in sorted(idx) if lines[i].strip()]
+        body = "\n".join(out_lines)
+        hit = len(out_lines)
+        _usage_retrieve(args, hit=True, ctx=ctx, mode="intent", matches=hit, total=total)
+        head = f"[tt:intent] {len(terms)} terms, {hit}/{total} lines by relevance (deterministic token overlap); full source in CCR #ref."
+        return _ok({"intent": intent, "matched_lines": hit, "total_lines": total, "lines": head + "\n" + body})
+    except Exception:
+        # Fail-open: never error on intent; return the document head instead.
+        head = min(budget, total)
+        body = "\n".join(f"{i + 1}|{l}" for i, l in enumerate(lines[:head]) if l.strip())
+        _usage_retrieve(args, hit=True, ctx=ctx, mode="intent_fallback", matches=head, total=total)
+        return _ok({"intent": intent, "matched_lines": head, "total_lines": total, "lines": body})
+
+
 def _finalize(
     raw: str,
     compressed: str,
@@ -597,6 +723,11 @@ def _handle_retrieve(args: dict, **kw: Any) -> str:
         return _err("Not found or expired (TTL passed). Re-run the original command instead.")
 
     grep = str((args or {}).get("grep") or "").strip()
+    intent = str((args or {}).get("intent") or "").strip()
+    intent_budget = _safe_int((args or {}).get("intent_budget"), 400)
+    if intent and intent_budget > 0:
+        return _intent_rank(content, intent, intent_budget, args, ctx)
+
     if grep:
         try:
             if len(content) > _MAX_GREP_INPUT_CHARS:

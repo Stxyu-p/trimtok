@@ -1312,6 +1312,59 @@ def _handle_read_file_v42(
                         "ms": (time.perf_counter() - t0) * 1000,
                     }
 
+    # JSON files: neither the AST lane nor the prose lane can touch them, so a
+    # `.json` read used to pass through verbatim at any size. TOON (arrays) and
+    # whole-doc minify (objects) are both lossless and round-trip verified.
+    if _ext in ("json",) or (raw_body.lstrip()[:1] in "{[" and _ext in ("json", "jsonl", "")):
+        _jbody = raw_body.strip()
+        if len(_jbody) >= 512:
+            _jcand, _jkind = None, ""
+            try:
+                from .toon_codec import fold_json_to_toon as _fold_toon
+                _t = _fold_toon(_jbody)
+                if _t != _jbody and len(_t) < len(_jbody):
+                    _jcand, _jkind = _t, "file_toon"
+            except Exception:
+                pass
+            if _jcand is None:
+                try:
+                    _m, _msaved = minify_json(_jbody)
+                    if _msaved >= 40 and len(_m) < len(_jbody):
+                        _jcand, _jkind = _m, "file_json_min"
+                except Exception:
+                    pass
+            if _jcand is not None:
+                _jout = _jcand
+                # Minified/columnar text is not byte-identical to the file, so the
+                # original must stay retrievable: emit a real #ref or stay verbatim.
+                _jref = _ccr_put(result)
+                if not _jref:
+                    _jcand = None
+                else:
+                    _jhead = adaptive_tool_head(
+                        len(result) - len(_jout), _jref.lstrip("#"), len(result),
+                        is_lossless_only=False,
+                    )
+                    _jcand_full = f"{_jhead}\n{_jout}" if _jhead else _jout
+                    _tb, _ta = _tok_pair(result, _jcand_full)
+                    if len(_jcand_full) < len(result) and _ta < _tb:
+                        file_cache[cache_key]["skeleton_only"] = True
+                        return _jcand_full, {
+                            "gate": "ok",
+                            "kind": _jkind,
+                            "digest": _jref.lstrip("#"),
+                            "before_chars": len(result),
+                            "after_chars": len(_jcand_full),
+                            "saved_chars": len(result) - len(_jcand_full),
+                            "est_tokens_before": _tb,
+                            "est_tokens_after": _ta,
+                            "toon_saved": len(result) - len(_jcand_full) if _jkind == "file_toon" else 0,
+                            "toon_used": _jkind == "file_toon",
+                            "toon_kind": _jkind,
+                            "minify_saved": len(result) - len(_jcand_full) if _jkind == "file_json_min" else 0,
+                            "ms": (time.perf_counter() - t0) * 1000,
+                        }
+
     # Cold first read of a file under _COLD_READ_SKELETON_MIN_CHARS:
     # If not a targeted slice, try safe cosmetic cleanup (clean license/banners)
     if not _is_targeted_slice(offset, limit, first_line_no, n_lines):

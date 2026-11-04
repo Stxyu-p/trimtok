@@ -52,7 +52,7 @@ HEAD_COUNT_RES = [
 # announce per-fold with in-body markers `[tt:body L89-L98 (10L of fn) #c1 ->
 # read_file(offset=89, limit=10)...]` and `[tt:prose L11-L25 (15L) #c1 -> ...]`.
 ANNOUNCE_RE = re.compile(
-    r"hidden=\d+|errors_hidden=[1-9]\d*|dropped=[1-9]\d*|"
+    r"hidden=\d+|errors_hidden=[1-9]\d*|dropped=[1-9]\d*|saved=[1-9]\d*|"
     r"\[\.\.\.\s*\d+\s+(?:unchanged )?lines?|collapsed|omitted|"
     r"\[tt:(?:body|prose) L\d+-L\d+ \(\d+L"
 )

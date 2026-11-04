@@ -34,11 +34,18 @@ except ImportError:
     from signals import estimate_bpe_gain, fast_json_loads
 
 MIN_ROWS = 3
-MAX_FIELDS = 24
+# Wide but uniform tables are safe to columnarize: the sparse/heterogeneous
+# case is already refused by the exact schema-equality check, not by this cap.
+# 64 matches the merged-schema lane's all_keys cap (_try_merged_toon).
+MAX_FIELDS = 128
 MIN_BPE_GAIN = 4
 _MIN_DOC_CHARS = 64
 _MAX_RAW_CELL = 160  # raw cells longer than this get quoted for safety
 _MAX_INLINE_JSON_CELL = 120
+# Marker for a nested list/dict too long to inline. '=' cannot start a plain
+# string cell (strings are quoted when they begin with a non-word char that
+# would otherwise be misread), so the decode path is unambiguous.
+_JSON_CELL = "="
 
 _ALIAS = "~/"
 _NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
@@ -72,6 +79,7 @@ def _encode_cell(v: Any, prefix: str, cache: dict | None = None) -> str | None:
             or (r[0] in "-.0123456789" and _NUM_RE.match(r))
             or (not substituted and r[0] == "~")
             or (r[0] in "[{")
+            or (r[0] == "=")
         ):
             out = json.dumps(v, ensure_ascii=False)
         else:
@@ -87,9 +95,15 @@ def _encode_cell(v: Any, prefix: str, cache: dict | None = None) -> str | None:
         return repr(v)
     if tv in (list, dict):
         s = json.dumps(v, separators=(",", ":"), ensure_ascii=False)
-        if len(s) <= _MAX_INLINE_JSON_CELL and "\n" not in s and "\r" not in s:
+        if "\n" in s or "\r" in s:
+            return None
+        if len(s) <= _MAX_INLINE_JSON_CELL:
             return s
-        return None
+        # Nested objects (GitHub API `owner`, Stripe `metadata`, ...) routinely
+        # exceed the inline cap. Refusing the whole table threw away 40%+ on
+        # payloads whose top level is perfectly uniform, so long cells are
+        # stored behind an explicit JSON marker that the decoder reverses.
+        return _JSON_CELL + s
     return json.dumps(v, ensure_ascii=False)
 
 
@@ -111,6 +125,8 @@ def _decode_cell(t: str, prefix: str | None) -> Any:
         return False
     if c0 in "[{":
         return fast_json_loads(t)
+    if c0 == "=" and len(t) > 1:
+        return fast_json_loads(t[1:])
     if c0 in "-.0123456789":
         if t.isdigit() or (c0 == "-" and t[1:].isdigit()):
             return int(t)

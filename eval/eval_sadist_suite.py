@@ -83,12 +83,16 @@ def test_1_3_half_million_single_line():
 # -------------------------------------------------------------
 
 def test_2_1_column_saturation_json():
-    # 100 distinct columns in JSON array (MAX_FIELDS=24)
+    # 100 uniform columns: since v5.3.4 this columnarizes instead of bailing out,
+    # so the invariant is lossless round-trip, not rejection.
     rows = [{f"key_{i}": i for i in range(100)} for _ in range(5)]
     raw = json.dumps(rows)
     cand = fold_json_to_toon(raw)
-    # Invariant: Must safely reject wide table and preserve raw valid JSON
-    return cand == raw, "Safely rejected wide table >24 cols", 0
+    if cand == raw:
+        return True, "Refused wide table (safe fallback)", 0
+    from trimtok.toon_codec import _strict_eq
+    ok = _strict_eq(toon_decode(cand), json.loads(raw))
+    return ok, f"Wide table lossless: {len(raw)} -> {len(cand)} chars", 0
 
 def test_2_2_zero_and_negative_limits():
     # min_chars=-1 and max_lines=0

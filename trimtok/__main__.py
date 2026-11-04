@@ -145,6 +145,8 @@ def main(argv: list[str] | None = None) -> int:
     p_ret.add_argument("ref", help="CCR reference (#c1 or 12-hex digest)")
     p_ret.add_argument("section", nargs="?", choices=["errors", "diff", "summary", "tail"], help="Optional section")
     p_ret.add_argument("--grep", help="Optional safe case-insensitive regex filter")
+    p_ret.add_argument("--intent", help="Free-text task; returns the lines ranked most relevant")
+    p_ret.add_argument("--intent-budget", type=int, default=400, help="Max ranked lines (default 400)")
     p_ret.add_argument("--offset", type=int, help="1-indexed start line")
     p_ret.add_argument("--limit", type=int, help="Maximum lines to return")
 
@@ -156,6 +158,12 @@ def main(argv: list[str] | None = None) -> int:
 
     p_wrap = sub.add_parser("wrap", help="Run a command and compress its terminal output via Trimtok")
     p_wrap.add_argument("command", nargs=argparse.REMAINDER, help="Command and arguments to run")
+
+    p_rew = sub.add_parser(
+        "rewrite",
+        help="Print the noise-reduced form of a command (for shell aliases; Hermes has no pre-exec hook)",
+    )
+    p_rew.add_argument("command", nargs=argparse.REMAINDER, help="Command to rewrite")
 
     ns = parser.parse_args(args_list)
 
@@ -197,6 +205,9 @@ def main(argv: list[str] | None = None) -> int:
             q["section"] = ns.section
         if ns.grep:
             q["grep"] = ns.grep
+        if getattr(ns, "intent", None):
+            q["intent"] = ns.intent
+            q["intent_budget"] = ns.intent_budget
         if ns.offset is not None:
             q["offset"] = ns.offset
         if ns.limit is not None:
@@ -225,6 +236,16 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(compressed)
         if not compressed.endswith("\n"):
             sys.stdout.write("\n")
+        return 0
+    if ns.cmd == "rewrite":
+        cmd_args = list(ns.command)
+        if cmd_args and cmd_args[0] == "--":
+            cmd_args = cmd_args[1:]
+        if not cmd_args:
+            sys.stderr.write("Error: no command provided. Usage: trimtok rewrite -- <command> [args...]\n")
+            return 1
+        from .prerewrite import rewrite_command
+        sys.stdout.write(rewrite_command(" ".join(cmd_args)) + "\n")
         return 0
     if ns.cmd == "wrap":
         cmd_args = list(ns.command)

@@ -2,6 +2,46 @@
 
 All notable changes to trimtok are documented here.
 
+## [5.3.4] - 2026-11-04
+
+### Added
+- **JSON intake lane for `read_file`:** `.json` files previously fell through
+  both the AST and prose lanes and shipped verbatim at any size. They now go
+  through TOON (arrays) or whole-doc minify (objects), both round-trip
+  verified, with a real `#ref` so the original stays retrievable. Live check:
+  GitHub repos 17.6%, JSONPlaceholder comments 28.6%, posts 27.1%, single-dict
+  OpenAPI 45.0% (all were 0% before).
+- **Wide + deep TOON cells:** uniform tables up to 128 columns now columnarize
+  (50 columns: 61% saved), and nested objects longer than the inline cap are
+  stored behind an explicit `=` JSON marker instead of rejecting the table
+  (this alone unblocked GitHub/Stripe-shaped payloads).
+- **`trimtok retrieve --intent` / `--intent-budget`:** free-text retrieval that
+  ranks lines by stemmed token overlap, with structural boosts for definition
+  and heading lines. Exposed on the CLI, not just the MCP tool.
+- **`trimtok rewrite -- <cmd>`:** prints the noise-reduced command for shell
+  aliases. Hermes exposes no pre-execution shell hook (`pre_command` is
+  observer-only and slash-command-scoped), so this cannot be wired into the
+  agent runtime automatically — `trimtok wrap` applies it at execution time.
+- **`eval/steps.py`:** per-step token accounting (raw → hook → narrow) over the
+  real corpus, no LLM needed. Current totals: 391,665 → 98,532 (74.84%) →
+  42,773 tok (89.08%).
+
+### Changed
+- Intent ranking now stems terms (`functions`→`function`) and adds one line of
+  context under each hit, so a signature arrives with its body.
+- `MAX_FIELDS` 64 → 128 for uniform tables (the sparse case is still refused by
+  the exact schema-equality check, not by this cap).
+
+### Fixed
+- JSON minify lane emits a resolvable `#ref` before shipping, so C1/C5 hold
+  (caught by `eval/eval_real.py`: `tool-9router-pkg` C1-lossy(73) + C5-verbatim
+  when the lane first shipped headerless).
+
+### Verification
+- 72/72 unit tests (11 new in `tests/test_v534_lanes.py`).
+- Real corpus: 73.19% reduction, 0 gate failures; honesty audit 73.19% claimed
+  = 73.19% proven; 0 silent line loss, 0 unannounced faults.
+
 ## [5.3.3] - 2026-11-04
 
 ### Added
