@@ -1,4 +1,4 @@
-"""trimtok toon_codec: lossless JSON→TOON columnar transcoder (Trimtok 4.0).
+"""trimtok toon_codec: lossless JSON→TOON columnar transcoder.
 
 Whole-document JSON arrays (or nested dict wrappers holding one) with a uniform
 schema transcode to a compact columnar table:
@@ -397,8 +397,17 @@ def fold_json_to_toon(raw_text: str) -> str:
 
 
 def encode(data: Any) -> str | None:
-    """Public helper to encode Python structure to TOON table."""
-    return _encode_doc(data)
+    """Public helper to encode Python structure to TOON table with strict round-trip verification."""
+    res = _encode_doc(data)
+    if not res:
+        return None
+    try:
+        restored = toon_decode(res)
+        if _strict_eq(restored, data):
+            return res
+    except Exception:
+        pass
+    return None
 
 
 def decode(text: str) -> tuple[Any, Exception | None]:

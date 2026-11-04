@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal stdio MCP server exposing Trimtok v4.2.1 to any MCP-capable agent host.
+"""Minimal stdio MCP server exposing Trimtok to any MCP-capable agent host.
 
 Speaks newline-delimited JSON-RPC 2.0 on stdin/stdout. Tools:
   trimtok_compress_terminal — compress terminal/shell output (windowing, diff, traceback, delta)
@@ -37,7 +37,7 @@ except ImportError:
 SERVER_INFO = {"name": "trimtok", "version": VERSION}
 FALLBACK_PROTOCOL = "2024-11-05"
 SERVER_INSTRUCTIONS = (
-    "Trimtok v4.2.2 — Deterministic Context Compressor & Lossless CCR Cache.\n\n"
+    f"Trimtok v{VERSION} — Deterministic Context Compressor & Lossless CCR Cache.\n\n"
     "## Mandatory Agent Habit (When to Use Trimtok)\n"
     "1. **Noisy Terminal / Test / Build Logs (>2 KB):** Call `trimtok_compress_terminal` (pass `output` or `file_path`) "
     "to compress repetitive logs while preserving 100% of errors, tracebacks, and unified git diffs.\n"
@@ -101,7 +101,7 @@ TOOLS = [
     },
     {
         "name": "trimtok_status",
-        "description": "Inspect Trimtok v4.2.1 compression stats, CCR cache size, or purge expired entries.",
+        "description": "Inspect Trimtok compression stats, CCR cache size, or purge expired entries.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -159,7 +159,7 @@ def _tool_compress_terminal(args: dict[str, Any]) -> dict[str, Any]:
         if ref and stats.get("digest"):
             compressed = compressed.replace(f"#{stats['digest']}", ref)
         _audit({"hook": "mcp_terminal", "cmd": command[:120], **stats})
-    _usage({"hook": "terminal", "cmd": command[:120], "shape": stats.get("kind", "mixed"), **stats})
+    _usage({"hook": "mcp_terminal", "cmd": command[:120], "shape": stats.get("kind", "mixed"), **stats})
     resp: dict[str, Any] = {
         "compressed": compressed,
         "ref": ref,
@@ -199,7 +199,7 @@ def _tool_compress_tool(args: dict[str, Any]) -> dict[str, Any]:
         if ref and stats.get("digest"):
             compressed = compressed.replace(f"#{stats['digest']}", ref)
         _audit({"hook": "mcp_tool", "tool": tool_name[:120], **stats})
-    _usage({"hook": "tool", "tool": tool_name[:120], "shape": stats.get("kind", "tool"), **stats})
+    _usage({"hook": "mcp_tool", "tool": tool_name[:120], "shape": stats.get("kind", "tool"), **stats})
     resp: dict[str, Any] = {
         "compressed": compressed,
         "ref": ref,

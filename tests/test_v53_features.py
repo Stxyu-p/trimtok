@@ -169,7 +169,17 @@ class TestMergedTOON(unittest.TestCase):
 
 
 class TestReadFileMultiLangAST(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        try:
+            import tree_sitter
+            cls.has_ts = True
+        except ImportError:
+            cls.has_ts = False
+
     def test_read_file_typescript_skeletonizer(self):
+        if not self.has_ts:
+            self.skipTest("tree-sitter not installed")
         from trimtok.dedup import _handle_read_file_v42
         import time
 
@@ -201,6 +211,8 @@ class TestReadFileMultiLangAST(unittest.TestCase):
         self.assertNotIn("pass  #", out)
 
     def test_read_file_go_skeletonizer(self):
+        if not self.has_ts:
+            self.skipTest("tree-sitter not installed")
         from trimtok.dedup import _handle_read_file_v42
         import time
 

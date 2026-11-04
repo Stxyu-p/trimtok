@@ -1,8 +1,11 @@
 """Tests for multi-approach read_file benchmark runner."""
 from __future__ import annotations
 
+import sys
 import unittest
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Import runner functions (will fail until runner is created)
 from eval.eval_read_file_bench import (

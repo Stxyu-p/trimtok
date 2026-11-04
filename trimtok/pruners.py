@@ -262,6 +262,8 @@ prune_tracebacks = prune_traceback
 # 3. Scoped Search Grouping (scoped_search)
 # ---------------------------------------------------------------------------
 _HIT_RE = re.compile(r"^([\w./\\~$@+:-]+?):(\d+):(.*)$")
+_PATH_LINE_RE = re.compile(r"^(?:[A-Za-z]:[/\\]|/|[a-zA-Z0-9_.-]+[/\\])[^\s:*?\"<>|]+\.[a-zA-Z0-9_]+$")
+_INDENT_HIT_RE = re.compile(r"^\s*(\d+):\s*(.*)$")
 _DEF_RE = re.compile(
     r"^\s*(?:async\s+)?(?:def|class|func(?:tion)?|fn)\s+([A-Za-z_$][\w$]*)"
 )
@@ -276,18 +278,29 @@ _MAX_DEFS = 2
 
 
 def looks_search_shaped(text: str) -> bool:
-    """True when the doc is a multi-file path:line:text hit list."""
+    """True when the doc is a multi-file path:line:text or path-grouped hit list."""
     try:
         lines = [ln for ln in (text or "").split("\n") if ln.strip()]
         if len(lines) < _MIN_LINES:
             return False
         hits = 0
         paths: set[str] = set()
+        active_path: str | None = None
         for ln in lines:
             m = _HIT_RE.match(ln)
             if m:
                 hits += 1
                 paths.add(m.group(1))
+                active_path = None
+                continue
+            if _PATH_LINE_RE.match(ln):
+                active_path = ln
+                continue
+            if active_path and _INDENT_HIT_RE.match(ln):
+                hits += 1
+                paths.add(active_path)
+                continue
+            active_path = None
         if hits < _MIN_HITS or len(paths) < _MIN_PATHS:
             return False
         return hits / len(lines) >= _HIT_FRACTION
@@ -384,9 +397,18 @@ def group_search_hits(
                     _flush_seg()
                 seg_path = path
                 seg_hits.append((int(m.group(2)), m.group(3), ln))
-            else:
+                continue
+            if _PATH_LINE_RE.match(ln):
                 _flush_seg()
-                out.append(ln)
+                seg_path = ln
+                continue
+            if seg_path is not None:
+                m_ind = _INDENT_HIT_RE.match(ln)
+                if m_ind:
+                    seg_hits.append((int(m_ind.group(1)), m_ind.group(2), ln))
+                    continue
+            _flush_seg()
+            out.append(ln)
         _flush_seg()
         new_text = "\n".join(out)
         saved = len(text) - len(new_text)

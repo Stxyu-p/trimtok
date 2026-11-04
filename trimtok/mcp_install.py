@@ -315,14 +315,20 @@ def _edit_claude_code(client: Client, spec: ServerSpec, remove: bool, dry_run: b
     if dry_run:
         return ("removed" if present else "absent") if remove else ("updated" if present else "added")
     if present:
+        old_config = listed.stdout.strip() if listed.stdout else ""
         subprocess.run([exe, "mcp", "remove", "--scope", "user", spec.name],
                        capture_output=True, text=True, timeout=60)
+    else:
+        old_config = ""
     if remove:
         return "removed" if present else "absent"
     payload = json.dumps(_json_entry("claude-code", spec), ensure_ascii=False)
     added = subprocess.run([exe, "mcp", "add-json", "--scope", "user", spec.name, payload],
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
     if added.returncode != 0:
+        if old_config and old_config.startswith("{"):
+            subprocess.run([exe, "mcp", "add-json", "--scope", "user", spec.name, old_config],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
         raise ConfigError(f"claude mcp add-json failed: {(added.stderr or added.stdout).strip()}")
     return "updated" if present else "added"
 

@@ -134,10 +134,13 @@ _ERROR_HINTS = (
 _STATUS5_RE = re.compile(r"status(?:_code)?[=:\s]+5\d{2}(?![0-9])", re.I)
 _HTTP5_RE = re.compile(r"http[/\d.\s]*5\d{2}(?![0-9])", re.I)
 _HEX_FRAME_RE = re.compile(r"\d+:\s+0x[0-9a-fA-F]+")
+_WS_COLLAPSE_RE = re.compile(r"\s+")
 
 
 def looks_suspicious(low: str) -> bool:
     """Cheap reject-before-expensive-regex prefilter (never rejects a real fault)."""
+    if "\t" in low or "  " in low:
+        low = _WS_COLLAPSE_RE.sub(" ", low)
     for h in _ERROR_HINTS:
         if h in low:
             return True

@@ -672,8 +672,12 @@ def minify_json(text: str) -> tuple[str, int]:
 # 5. v4.2: Stateful Read-File Engine, Micro-Minify, raw_hashes fix
 # ---------------------------------------------------------------------------
 _MICRO_MIN_CHARS = 512
-_COLD_READ_SKELETON_MIN_CHARS = 12_000  # files <= 12KB: cold read stays verbatim (patch safety)
+_COLD_READ_SKELETON_MIN_CHARS = 12_000  # legacy fallback threshold for unknown formats
+_CODE_SKELETON_MIN_CHARS = 4_096        # code files >= 4KB with oversized functions get safe AST skeletonization
 _NON_CODE_MIN_CHARS = 2_000             # non-code docs/configs have no patch line offset constraints
+_CODE_EXTS = frozenset({
+    "py", "ts", "js", "jsx", "tsx", "go", "rs", "java", "c", "cpp", "h", "hpp", "cs", "rb", "php", "swift", "kt", "scala"
+})
 # Prose/config files get the structural fold. Code extensions are deliberately
 # absent: folding a .py file with no long functions would break patch-by-offset.
 _TEXT_STRUCT_EXTS = frozenset({
@@ -1235,7 +1239,12 @@ def _handle_read_file_v42(
             except Exception:
                 budget_left = False
         _ext = (norm_path or "").rsplit(".", 1)[-1].lower() if "." in (norm_path or "") else ""
-        min_skel = _NON_CODE_MIN_CHARS if _ext in _TEXT_STRUCT_EXTS else _COLD_READ_SKELETON_MIN_CHARS
+        if _ext in _TEXT_STRUCT_EXTS:
+            min_skel = _NON_CODE_MIN_CHARS
+        elif _ext in _CODE_EXTS:
+            min_skel = _CODE_SKELETON_MIN_CHARS
+        else:
+            min_skel = _COLD_READ_SKELETON_MIN_CHARS
         if budget_left and (len(result) >= min_skel or len(raw_body) >= min_skel):
             # The skeleton advertises retrieve(hash=#...), so the full body must be in
             # the CCR before the marker ships -- otherwise the folded 60% of the file
@@ -1247,8 +1256,11 @@ def _handle_read_file_v42(
                     "reason": "ccr_unavailable",
                     "ms": (time.perf_counter() - t0) * 1000,
                 }
+            # For 4KB-12KB band, protect single-turn comprehension by keeping helpers <=15L
+            skel_body_lines = 15 if len(raw_body) < _COLD_READ_SKELETON_MIN_CHARS else 8
             sk_body, sk_saved, fn_count = smart_skeletonize_code(
                 raw_body, ref=f"#{_sk_ref.lstrip('#')}", line_prefixes=prefixes, line_nos=line_nos,
+                min_body_lines=skel_body_lines,
             )
             sk_kind = "file_skeleton"
             _ext = (norm_path or "").rsplit(".", 1)[-1].lower() if "." in (norm_path or "") else ""
@@ -1335,13 +1347,27 @@ def micro_minify_tool(result: str, session_id: str, t0: float) -> tuple[str, dic
         text, h_saved = result, 0
     else:
         text, h_saved = hygiene(result)
-    text, m_saved = minify_json(text)
+    t_saved = 0
+    s_strip = text.strip()
+    if s_strip.startswith(("{", "[")) and s_strip.endswith(("}", "]")):
+        try:
+            cand = fold_json_to_toon(text)
+            if cand != text and len(cand) < len(text):
+                t_saved = len(text) - len(cand)
+                text = cand
+        except Exception:
+            pass
+    if t_saved == 0:
+        text, m_saved = minify_json(text)
+    else:
+        m_saved = 0
     total_saved = len(result) - len(text)
     if total_saved >= 4 and len(text) < len(result):
         remember(text, session_id, owner=digest)
         return text, {
             "gate": "ok",
             "digest": digest,
+            "kind": "json_toon" if t_saved > 0 else "micro_min",
             "lossless_tier0": True,  # nothing semantic was removed -> no CCR write needed
             "before_chars": len(result),
             "after_chars": len(text),
@@ -1350,6 +1376,8 @@ def micro_minify_tool(result: str, session_id: str, t0: float) -> tuple[str, dic
             "est_tokens_after": len(text) // 4,
             "hygiene_saved": h_saved,
             "minify_saved": m_saved,
+            "toon_saved": t_saved,
+            "toon_used": t_saved > 0,
             "ms": (time.perf_counter() - t0) * 1000,
         }
     return result, {"gate": "passthrough_small", "reason": "micro_no_gain",

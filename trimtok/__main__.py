@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Universal CLI for Trimtok v5.2.0.
+"""Universal CLI for Trimtok.
 
 Usage:
   trimtok install [--client <name>] [--dry-run] [--print]   # Auto-register MCP server in all detected agent CLIs/IDEs
@@ -107,8 +107,8 @@ def _run_setup_wizard() -> None:
             f"({st.get('entries', 0)} chunks) | Zstd: {'yes' if zstd_ok else 'zlib'} | "
             f"RapidFuzz: {'yes' if fuzzy_ok else 'difflib'}"
         )
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[Trimtok Setup Wizard] Notice: store stats unavailable ({e})")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -201,7 +201,14 @@ def main(argv: list[str] | None = None) -> int:
             q["offset"] = ns.offset
         if ns.limit is not None:
             q["limit"] = ns.limit
-        print(_handle_retrieve(q))
+        out = _handle_retrieve(q)
+        print(out)
+        try:
+            res_obj = json.loads(out)
+            if res_obj.get("status") == "error":
+                return 1
+        except Exception:
+            pass
         return 0
     if ns.cmd == "compress":
         raw = sys.stdin.read() if ns.input == "-" else Path(ns.input).read_text(encoding="utf-8", errors="replace")
@@ -213,6 +220,8 @@ def main(argv: list[str] | None = None) -> int:
             ref = ccr.put(raw)
             if ref and stats.get("digest"):
                 compressed = compressed.replace(f"#{stats['digest']}", ref)
+            elif not ref and not stats.get("lossless_tier0"):
+                compressed = raw
         sys.stdout.write(compressed)
         if not compressed.endswith("\n"):
             sys.stdout.write("\n")
@@ -233,6 +242,8 @@ def main(argv: list[str] | None = None) -> int:
             ref = ccr.put(combined)
             if ref and stats.get("digest"):
                 compressed = compressed.replace(f"#{stats['digest']}", ref)
+            elif not ref and not stats.get("lossless_tier0"):
+                compressed = combined
         sys.stdout.write(compressed)
         if not compressed.endswith("\n"):
             sys.stdout.write("\n")
