@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" width="160" alt="Trimtok Logo" />
+  <img src="assets/before-after.svg" width="100%" alt="trimtok - Before vs After Context Shield" />
 </p>
 
 # trimtok
