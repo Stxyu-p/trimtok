@@ -280,6 +280,13 @@ trimtok retrieve "#c1" --offset 50 --limit 30   # Line-numbered pagination
 trimtok retrieve "#c1" --intent "which functions parse JSON" --intent-budget 80
 ```
 
+Long-horizon workflows can pin critical CCR references to protect them from automated TTL expiration sweeps:
+```python
+import trimtok.ccr as ccr
+ccr.pin("#c1")    # Protects chunk from background TTL cleanup
+ccr.unpin("#c1")  # Restores default TTL lifecycle
+```
+
 `--intent` ranks lines by stemmed token overlap with the question and boosts definition and heading lines, so a signature arrives with its body. On a 21,999-token source file, *"which functions does this file define"* returns **1,458 tokens (93.4% saved)** and *"how is json minified"* returns **571 tokens (97.4% saved)**, each containing the answer line rather than a truncated guess.
 
 <a id="8-telemetry-diagnostics"></a>
@@ -287,6 +294,7 @@ trimtok retrieve "#c1" --intent "which functions parse JSON" --intent-budget 80
 trimtok self-monitors every transformation in `~/.trimtok/usage.jsonl`:
 - **`trimtok gain`**: Breaks down real savings by output shape, tool hook, and command family, highlighting compression bottlenecks.
 - **`trimtok discover`**: Scans production telemetry for high-frequency, low-savings patterns and recommends targeted filters.
+- **Distributed Trace Correlation (`TRINITY_TRACE_ID`)**: Automatically captures `TRINITY_TRACE_ID` from the environment and attaches `trace_id` to each telemetry record, enabling unified correlation across Context, Memory, and Skill governance layers.
 
 <a id="9-fail-open-guards"></a>
 #### 9. Fail-Open Budget Guards
