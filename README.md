@@ -1,19 +1,23 @@
+<h1 align="center">⚡ trimtok</h1>
+
+<p align="center">
+  <strong>Universal, Local, Deterministic Context Compressor &amp; Content Intake Shield for Autonomous AI Coding Agents</strong>
+</p>
+
+<p align="center">
+  <a href="https://pypi.org/project/trimtok/"><img src="https://img.shields.io/pypi/v/trimtok?style=flat-square&color=blue" alt="PyPI" /></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10+-blue?style=flat-square" alt="Python" /></a>
+  <a href="#7-content-addressed-context-recovery-trimtok_retrieve"><img src="https://img.shields.io/badge/storage-SQLite_WAL_+_Zstandard-07405E?style=flat-square" alt="Storage" /></a>
+  <a href="#-how-it-works"><img src="https://img.shields.io/badge/latency-%3C_2ms_in--process-10b981?style=flat-square" alt="Latency" /></a>
+  <a href="#9-fail-open-budget-guards"><img src="https://img.shields.io/badge/safety-Fail--Open_Guarantee-8b5cf6?style=flat-square" alt="Safety" /></a>
+  <a href="#standalone-cli-wrapper-trimtok-wrap"><img src="https://img.shields.io/badge/cli-trimtok_wrap-EC4899?style=flat-square" alt="CLI" /></a>
+  <a href="#4-tiered-web--file-intake-read_file--web_extract"><img src="https://img.shields.io/badge/intake-Tiered_Semantic_Shaving-059669?style=flat-square" alt="Intake" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-slate?style=flat-square" alt="License" /></a>
+</p>
+
 <p align="center">
   <img src="assets/before-after.svg" width="100%" alt="trimtok - Before vs After Context Shield" />
 </p>
-
-# trimtok
-
-**Universal, Local, Deterministic Context Compressor & Content Intake Shield for Autonomous AI Coding Agents**
-
-[![PyPI](https://img.shields.io/pypi/v/trimtok?style=flat-square&color=blue)](https://pypi.org/project/trimtok/)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue?style=flat-square)](https://www.python.org/)
-[![Storage](https://img.shields.io/badge/storage-SQLite_WAL_+_Zstandard-07405E?style=flat-square)](#7-content-addressed-context-recovery-trimtok_retrieve)
-[![Latency](https://img.shields.io/badge/latency-%3C_2ms_in--process-10b981?style=flat-square)](#-how-it-works)
-[![Safety](https://img.shields.io/badge/safety-Fail--Open_Guarantee-8b5cf6?style=flat-square)](#9-fail-open-budget-guards)
-[![CLI](https://img.shields.io/badge/cli-trimtok_wrap-EC4899?style=flat-square)](#standalone-cli-wrapper-trimtok-wrap)
-[![Intake](https://img.shields.io/badge/intake-Tiered_Semantic_Shaving-059669?style=flat-square)](#4-tiered-web--file-intake-read_file--web_extract)
-[![License: MIT](https://img.shields.io/badge/license-MIT-slate?style=flat-square)](LICENSE)
 
 ---
 
