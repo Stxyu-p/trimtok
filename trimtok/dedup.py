@@ -1288,7 +1288,13 @@ def _handle_read_file_v42(
             if sk_saved > 200 and fn_count > 0:
                 rebuilt = "\n".join(headers + [sk_body] + footers) if (headers or footers) else sk_body
                 actual_saved = len(result) - len(rebuilt)
-                head = adaptive_tool_head(max(actual_saved, sk_saved), digest, len(result))
+                # Say how many lines were folded in the header so the reader
+                # knows the file is not complete without clicking through a
+                # [tt:body]/[tt:prose] marker.
+                sk_lines_hidden = max(0, len(raw_body.split("\n")) - len(sk_body.split("\n")))
+                head = adaptive_tool_head(max(actual_saved, sk_saved), digest, len(result),
+                                          hidden_lines=sk_lines_hidden, hidden_kind="folded",
+                                          is_lossless_only=False)
                 candidate = f"{head}\n{rebuilt}" if head else rebuilt
                 tb, ta = _tok_pair(result, candidate)
                 if len(candidate) < len(result) and ta < tb:
@@ -1501,6 +1507,7 @@ def compress_tool_result(
         ht_saved = 0
         ht_head = ht_tail = ht_omitted = 0
         sk_saved = 0
+        sk_lines_hidden = 0
         if ss_saved == 0 and f_saved == 0 and i_saved == 0 and dt_saved == 0:
             # AST Code Skeletonizer check
             if len(folded) >= 2048 and (tool_name in ("view_file", "cat", "get_file") or "\ndef " in folded or "\nclass " in folded or "\nfunction " in folded or "\nfunc " in folded or "\nfn " in folded or "\npublic class " in folded):
@@ -1517,6 +1524,7 @@ def compress_tool_result(
                         except Exception:
                             sk_cand = folded
                     if sk_cand is not None and len(sk_cand) < len(folded):
+                        sk_lines_hidden = max(0, len(folded.split("\n")) - len(sk_cand.split("\n")))
                         sk_saved = len(folded) - len(sk_cand)
                         folded = sk_cand
                 except Exception:
@@ -1589,6 +1597,7 @@ def compress_tool_result(
             head = adaptive_tool_head(
                 len(result) - len(folded), digest, len(result),
                 is_lossless_only=is_lossless_only,
+                hidden_lines=sk_lines_hidden, hidden_kind="folded",
             )
         new_result = f"{head}\n{folded}" if head else folded
         tok_before = estimate_tokens(result)
@@ -1598,7 +1607,9 @@ def compress_tool_result(
             # reverted wholesale today. Try the nano header first.
             if not is_lossless_only and ht_saved == 0:
                 nano_head = adaptive_tool_head(
-                    len(result) - len(folded), digest, len(result), force_tier=1)
+                    len(result) - len(folded), digest, len(result), force_tier=1,
+                    hidden_lines=sk_lines_hidden, hidden_kind="folded",
+                )
                 nano_cand = f"{nano_head}\n{folded}" if nano_head else folded
                 nano_tok = estimate_tokens(nano_cand)
                 if len(nano_cand) < len(result) and nano_tok < tok_before:

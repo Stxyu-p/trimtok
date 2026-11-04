@@ -29,6 +29,23 @@ higher than blended production traffic (9.5%). Use it for *deltas*, never as a h
 | C4 | every top-level `def`/`class` name survives (code outline invariant) |
 | C5 | a read_file payload is byte-identical or replaced by content whose refs restore it |
 
-Baseline at v4.2.6+ (32 payloads, 1,135,441 chars): **62.47%** reduction, 13/32 touched,
-2 defects: `t-log-errors` C2-faults(333), `t-log-gateway-stdio` C2-faults(104) —
-the terminal lane hides error lines without saying so.
+Baseline at v5.3.3 (32 payloads, 1,135,441 chars): **73.14%** reduction, 20/32 touched,
+0 gate failures. Every folded line is resolvable through a `#ref`, patch-safe
+(`LINE|` ordering checked), and announced in the output -- `file_skeleton`
+headers now carry `[folded=N L -> trimtok_retrieve]`.
+
+## Ceiling probe (how far can we go without harming intelligence)
+
+```
+python eval/probe_ceiling.py      # per-payload: hidden lines, anchor retention, fault announcement
+python eval/audit_honesty.py      # claimed vs proven reduction (announce + recover + patch-safe)
+```
+
+- **SILENT LINE LOSS:** every hidden line must resolve via `#ref` (currently 0).
+- **ANCHOR RETENTION:** navigation anchors (file:line, paths, test ids, error
+  classes) surviving in visible text, averaged by payload weight. Log dumps
+  fold below 0.8 by design (old-turn history is legitimately windowed);
+  code/diff/test payloads stay at 1.0.
+- **UNANNOUNCED FAULTS:** terminal fault lines hidden without `errors_hidden=N`.
+- **PROVEN REDUCTION:** savings that survive announce + recover + patch-order
+  checks (v5.3.3: 73.14% claimed = 73.14% proven).

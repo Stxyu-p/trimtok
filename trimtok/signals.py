@@ -321,6 +321,8 @@ def adaptive_tool_head(
     *,
     is_lossless_only: bool = False,
     force_tier: int | None = None,
+    hidden_lines: int = 0,
+    hidden_kind: str = "",
 ) -> str:
     """Return tool header scaled to payload size and lossiness (Tier 0..3).
 
@@ -345,11 +347,23 @@ def adaptive_tool_head(
 
     if tier <= 0:
         return ""
+    # A fold with no visible announcement is silent data removal: the reader of
+    # the header must see how many lines are missing and how to get them back.
+    # (file_skeleton/file_structure lanes emit in-body [tt:body]/[tt:prose]
+    # markers; the header must say "N lines folded" for them to be trusted.)
+    hidden_tag = ""
+    if hidden_lines > 0:
+        verb = hidden_kind or "lines"
+        if tier == 1:
+            hidden_tag = f" {verb}=+{hidden_lines}L"
+        else:
+            hidden_tag = f" [{verb}={hidden_lines}L -> trimtok_retrieve]"
     if tier == 1:
-        return f"[tt:{ref} -{saved_chars}c]"                                        # ~18 chars
+        return f"[tt:{ref} -{saved_chars}c{hidden_tag}]"                       # ~18 chars
     if tier == 2:
-        return tool_head(saved_chars, digest.lstrip("#"))                           # ~45 chars
-    return f"[tt:tool kind=result saved={saved_chars} {ref} | retrieve(hash=\"{ref}\")]"  # ~68 chars
+        head = tool_head(saved_chars, digest.lstrip("#"))
+        return head + hidden_tag if not hidden_tag else head[:-1] + hidden_tag + "]"
+    return f"[tt:tool kind=result saved={saved_chars} {ref}{hidden_tag} | retrieve(hash=\"{ref}\")]"
 
 
 def seen_lines(count: int, ref: str) -> str:
