@@ -339,6 +339,72 @@ class FastCCRStore:
                 total_bytes = sum(len(v) for v in self._mem.values())
         return {"entries": count, "bytes": total_bytes}
 
+    def evict_to_size(self, max_bytes: int) -> int:
+        """Delete the oldest chunks until stored bytes are under `max_bytes`."""
+        if max_bytes <= 0:
+            return 0
+        evicted = 0
+        with self._lock:
+            if not (self._writable and self._conn is not None):
+                return 0
+            try:
+                cur = self._conn.cursor()
+                row = cur.execute("SELECT COALESCE(SUM(LENGTH(content)), 0) FROM chunks").fetchone()
+                total = int(row[0] or 0)
+                if total <= max_bytes:
+                    return 0
+                for sha, alias, size in cur.execute(
+                    "SELECT sha, alias, LENGTH(content) FROM chunks ORDER BY created_at ASC"
+                ).fetchall():
+                    if total <= max_bytes:
+                        break
+                    self._mem.pop(sha, None)
+                    self._sha_alias.pop(sha, None)
+                    if alias:
+                        self._alias_mem.pop(alias, None)
+                    cur.execute("DELETE FROM chunks WHERE sha = ?", (sha,))
+                    total -= int(size or 0)
+                    evicted += 1
+                self._conn.commit()
+                if evicted:
+                    self._conn.execute("VACUUM")
+            except Exception:
+                try:
+                    self._conn.rollback()
+                except Exception:
+                    pass
+        return evicted
+
+    def set_ttl_hours(self, hours: int) -> None:
+        """Persist the retention window in the store's meta table."""
+        if hours <= 0:
+            return
+        with self._lock:
+            if not (self._writable and self._conn is not None):
+                return
+            try:
+                self._conn.execute(
+                    "INSERT INTO meta(key, value) VALUES('ttl_hours', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (str(int(hours)),),
+                )
+                self._conn.commit()
+            except Exception:
+                pass
+
+    def ttl_hours(self, default: int = 24) -> int:
+        with self._lock:
+            if self._writable and self._conn is not None:
+                try:
+                    row = self._conn.execute(
+                        "SELECT value FROM meta WHERE key='ttl_hours'"
+                    ).fetchone()
+                    if row and str(row[0]).isdigit():
+                        return int(row[0])
+                except Exception:
+                    pass
+        return default
+
     def purge(self, *, before_seconds: float = 0) -> int:
         """Purge stored chunks (all when before_seconds <= 0, or older than before_seconds)."""
         count = 0
@@ -572,6 +638,44 @@ def get(ref: str, *, dir: Path | None = None, ttl_hours: int = 24, **kwargs: Any
         return _file_get(target, base, ttl_hours=ttl_hours)
     except Exception:
         return None
+
+
+def evict_to_size(max_bytes: int, *, dir: Path | None = None) -> int:
+    """Drop the oldest cached chunks until the store fits under `max_bytes`."""
+    try:
+        if dir is not None:
+            base = Path(dir)
+            files = sorted(
+                (p for p in base.glob("*.txt") if p.is_file()),
+                key=lambda p: p.stat().st_mtime,
+            )
+            total = sum(p.stat().st_size for p in files)
+            evicted = 0
+            for p in files:
+                if total <= max_bytes:
+                    break
+                try:
+                    total -= p.stat().st_size
+                    p.unlink()
+                    evicted += 1
+                except Exception:
+                    pass
+            return evicted
+        return _get_store().evict_to_size(max_bytes)
+    except Exception:
+        return 0
+
+
+def set_ttl_hours(hours: int, *, dir: Path | None = None) -> None:
+    """Persist the CCR retention window (hours)."""
+    try:
+        if dir is not None:
+            meta = Path(dir) / "ttl_hours.txt"
+            meta.write_text(str(int(hours)), encoding="utf-8")
+            return
+        _get_store().set_ttl_hours(int(hours))
+    except Exception:
+        pass
 
 
 def stats(*, dir: Path | None = None, ttl_hours: int = 24, **kwargs: Any) -> dict[str, int]:

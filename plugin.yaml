@@ -1,5 +1,5 @@
 name: trimtok
-version: 5.3.4
+version: 5.3.5
 description: "Local context compressor: per-command budgets, balanced windowing, error rails, Drain templates, shingle near-dedup, HEAD_TAIL stubs, cross-turn fold, command/tool exclusions, two-tier SQLite CCR with short #ref aliases and section retrieval (errors/diff/summary/tail), scoped search grouping, lossless TOON v2 hierarchical columnar JSON tables, cross-turn fuzzy delta engine (STILL FAILING / +added / -removed), structured traceback & semantic diff pruner, fail-open guard (guard_ms, default 200)."
 entry_point: __init__.py
 author: "P Choke & MIKA"
@@ -44,6 +44,26 @@ config_schema:
     type: bool
     default: true
     description: Lossless JSON to TOON columnar tables (round-trip verified; folds only when >=4 BPE tokens are saved).
+  toon_mode:
+    type: str
+    default: auto
+    description: "Model-aware TOON gate: auto = TOON for families with a track record on columnar text, minified JSON otherwise; always = always TOON; never = always minified JSON."
+  model_family:
+    type: str
+    default: ""
+    description: Target model family (e.g. claude, gpt, qwen). Empty means "unknown" and keeps TOON enabled so nothing regresses silently.
+  policy_enabled:
+    type: bool
+    default: true
+    description: Content policy — secrets, security-policy files and patch payloads stay byte-exact instead of being compressed.
+  context_pressure:
+    type: float
+    default: 0.0
+    description: Fraction of the context window already used (0..1). Drives adaptive compression — <0.35 keeps more lines (light), >0.75 folds harder (aggressive). Hooks may pass it per call.
+  adaptive_enabled:
+    type: bool
+    default: true
+    description: Let context_pressure scale the line budget and fold threshold. Disable to pin the level to normal.
   delta_enabled:
     type: bool
     default: true

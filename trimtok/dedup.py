@@ -1023,6 +1023,8 @@ def _handle_read_file_v42(
     min_chars: int,
     t0: float,
     deadline: Any | None = None,
+    level: str = "normal",
+    toon_enabled: bool = True,
 ) -> tuple[str, dict]:
     """3-Tier Stateful Handler for read_file / read_file_extra with 100% Patch Safety.
 
@@ -1258,6 +1260,11 @@ def _handle_read_file_v42(
                 }
             # For 4KB-12KB band, protect single-turn comprehension by keeping helpers <=15L
             skel_body_lines = 15 if len(raw_body) < _COLD_READ_SKELETON_MIN_CHARS else 8
+            try:
+                from .policy import fold_min_lines as _fold_min
+                skel_body_lines = _fold_min(level)
+            except Exception:
+                pass
             sk_body, sk_saved, fn_count = smart_skeletonize_code(
                 raw_body, ref=f"#{_sk_ref.lstrip('#')}", line_prefixes=prefixes, line_nos=line_nos,
                 min_body_lines=skel_body_lines,
@@ -1319,13 +1326,14 @@ def _handle_read_file_v42(
         _jbody = raw_body.strip()
         if len(_jbody) >= 512:
             _jcand, _jkind = None, ""
-            try:
-                from .toon_codec import fold_json_to_toon as _fold_toon
-                _t = _fold_toon(_jbody)
-                if _t != _jbody and len(_t) < len(_jbody):
-                    _jcand, _jkind = _t, "file_toon"
-            except Exception:
-                pass
+            if toon_enabled:
+                try:
+                    from .toon_codec import fold_json_to_toon as _fold_toon
+                    _t = _fold_toon(_jbody)
+                    if _t != _jbody and len(_t) < len(_jbody):
+                        _jcand, _jkind = _t, "file_toon"
+                except Exception:
+                    pass
             if _jcand is None:
                 try:
                     _m, _msaved = minify_json(_jbody)
@@ -1452,6 +1460,9 @@ def compress_tool_result(
     min_chars: int = 2048,
     toon_enabled: bool = True,
     deadline: Any | None = None,
+    pressure: float = 0.0,
+    level: str = "",
+    policy_enabled: bool = True,
 ) -> tuple[str, dict]:
     """Full v2+v4 pipeline on one tool result (scoped search + TOON + AST code skeletonizer). Never raises."""
     t0 = time.perf_counter()
@@ -1460,6 +1471,29 @@ def compress_tool_result(
             return result, {"gate": "passthrough_non_str", "ms": 0.0}
         if SENTINEL_RE.search(result[:2000]):
             return result, {"gate": "passthrough_sentinel", "reason": "sentinel", "ms": 0.0}
+        # Content policy: secrets, security policy and edit payloads are worth
+        # more byte-exact than compressed, however large they are.
+        if policy_enabled:
+            try:
+                from .policy import classify as _classify_policy
+                _path = ""
+                try:
+                    _p, _, _ = _extract_file_args(args)
+                    _path = _p or ""
+                except Exception:
+                    pass
+                _pol = _classify_policy(result, tool=tool_name, path=_path,
+                                        pressure=pressure, toon_ok=toon_enabled)
+                if not _pol.compress:
+                    return result, {"gate": "passthrough_policy", "reason": _pol.reason,
+                                    "policy": _pol.reason, "ms": 0.0}
+                if level not in ("", "normal"):
+                    _pol = type(_pol)(verbatim=False, level=level, toon_ok=_pol.toon_ok)
+                level = level or _pol.level
+                if not _pol.toon_ok:
+                    toon_enabled = False
+            except Exception:
+                pass
         # A mutating tool changes the file, but the cached body is what the next
         # read is diffed against -- dropping it here meant the file_delta lane
         # could never fire in a real read -> patch -> re-read loop.
@@ -1475,7 +1509,7 @@ def compress_tool_result(
             except Exception:
                 pass
         if tool_name in _READ_FILE_TOOLS:
-            return _handle_read_file_v42(result, session_id, args, min_chars, t0, deadline)
+            return _handle_read_file_v42(result, session_id, args, min_chars, t0, deadline, level, toon_enabled)
         if tool_name in _WEB_TOOLS:
             _rh = hashlib.sha256(result.encode("utf-8", "replace")).hexdigest()[:12]
             w_cand, w_stats = shave_tiered(result, {"domain": "web-doc", "lang": "markdown"})

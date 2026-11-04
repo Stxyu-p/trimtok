@@ -329,6 +329,11 @@ def _bool_cfg(ctx: Any, key: str, default: bool) -> bool:
     return value if isinstance(value, bool) else default
 
 
+def _str_cfg(ctx: Any, key: str, default: str) -> str:
+    value = _config_value(ctx, key, default)
+    return value if isinstance(value, str) else default
+
+
 def _list_cfg(ctx: Any, key: str) -> list[str]:
     value = _config_value(ctx, key, [])
     if not isinstance(value, list):
@@ -584,6 +589,7 @@ def _on_transform(
         delta_enabled=_bool_cfg(ctx, "delta_enabled", True),
         delta_threshold=_float_cfg(ctx, "delta_threshold", 0.65, 0.5, 1.0),
         deadline=Deadline(_float_cfg(ctx, "guard_ms", 200.0, 1.0, 1000.0)),
+        pressure=_context_pressure(ctx, kw),
     )
     _usage_terminal(command, output, stats, ctx)
     return _finalize(output, new_output, stats, ctx, {
@@ -591,6 +597,53 @@ def _on_transform(
         "command": str(command or "")[:120],
         "kind": stats.get("kind"),
     })
+
+
+def _toon_allowed(ctx: Any) -> bool:
+    """Model-aware TOON gate.
+
+    TOON is plain text, so every model *can* read it; what differs is how well a
+    model holds a columnar table together. `toon_mode` lets the caller decide:
+
+      always  -- emit TOON whenever it wins on tokens (opt-in for known-good)
+      never   -- always fall back to minified JSON
+      auto    -- TOON for model families with a track record on columnar text,
+                 minified JSON for everything else (default when `model_family`
+                 is set; TOON when it is not, so nothing regresses silently)
+    """
+    if not _bool_cfg(ctx, "toon_enabled", True):
+        return False
+    mode = str(_str_cfg(ctx, "toon_mode", "auto") or "auto").strip().lower()
+    if mode == "never":
+        return False
+    if mode == "always":
+        return True
+    family = str(_str_cfg(ctx, "model_family", "") or "").strip().lower()
+    if not family:
+        return True  # unknown caller: keep the existing behaviour
+    try:
+        from .policy import toon_allowed_for as _ok
+        return _ok(family, mode)
+    except Exception:
+        return True
+
+
+def _context_pressure(ctx: Any, kw: dict) -> float:
+    """Fraction of the context window already used, from the hook or config."""
+    if not _bool_cfg(ctx, "adaptive_enabled", True):
+        return 0.0
+    for key in ("context_pressure", "pressure", "context_used_pct", "context_usage"):
+        v = kw.get(key)
+        if v is None:
+            continue
+        try:
+            f = float(v)
+        except Exception:
+            continue
+        if f > 1.0:
+            f = f / 100.0
+        return max(0.0, min(1.0, f))
+    return _float_cfg(ctx, "context_pressure", 0.0, 0.0, 1.0)
 
 
 def _on_tool_result(
@@ -626,8 +679,9 @@ def _on_tool_result(
         args=effective_args,
         session_id=sid,
         min_chars=_int_cfg(ctx, "min_chars", 2048, 0, 10_000_000),
-        toon_enabled=_bool_cfg(ctx, "toon_enabled", True),
+        toon_enabled=_toon_allowed(ctx),
         deadline=Deadline(_float_cfg(ctx, "guard_ms", 200.0, 1.0, 1000.0)),
+        pressure=_context_pressure(ctx, kw),
     )
     _usage_tool(tool_name, result, stats, ctx)
     out = _finalize(result, new_result, stats, ctx, {

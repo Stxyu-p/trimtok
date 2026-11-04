@@ -21,7 +21,7 @@ except Exception:
     _Levenshtein = None
     _FUZZY_AVAILABLE = False
 
-VERSION = "5.3.4"
+VERSION = "5.3.5"
 
 try:
     from . import delta_engine
@@ -334,6 +334,9 @@ def compress_terminal(
     delta_enabled: bool = False,
     delta_threshold: float = 0.65,
     deadline: Any | None = None,
+    pressure: float = 0.0,
+    level: str = "",
+    policy_enabled: bool = True,
 ) -> tuple[str, dict]:
     """Compress one terminal output. Returns (new_output, stats).
 
@@ -346,6 +349,22 @@ def compress_terminal(
     try:
         if not isinstance(output, str):
             return output, {"gate": "passthrough_non_str", "ms": 0.0}
+        # Adaptive + policy: a secret-bearing dump stays verbatim, and the line
+        # budget follows how much context window is left.
+        if policy_enabled:
+            try:
+                from .policy import budget_for as _budget_for_level, classify as _classify_policy
+                _pol = _classify_policy(output, tool="", path="", pressure=pressure,
+                                        toon_ok=True, allow_secret_scan=True)
+                if not _pol.compress:
+                    return output, {"gate": "passthrough_policy", "reason": _pol.reason,
+                                    "policy": _pol.reason, "ms": 0.0}
+                _lvl = level or _pol.level
+                if _lvl != "normal":
+                    max_lines = _budget_for_level(_lvl, max_lines)
+                    level = _lvl
+            except Exception:
+                pass
         if deadline is not None and len(output) > 100_000:
             # A large payload legitimately needs more CPU than a tiny one: the guard
             # exists to bound pathological work, not to punish size. Killing a 435KB

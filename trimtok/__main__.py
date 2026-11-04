@@ -13,6 +13,8 @@ Usage:
 
 from __future__ import annotations
 
+from typing import Any
+
 import argparse
 import json
 import sys
@@ -111,6 +113,46 @@ def _run_setup_wizard() -> None:
         print(f"[Trimtok Setup Wizard] Notice: store stats unavailable ({e})")
 
 
+def _run_purge(ns: Any) -> int:
+    """Explicit CCR retention: age-based purge, then a hard size ceiling."""
+    from . import ccr as _ccr
+
+    hours = float(getattr(ns, "older_than", 0.0) or 0.0)
+    max_mb = float(getattr(ns, "max_mb", 0.0) or 0.0)
+    ttl = int(getattr(ns, "ttl_hours", 0) or 0)
+
+    before = _ccr.stats()
+    if ttl > 0:
+        try:
+            _ccr.set_ttl_hours(ttl)
+            print(f"CCR TTL set to {ttl}h")
+        except Exception as exc:
+            print(f"Could not set TTL: {exc}")
+
+    purged = 0
+    if hours > 0:
+        purged = _ccr.purge(before_seconds=hours * 3600.0)
+        print(f"Purged {purged} entries older than {hours:g}h")
+    elif max_mb <= 0:
+        # A bare `purge` means "clear it"; asking only for a size cap must not
+        # wipe the store before it measures it.
+        purged = _ccr.purge()
+        print(f"Purged {purged} entries")
+
+    if max_mb > 0:
+        limit = int(max_mb * 1024 * 1024)
+        try:
+            evicted = _ccr.evict_to_size(limit)
+            print(f"Evicted {evicted} oldest entries to stay under {max_mb:g} MB")
+        except Exception as exc:
+            print(f"Size cap not applied: {exc}")
+
+    after = _ccr.stats()
+    print(f"CCR: {before.get('entries', 0)} -> {after.get('entries', 0)} entries, "
+          f"{after.get('bytes', 0) / 1048576:.2f} MB")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -139,7 +181,13 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("gain", help="Show detailed token savings gain report").add_argument("--days", type=int, default=0)
     sub.add_parser("discover", help="Scan telemetry for low-savings shapes and suggest filters")
     sub.add_parser("recall", help="Retrieve cached original by hash").add_argument("hash", nargs="?", default="")
-    sub.add_parser("purge", help="Purge cached CCR originals")
+    p_purge = sub.add_parser("purge", help="Purge cached CCR originals (all, or entries older than --older-than)")
+    p_purge.add_argument("--older-than", type=float, default=0.0,
+                         help="Only purge entries older than N hours (default: everything)")
+    p_purge.add_argument("--max-mb", type=float, default=0.0,
+                         help="After purging, evict oldest entries until the store is under N MB")
+    p_purge.add_argument("--ttl-hours", type=int, default=0,
+                         help="Override the CCR TTL for this store (persisted in its meta table)")
 
     p_ret = sub.add_parser("retrieve", help="Retrieve original content or a targeted section from CCR")
     p_ret.add_argument("ref", help="CCR reference (#c1 or 12-hex digest)")
@@ -186,8 +234,7 @@ def main(argv: list[str] | None = None) -> int:
         print(_handle_ts_command(f"retrieve {h}" if h else "retrieve"))
         return 0
     if ns.cmd == "purge":
-        print(_handle_ts_command("purge"))
-        return 0
+        return _run_purge(ns)
     if ns.cmd == "mcp":
         return mcp_server.main()
     if ns.cmd == "clients":

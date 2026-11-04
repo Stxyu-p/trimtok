@@ -2,6 +2,55 @@
 
 All notable changes to trimtok are documented here.
 
+## [5.3.5] - 2026-11-04
+
+Five capabilities, each with a test that can fail.
+
+### Added
+- **Content policy (`trimtok/policy.py`):** decides what may be compressed at
+  all. Secrets (`.env`, `*.pem`, `*.key`, `.npmrc`, inline AWS/GitHub/OpenAI/
+  Slack/JWT/PEM shapes), security-policy data files (`config/auth/*.yaml`,
+  `security/*.rego`, `policies/*.json`) and edit payloads (`patch` tool, any
+  unified diff) now stay byte-exact and return `gate=passthrough_policy` with a
+  named reason. Security *source* code still compresses — the AST lane keeps
+  every signature and leaves a ref, so `auth.py` does not become unreadable.
+- **Adaptive compression:** `context_pressure` (0..1, from the hook or config)
+  maps to `light` (<0.35) / `normal` / `aggressive` (>0.75). It scales the
+  terminal line budget (×1.6 / ×1.0 / ×0.55) and the AST fold threshold
+  (20 / 8 / 4 body lines). Measured on 400 unique log lines: 195 / 123 / 69
+  lines kept. `adaptive_enabled: false` pins it to normal.
+- **Model-aware TOON:** `toon_mode: auto|always|never` plus `model_family`.
+  `auto` emits TOON for families with a track record on columnar text and falls
+  back to minified JSON otherwise. Unknown family keeps TOON so nothing
+  regresses silently. The JSON file lane now honours `toon_enabled` — it
+  previously emitted TOON even when the caller had turned it off.
+- **Explicit CCR retention:** `trimtok purge --older-than H --max-mb M
+  --ttl-hours H`. Age purge first, then evict oldest until the store fits the
+  byte ceiling; TTL persists in the store's `meta` table. `--max-mb` alone no
+  longer wipes the store before measuring it.
+- **Fix-accuracy benchmark (`eval/fix_accuracy.py`):** injects a known
+  regression into a real module, compresses it, and asks whether the bug is
+  still fixable. `LOCATE` (default, no LLM) checks the buggy line, its
+  signature, its line number and neighbour context are visible or ref-reachable.
+  `--llm` takes the model's corrected line, patches the module, imports it and
+  runs a behavioural predicate — PASS means the code works, not that the text
+  looks right. Current: 8/8 locate, 53.8% tokens saved.
+
+### Verification
+- 94/94 unit tests, including `test_wrong_patch_fails` — a benchmark that cannot
+  fail measures nothing.
+- Real corpus unchanged at 73.19%, 0 gate failures; honesty audit 73.19%
+  claimed = 73.19% proven.
+- End-to-end: `.env` / `security/rules.rego` / unified diff all return
+  `passthrough_policy` and byte-identical output.
+
+### Known limits
+- `--llm` stage needs a live model; the local 9router proxy returned HTTP 429
+  throughout this release, so only the deterministic LOCATE stage ran.
+- `auto` TOON is a heuristic on model *family*, not a measured capability
+  claim: TOON is plain text and every model can read it, some just hold a
+  columnar table together better.
+
 ## [5.3.4] - 2026-11-04
 
 ### Added
