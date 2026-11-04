@@ -201,8 +201,7 @@ def is_fault_line(line: str) -> bool:
 # ---------------------------------------------------------------------------
 SENTINEL_RE = re.compile(
     r"\[(?:@#[0-9A-Za-z]+(?:x\d+)?\]"
-    r"|tt:(?:legend\]|(?:terminal|tool|seen|masked|template|shingle|headtail|delta)\b"
-    r"[^\]]*(?:retrieve:[0-9a-f]+|#[0-9A-Za-z]+)))"
+    r"|tt:(?:legend\]|[a-z_]+\b[^\]]*(?:retrieve:[0-9a-f]+|#[0-9A-Za-z]+)))"
 )
 
 KEEP_PREFIX = "TRIMTOK_KEEP:"

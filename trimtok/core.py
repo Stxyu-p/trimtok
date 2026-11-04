@@ -21,7 +21,7 @@ except Exception:
     _Levenshtein = None
     _FUZZY_AVAILABLE = False
 
-VERSION = "5.3.1"
+VERSION = "5.3.2"
 
 try:
     from . import delta_engine
@@ -79,7 +79,9 @@ _TS_PREFIX_RE = re.compile(
     r"^\[?\d{4}[-/]\d{2}[-/]\d{2}[T ]\d{2}:\d{2}:\d{2}[^\]]*\]?\s*"
 )
 _PID_PREFIX_RE = re.compile(r"^\[\d+\]\s*|^pid[=:]\s*\d+\s*", re.I)
-_PROGRESS_RE = re.compile(r"^\s*(⠁|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|◐|◓|◑|◒|\||/|-|\\|\d+%|\[\s*\d+/\d+\])")
+_PROGRESS_RE = re.compile(
+    r"^\s*(?:[⠁⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏◐◓◑◒]|[-/\\|]\s*(?:$|\d+%)|(?:\d{1,3}%|\[\s*\d+/\d+\]))"
+)
 _NOISE_LINE_RE = re.compile(
     r"(?i)^\s*(npm notice|.*deprecated.*|.*audit.* vulnerabilities? \(.*\)|"
     r".*up to date.*|.*already (satisfied|installed).*|^\s*Collecting .*|"
@@ -477,7 +479,9 @@ def compress_terminal(
         hidden += t_hidden
         kept = [
             (ln, imp) for ln, imp in folded
-            if imp or (not _PROGRESS_RE.match(ln) and not _NOISE_LINE_RE.match(ln))
+            if imp
+            or (kind == "diff" and (ln.startswith(("+", "-", "@", "diff ", "index ", "---", "+++")) or ln.startswith(" ")))
+            or (not _PROGRESS_RE.match(ln) and not _NOISE_LINE_RE.match(ln))
         ]
         windowed, dropped = _window(kept, budget)
         digest = hashlib.sha256(output.encode("utf-8", "replace")).hexdigest()[:12]

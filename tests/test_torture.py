@@ -88,6 +88,17 @@ finally:
         except Exception:
             pass
 
+# 10. Sentinel regex detects all v4/v5 sentinel markers (file_unchanged, lockfile, skill_cached)
+from trimtok.signals import SENTINEL_RE
+check("sentinel-file-unchanged-detected", bool(SENTINEL_RE.search('[tt:file_unchanged #c1 path="test.py"]')))
+check("sentinel-lockfile-detected", bool(SENTINEL_RE.search('[tt:lockfile path="p.lock" #c1]')))
+check("sentinel-skill-cached-detected", bool(SENTINEL_RE.search('[tt:skill_cached name="x" #c1]')))
+
+# 11. Git diff deleted lines (- and ---) are never dropped as progress spinners
+diff_sample = 'diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n-line_to_remove\n+line_to_add\n' + '\n'.join([f' unchanged {i}' for i in range(120)])
+diff_out, _ = compress_terminal("git diff", diff_sample)
+check("git-diff-deleted-lines-preserved", "-line_to_remove" in diff_out and "--- a/f" in diff_out)
+
 import unittest
 
 class TestTortureSuite(unittest.TestCase):
