@@ -2,9 +2,9 @@
 
 All notable changes to trimtok are documented here.
 
-## [5.4.0] - 2026-11-05
+## [5.4.1] - 2026-11-05
 
-Zero-disk-footprint ecosystem shield: Bounded MCP schema proxy, ultra-light codebase mapping, and native protocol instructions.
+Zero-disk-footprint ecosystem shield: Bounded MCP schema proxy, ultra-light codebase mapping, KV-cache prompt stabilizer, and multi-header framing.
 
 ### Added
 - **KV-Cache Alignment & Prompt Stabilization (`trimtok/kv_lock.py`, `trimtok kv-lock`):** locks system prompt prefixes across sessions by replacing dynamic tokens (dates, times, UUIDs, JWTs) outside of code blocks with stable placeholders and relocating their values to a delimited appendix (`<!-- kv-lock: dynamic context -->`) at the tail. Guarantees identical prefix SHA-256 hashes, unlocking up to 90% prompt-caching cost reductions on Anthropic/Gemini/DeepSeek APIs.
@@ -13,6 +13,10 @@ Zero-disk-footprint ecosystem shield: Bounded MCP schema proxy, ultra-light code
 - **Hermes auto-map hook:** `pre_llm_call` hook automatically injects the codebase map once per session/workspace directly into Hermes conversation context in-memory with zero disk footprint.
 - **Bounded stdio MCP proxy (`trimtok/mcp_proxy.py`, `trimtok mcp-proxy`):** intercepts JSON-RPC 2.0 stdio communication between any coding agent harness and downstream MCP servers. Prunes unused tool schemas from `tools/list` responses using `--allow` or `--deny`, eliminating thousands of wasted system prompt tokens per turn. Supports Content-Length framing, newline framing, UTF-8 BOM stripping, and fail-open passthrough.
 - **Native MCP handshake instructions:** `trimtok/mcp_server.py` emits `SERVER_INSTRUCTIONS` inside `InitializeResult.instructions` so connected agents receive lossless CCR retrieval instructions in memory without mutating repo config files.
+
+### Fixed
+- **Multi-header LSP framing:** `trimtok/mcp_proxy.py` properly parses multi-line header blocks (e.g. `Content-Type`) and uses `_read_exact` to prevent partial socket read corruption.
+- **KV-Lock appendix preservation:** `trimtok/kv_lock.py` merges pre-existing appendix values and preserves trailing text on prompt updates without data loss.
 
 ## [5.3.5] - 2026-11-04
 
