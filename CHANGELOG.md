@@ -2,6 +2,16 @@
 
 All notable changes to trimtok are documented here.
 
+## [5.4.0] - 2026-11-05
+
+Zero-disk-footprint ecosystem shield: Bounded MCP schema proxy, ultra-light codebase mapping, and native protocol instructions.
+
+### Added
+- **Ultra-light codebase mapper (`trimtok/codemap.py`, `trimtok map`):** scans repository via `git ls-files` + regex, outputting a 1-line-per-directory summary of top-level functions and classes constrained by a strict character budget (default 2,000 chars, ~38ms execution). Prioritizes core/utils/shared modules so agents comprehend existing code immediately without blind exploratory searches.
+- **Hermes auto-map hook:** `pre_llm_call` hook automatically injects the codebase map once per session/workspace directly into Hermes conversation context in-memory with zero disk footprint.
+- **Bounded stdio MCP proxy (`trimtok/mcp_proxy.py`, `trimtok mcp-proxy`):** intercepts JSON-RPC 2.0 stdio communication between any coding agent harness and downstream MCP servers. Prunes unused tool schemas from `tools/list` responses using `--allow` or `--deny`, eliminating thousands of wasted system prompt tokens per turn. Supports Content-Length framing, newline framing, UTF-8 BOM stripping, and fail-open passthrough.
+- **Native MCP handshake instructions:** `trimtok/mcp_server.py` emits `SERVER_INSTRUCTIONS` inside `InitializeResult.instructions` so connected agents receive lossless CCR retrieval instructions in memory without mutating repo config files.
+
 ## [5.3.5] - 2026-11-04
 
 Five capabilities, each with a test that can fail.

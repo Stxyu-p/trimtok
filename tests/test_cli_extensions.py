@@ -38,3 +38,16 @@ def test_cli_mcp_proxy_subcommand_help():
     assert proc.returncode == 0
     assert "--allow" in proc.stdout
     assert "--deny" in proc.stdout
+
+def test_hermes_pre_llm_call_hook():
+    from trimtok import _pre_llm_call
+    res = _pre_llm_call(session_id="test", conversation_history=[])
+    # Might be None if no codebase or string context
+    assert res is None or ("context" in res and "Codebase map" in res["context"])
+
+    # If already in conversation, must be None
+    res_cached = _pre_llm_call(
+        session_id="test",
+        conversation_history=[{"api_content": "Codebase map (2 directories):\nsrc/: app"}]
+    )
+    assert res_cached is None

@@ -1253,6 +1253,28 @@ def compress_agent_payload(
         return payload, {"gate": "passthrough_exception"}
 
 
+def _pre_llm_call(session_id: str = "", conversation_history: Any = None, **_: Any) -> dict[str, str] | None:
+    if os.environ.get("TRIMTOK_MAP", "1") == "0":
+        return None
+    for message in reversed(conversation_history or []):
+        if not isinstance(message, dict):
+            continue
+        api_content = message.get("api_content")
+        if isinstance(api_content, str) and "Codebase map (" in api_content:
+            return None
+    try:
+        from .codemap import build_codebase_map
+    except ImportError:
+        from codemap import build_codebase_map  # type: ignore
+    try:
+        cmap = build_codebase_map(budget_chars=1500)
+        if cmap:
+            return {"context": cmap}
+    except Exception:
+        pass
+    return None
+
+
 def register(ctx: Any) -> None:
     _on_transform._ctx = ctx  # type: ignore[attr-defined]
     _on_tool_result._ctx = ctx  # type: ignore[attr-defined]
@@ -1262,6 +1284,7 @@ def register(ctx: Any) -> None:
     ctx.register_hook("transform_terminal_output", _on_transform)
     ctx.register_hook("transform_tool_result", _on_tool_result)
     ctx.register_hook("post_llm_call", _on_post_llm)
+    ctx.register_hook("pre_llm_call", _pre_llm_call)
     ctx.register_hook("on_session_start", _on_session_reset)
     ctx.register_hook("on_session_end", _on_session_reset)
     ctx.register_tool(
