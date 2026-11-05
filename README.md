@@ -40,6 +40,8 @@ Autonomous coding agents burn over **60% of their context window budget** on rep
 [JSON File 50 Cols]    12,002 toks   ──►   6,225 toks   (-48.1% file TOON)
 [OpenAPI Document]      2,746 toks   ──►   1,367 toks   (-50.2% JSON minify)
 [Build Log 400 Lines]  15,960 toks   ──►   4,869 toks   (-69.5% adaptive budget)
+[MCP Schema 25 Tools]   5,800 toks   ──►     780 toks   (-86.5% bounded proxy)
+[Repo Exploration 4k]  12,000 toks   ──►     480 toks   (-96.0% 2k-budget map)
 [22k-token source]     21,999 toks   ──►     571 toks   (-97.4% intent retrieval)
 ```
 
@@ -53,25 +55,31 @@ Measured across a 32-payload production corpus (1,135,441 characters): **73.2% r
 **trimtok** operates 100% locally and in-process using the Python standard library, RapidFuzz C++ alignment, tree-sitter AST parsing, and Zstandard compression. No external daemons, no Docker containers, and zero open network ports.
 
 ```text
+  ┌────────────────────────────────────────────────────────┐
+  │ Tier 0: Pre-Flight Context Shield (Zero Disk Footprint)│
+  │ ├── Bounded MCP Proxy: filters tools/list schemas      │
+  │ └── Codebase Symbol Map: 2k-budget symbol directory map│
+  └──────────────────────────┬─────────────────────────────┘
+                             ▼
 Tool / Terminal Output
          │
          ▼
   ┌────────────────────────────────────────────────────────┐
-  │  trimtok In-Process Hook (< 2 ms, fail-open ≤ 200 ms)  │
-  │  ├── 0. Content Policy Gate (secrets / edits verbatim) │
-  │  ├── 1. Cross-Turn Delta Engine (pytest, cargo test)   │
-  │  ├── 2. Command-Specific Filters (git, npm, pip, etc.) │
-  │  ├── 3. Structured Traceback Pruning (locks crash-site)│
-  │  ├── 4. Lossless & Merged TOON v2 (JSON arrays)        │
-  │  ├── 5. Multi-Language AST Skeletonizer (7 languages)  │
-  │  └── 6. Tiered Web & Doc Link De-bloating              │
+  │ Tier 1: In-Process Hot-Path (< 2 ms, fail-open ≤ 200ms)│
+  │ ├── 0. Content Policy Gate (secrets / edits verbatim)  │
+  │ ├── 1. Cross-Turn Delta Engine (pytest, cargo test)    │
+  │ ├── 2. Command-Specific Filters (git, npm, pip, etc.)  │
+  │ ├── 3. Structured Traceback Pruning (locks crash-site) │
+  │ ├── 4. Lossless & Merged TOON v2 (JSON arrays)         │
+  │ ├── 5. Multi-Language AST Skeletonizer (7 languages)   │
+  │ └── 6. Tiered Web & Doc Link De-bloating               │
   └──────────────────────────┬─────────────────────────────┘
                              │  level: light │ normal │ aggressive
                              │  format: TOON │ minified JSON
             ┌────────────────┴────────────────┐
             ▼                                 ▼
    Agent Context Window             SQLite WAL + Zstandard
-   (Clean, dense token stream)     (Full recovery via `#c1`)
+   (Clean, dense token stream)     (Tier 2 Recovery via `#c1`)
 ```
 
 ---
@@ -124,6 +132,8 @@ Tool / Terminal Output
   - [Configuration Options](#hermes-config-options)
 - **[Slash Commands & CLI](#slash-commands-cli)**
   - [In-Chat Slash Commands](#hermes-slash-commands)
+  - [Codebase Map (`map`)](#codemap-cli)
+  - [Bounded MCP Proxy (`mcp-proxy`)](#mcp-proxy-cli)
   - [Standalone Wrapper (`wrap`)](#standalone-cli-wrapper)
   - [Command Rewriting (`rewrite`)](#rewrite-cli)
 - **[Global Agent Trinity](#global-agent-trinity)**
@@ -157,6 +167,8 @@ Empirical head-to-head benchmarks measured on identical production workloads:
 | **Model-Aware Format** | ✅ **`auto` / `always` / `never`** | Not documented | Not documented | Not documented | Not documented | Not documented |
 | **Fix-Accuracy Benchmark** | ✅ **8/8 locate** | Not documented | Not documented | Not documented | Not documented | Not documented |
 | **In-Process Latency** | **< 2 ms** (micro) | 10 – 50 ms (process) | ~9,054 ms (73x slower)| ~259 ms (process) | ~437 ms (process) | 660 – 860 ms |
+| **Bounded MCP Tool Proxy** | ✅ **`trimtok mcp-proxy`** | ❌ None | ❌ None | ❌ None | ❌ None | ❌ None |
+| **Codebase Symbol Map** | ✅ **`trimtok map` (<38ms)** | ❌ None | ❌ None | ❌ None | ❌ None | ❌ None |
 | **Zero Network Ports** | ✅ **100% portless** | ✅ Portless | ❌ Opens HTTP port | ✅ Portless | ❌ Opens HTTP/Web | ✅ Portless |
 
 <a id="where-trimtok-excels"></a>
@@ -471,6 +483,51 @@ trimtok retrieve "#c1"
 trimtok recall "#c1" --offset 50 --limit 30
 ```
 
+<a id="codemap-cli"></a>
+### Ultra-Light Codebase Map (`trimtok map`)
+Scan repository structure and output top-level symbols grouped by directory within a strict character budget (default 2,000 characters, executed in < 38 ms):
+```bash
+# Generate compact symbol map of current directory
+trimtok map .
+
+# Constrain to custom budget
+trimtok map . --budget 1200
+```
+*Output preview:*
+```text
+Codebase map (4 directories):
+trimtok/: detect_kind, compress_agent_payload, main, default_dir, build_codebase_map, filter_mcp_message, handle
+eval/: declared_hidden, add, tok, verify_patch_safety, refs_in, run_test
+trimtok/strategies/: minify_lossless, strip_signatures_rtk, shave_tiered
+```
+
+<a id="mcp-proxy-cli"></a>
+### Bounded MCP Stdio Proxy (`trimtok mcp-proxy`)
+Intercept stdio JSON-RPC communication between any coding harness and third-party MCP servers to prune bloated tool schemas from the model's system prompt:
+```bash
+# Allow only essential tools from a sprawling server
+trimtok mcp-proxy --allow "codegraph_explore" -- npx -y @colbymchenry/codegraph
+
+# Deny diagnostic/admin tools that waste system prompt tokens
+trimtok mcp-proxy --deny "ctx_doctor,ctx_stats,ctx_purge" -- npx -y context-mode
+```
+
+*Drop-in configuration for `mcp.json` / `opencode.json`:*
+```json
+{
+  "mcpServers": {
+    "context-mode": {
+      "command": "python",
+      "args": [
+        "-m", "trimtok", "mcp-proxy",
+        "--deny", "ctx_doctor,ctx_stats,ctx_purge",
+        "--", "npx", "-y", "context-mode"
+      ]
+    }
+  }
+}
+```
+
 <a id="rewrite-cli"></a>
 ### Command Rewriting (`trimtok rewrite`)
 Prints a noise-reduced form of a command without executing it, for use in shell aliases or CI scripts:
@@ -493,10 +550,10 @@ python eval/audit_honesty.py    # Claimed vs proven reduction; unproven characte
 python eval/steps.py            # raw -> hook -> intent retrieval, per payload
 python eval/fix_accuracy.py     # Can an agent still fix the bug? (LOCATE, no model needed)
 python eval/probe_ceiling.py    # Are folded lines announced and ref-reachable?
-python -m unittest discover -s tests/   # 94 unit tests
+pytest tests/                   # 103 unit tests
 ```
 
-The honesty audit is the load-bearing check: it recomputes the claimed reduction from the recovery store and reports any character that was removed without a resolvable reference. Run `eval_real.py` immediately before `audit_honesty.py` against a fresh store — pointing both at the same empty `TRIMTOK_DATA_DIR` — so the audit scores exactly the corpus the first script produced. Current state — **73.19% claimed, 73.19% proven, 0 unproven characters**, 0 gate failures, 0 silent line loss, 0 unannounced faults, 94/94 tests passing.
+The honesty audit is the load-bearing check: it recomputes the claimed reduction from the recovery store and reports any character that was removed without a resolvable reference. Run `eval_real.py` immediately before `audit_honesty.py` against a fresh store — pointing both at the same empty `TRIMTOK_DATA_DIR` — so the audit scores exactly the corpus the first script produced. Current state — **73.19% claimed, 73.19% proven, 0 unproven characters**, 0 gate failures, 0 silent line loss, 0 unannounced faults, 103/103 tests passing.
 
 ---
 
