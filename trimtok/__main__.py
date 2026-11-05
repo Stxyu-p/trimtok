@@ -213,6 +213,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_rew.add_argument("command", nargs=argparse.REMAINDER, help="Command to rewrite")
 
+    p_map = sub.add_parser("map", help="Scan repository and output compact codebase symbol map (budgeted)")
+    p_map.add_argument("path", nargs="?", default=".", help="Directory to scan (default: current)")
+    p_map.add_argument("--budget", type=int, default=2000, help="Max character budget (default: 2000)")
+    p_map.add_argument("--max-files", type=int, default=4000, help="Max files to scan (default: 4000)")
+
+    p_mcp_proxy = sub.add_parser("mcp-proxy", help="Run bounded stdio MCP proxy filtering tools/list and injecting instructions")
+    p_mcp_proxy.add_argument("--allow", help="Comma-separated allowlist of tool names")
+    p_mcp_proxy.add_argument("--deny", help="Comma-separated denylist of tool names")
+    p_mcp_proxy.add_argument("--instructions", help="Optional instruction string override for initialize response")
+    p_mcp_proxy.add_argument("command", nargs=argparse.REMAINDER, help="MCP server command and arguments to run")
+
     ns = parser.parse_args(args_list)
 
     if ns.cmd in (None, "status"):
@@ -325,6 +336,29 @@ def main(argv: list[str] | None = None) -> int:
         if not compressed.endswith("\n"):
             sys.stdout.write("\n")
         return proc.returncode
+    if ns.cmd == "map":
+        try:
+            from .codemap import build_codebase_map
+        except ImportError:
+            from codemap import build_codebase_map  # type: ignore
+        out = build_codebase_map(root=ns.path, budget_chars=ns.budget, max_files=ns.max_files)
+        if out:
+            sys.stdout.write(out + "\n")
+        return 0
+    if ns.cmd == "mcp-proxy":
+        try:
+            from .mcp_proxy import run_mcp_proxy
+        except ImportError:
+            from mcp_proxy import run_mcp_proxy  # type: ignore
+        cmd_args = list(ns.command)
+        if cmd_args and cmd_args[0] == "--":
+            cmd_args = cmd_args[1:]
+        if not cmd_args:
+            sys.stderr.write("Error: no command provided to mcp-proxy. Usage: trimtok mcp-proxy [options] -- <command...>\n")
+            return 1
+        allow_set = {t.strip() for t in ns.allow.split(",") if t.strip()} if ns.allow else None
+        deny_set = {t.strip() for t in ns.deny.split(",") if t.strip()} if ns.deny else None
+        return run_mcp_proxy(cmd_args, allow_tools=allow_set, deny_tools=deny_set, instructions=ns.instructions)
     parser.print_help()
     return 0
 
