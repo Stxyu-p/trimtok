@@ -22,6 +22,7 @@ def filter_mcp_message(
     allow_tools: Set[str] | None = None,
     deny_tools: Set[str] | None = None,
     instructions: str | None = None,
+    kv_lock: bool = False,
 ) -> bytes:
     """Filter tools in tools/list response or inject instructions in initialize response."""
     if not raw_bytes:
@@ -75,6 +76,17 @@ def filter_mcp_message(
             result["instructions"] = instructions
             modified = True
 
+        # 3. Stabilize instructions for KV-cache alignment if enabled
+        if kv_lock and "instructions" in result and isinstance(result["instructions"], str):
+            try:
+                from .kv_lock import stabilize_prompt
+            except ImportError:
+                from kv_lock import stabilize_prompt  # type: ignore
+            stabilized = stabilize_prompt(result["instructions"])
+            if stabilized != result["instructions"]:
+                result["instructions"] = stabilized
+                modified = True
+
     if not modified:
         return raw_bytes
 
@@ -110,6 +122,7 @@ def run_mcp_proxy(
     allow_tools: Set[str] | None = None,
     deny_tools: Set[str] | None = None,
     instructions: str | None = None,
+    kv_lock: bool = False,
 ) -> int:
     """Run MCP server subprocess and proxy stdio with JSON-RPC filtering."""
     if not command:
@@ -161,12 +174,12 @@ def run_mcp_proxy(
                 length = int(m.group(0)) if m else 0
                 body = child_stdout.read(length) if length > 0 else b""
                 raw_frame = b"".join(header_lines) + b"\r\n" + body
-                filtered = filter_mcp_message(raw_frame, allow_tools, deny_tools, instructions)
+                filtered = filter_mcp_message(raw_frame, allow_tools, deny_tools, instructions, kv_lock=kv_lock)
                 parent_stdout.write(filtered)
                 parent_stdout.flush()
             else:
                 # Newline-delimited JSON-RPC
-                filtered = filter_mcp_message(line, allow_tools, deny_tools, instructions)
+                filtered = filter_mcp_message(line, allow_tools, deny_tools, instructions, kv_lock=kv_lock)
                 parent_stdout.write(filtered)
                 parent_stdout.flush()
     except (BrokenPipeError, OSError):

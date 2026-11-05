@@ -222,7 +222,11 @@ def main(argv: list[str] | None = None) -> int:
     p_mcp_proxy.add_argument("--allow", help="Comma-separated allowlist of tool names")
     p_mcp_proxy.add_argument("--deny", help="Comma-separated denylist of tool names")
     p_mcp_proxy.add_argument("--instructions", help="Optional instruction string override for initialize response")
+    p_mcp_proxy.add_argument("--kv-lock", action="store_true", help="Stabilize instructions for KV-cache alignment")
     p_mcp_proxy.add_argument("command", nargs=argparse.REMAINDER, help="MCP server command and arguments to run")
+
+    p_kv = sub.add_parser("kv-lock", help="Stabilize prompt content for KV-cache alignment")
+    p_kv.add_argument("input", nargs="?", default="-", help="File path or '-' for stdin")
 
     ns = parser.parse_args(args_list)
 
@@ -358,7 +362,24 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         allow_set = {t.strip() for t in ns.allow.split(",") if t.strip()} if ns.allow else None
         deny_set = {t.strip() for t in ns.deny.split(",") if t.strip()} if ns.deny else None
-        return run_mcp_proxy(cmd_args, allow_tools=allow_set, deny_tools=deny_set, instructions=ns.instructions)
+        return run_mcp_proxy(
+            cmd_args,
+            allow_tools=allow_set,
+            deny_tools=deny_set,
+            instructions=ns.instructions,
+            kv_lock=ns.kv_lock,
+        )
+    if ns.cmd == "kv-lock":
+        try:
+            from .kv_lock import stabilize_prompt
+        except ImportError:
+            from kv_lock import stabilize_prompt  # type: ignore
+        raw = sys.stdin.read() if ns.input == "-" else Path(ns.input).read_text(encoding="utf-8", errors="replace")
+        out = stabilize_prompt(raw)
+        sys.stdout.write(out)
+        if not out.endswith("\n"):
+            sys.stdout.write("\n")
+        return 0
     parser.print_help()
     return 0
 

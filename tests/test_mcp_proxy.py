@@ -40,20 +40,24 @@ def test_filter_mcp_tools_list_deny():
     tools = [t["name"] for t in data["result"]["tools"]]
     assert tools == ["core_read"]
 
-def test_filter_mcp_initialize_instructions():
+def test_filter_mcp_initialize_instructions_with_kv_lock():
     sample_init = {
         "jsonrpc": "2.0",
         "id": 0,
         "result": {
             "protocolVersion": "2024-11-05",
             "serverInfo": {"name": "test", "version": "1.0"},
-            "capabilities": {}
+            "capabilities": {},
+            "instructions": "Session started: 2026-11-05\nDo your task."
         }
     }
     raw = json.dumps(sample_init).encode("utf-8")
-    filtered = filter_mcp_message(raw, instructions="Use trimtok retrieve")
+    filtered = filter_mcp_message(raw, kv_lock=True)
     data = json.loads(filtered.decode("utf-8"))
-    assert data["result"]["instructions"] == "Use trimtok retrieve"
+    assert "<date>" in data["result"]["instructions"]
+    assert "<!-- kv-lock: dynamic context -->" in data["result"]["instructions"]
+    assert "2026-11-05" in data["result"]["instructions"]
+
 
 def test_filter_mcp_content_length_header():
     body = json.dumps({

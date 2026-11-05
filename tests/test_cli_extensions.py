@@ -38,6 +38,21 @@ def test_cli_mcp_proxy_subcommand_help():
     assert proc.returncode == 0
     assert "--allow" in proc.stdout
     assert "--deny" in proc.stdout
+    assert "--kv-lock" in proc.stdout
+
+def test_cli_kv_lock_subcommand(tmp_path):
+    f = tmp_path / "prompt.txt"
+    f.write_text("System started on 2026-11-05.\nRules: be brief.", encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, "-m", "trimtok", "kv-lock", str(f)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0
+    assert "System started on <date>." in proc.stdout
+    assert "<!-- kv-lock: dynamic context -->" in proc.stdout
+    assert "2026-11-05" in proc.stdout
 
 def test_hermes_pre_llm_call_hook():
     from trimtok import _pre_llm_call

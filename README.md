@@ -132,6 +132,7 @@ Tool / Terminal Output
   - [Configuration Options](#hermes-config-options)
 - **[Slash Commands & CLI](#slash-commands-cli)**
   - [In-Chat Slash Commands](#hermes-slash-commands)
+  - [KV-Cache Stabilizer (`kv-lock`)](#kvlock-cli)
   - [Codebase Map (`map`)](#codemap-cli)
   - [Bounded MCP Proxy (`mcp-proxy`)](#mcp-proxy-cli)
   - [Standalone Wrapper (`wrap`)](#standalone-cli-wrapper)
@@ -483,6 +484,30 @@ trimtok retrieve "#c1"
 trimtok recall "#c1" --offset 50 --limit 30
 ```
 
+<a id="kvlock-cli"></a>
+### KV-Cache Prompt Stabilizer (`trimtok kv-lock`)
+Lock system prompt prefixes to maximize prompt-cache hit rates (up to 90% cost reduction on Anthropic, Gemini, and DeepSeek) by replacing dynamic dates, times, and UUIDs outside code blocks with stable placeholders, relocating their original values to a delimited appendix at the tail:
+```bash
+# Stabilize a system prompt file or stdin
+trimtok kv-lock prompt.txt
+
+# Pipe through shell
+cat prompt.txt | trimtok kv-lock
+```
+*Output preview:*
+```markdown
+You are an expert software engineer.
+System started on <date> at <time>.
+Session ID: <uuid>
+
+---
+<!-- kv-lock: dynamic context -->
+date: 2026-11-05
+time: 14:30:00
+uuid: 550e8400-e29b-41d4-a716-446655440000
+<!-- end kv-lock -->
+```
+
 <a id="codemap-cli"></a>
 ### Ultra-Light Codebase Map (`trimtok map`)
 Scan repository structure and output top-level symbols grouped by directory within a strict character budget (default 2,000 characters, executed in < 38 ms):
@@ -550,10 +575,10 @@ python eval/audit_honesty.py    # Claimed vs proven reduction; unproven characte
 python eval/steps.py            # raw -> hook -> intent retrieval, per payload
 python eval/fix_accuracy.py     # Can an agent still fix the bug? (LOCATE, no model needed)
 python eval/probe_ceiling.py    # Are folded lines announced and ref-reachable?
-pytest tests/                   # 103 unit tests
+pytest tests/                   # 109 unit tests
 ```
 
-The honesty audit is the load-bearing check: it recomputes the claimed reduction from the recovery store and reports any character that was removed without a resolvable reference. Run `eval_real.py` immediately before `audit_honesty.py` against a fresh store — pointing both at the same empty `TRIMTOK_DATA_DIR` — so the audit scores exactly the corpus the first script produced. Current state — **73.19% claimed, 73.19% proven, 0 unproven characters**, 0 gate failures, 0 silent line loss, 0 unannounced faults, 103/103 tests passing.
+The honesty audit is the load-bearing check: it recomputes the claimed reduction from the recovery store and reports any character that was removed without a resolvable reference. Run `eval_real.py` immediately before `audit_honesty.py` against a fresh store — pointing both at the same empty `TRIMTOK_DATA_DIR` — so the audit scores exactly the corpus the first script produced. Current state — **73.19% claimed, 73.19% proven, 0 unproven characters**, 0 gate failures, 0 silent line loss, 0 unannounced faults, 109/109 tests passing.
 
 ---
 
