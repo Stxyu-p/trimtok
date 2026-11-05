@@ -21,6 +21,11 @@ APPENDIX_START = "<!-- kv-lock: dynamic context -->"
 APPENDIX_END = "<!-- end kv-lock -->"
 APPENDIX_SEP = "---"
 
+APPENDIX_BLOCK_RE = re.compile(
+    r"\n*---\s*\n*<!-- kv-lock: dynamic context -->([\s\S]*?)<!-- end kv-lock -->\n*",
+    re.MULTILINE,
+)
+
 # Code block pattern to avoid modifying user examples or source code
 FENCE_RE = re.compile(r"(```[\s\S]*?```)", re.MULTILINE)
 
@@ -71,12 +76,7 @@ def extract_dynamic(content: str) -> list[DynamicFragment]:
         return []
 
     # Strip existing appendix if present to avoid re-extracting previously locked values
-    main_content = content
-    if APPENDIX_START in content:
-        main_content = content.split(APPENDIX_START, 1)[0]
-        sep_marker = f"\n{APPENDIX_SEP}\n"
-        if main_content.endswith(sep_marker):
-            main_content = main_content[:-len(sep_marker)]
+    main_content = APPENDIX_BLOCK_RE.sub("\n", content)
 
     fragments: list[DynamicFragment] = []
     seen: Set[str] = set()
@@ -101,29 +101,44 @@ def stabilize_prompt(content: str) -> str:
 
     Extracts dynamic fragments outside of code blocks, replaces them with
     placeholders, and relocates real values into an appendix at the end.
-    Idempotent: strips prior kv-lock appendix before processing.
+    Idempotent: parses prior kv-lock appendix, merges values, and replaces cleanly.
     """
     if not content:
         return content
 
-    # Check for existing appendix to maintain idempotence
-    base_content = content
-    existing_appendix = ""
-    if APPENDIX_START in content:
-        base_content = content.split(APPENDIX_START, 1)[0]
-        sep_marker = f"\n{APPENDIX_SEP}\n"
-        if base_content.endswith(sep_marker):
-            base_content = base_content[:-len(sep_marker)]
-        existing_appendix = content[len(base_content):]
+    # Check for existing appendix to maintain idempotence & avoid dropping earlier values
+    existing_frags: list[DynamicFragment] = []
+    seen_originals: Set[str] = set()
+    m = APPENDIX_BLOCK_RE.search(content)
+    if m:
+        for line in m.group(1).splitlines():
+            line = line.strip()
+            if ":" in line:
+                k, _, v = line.partition(":")
+                k = k.strip()
+                v = v.strip()
+                if v and v not in seen_originals:
+                    seen_originals.add(v)
+                    existing_frags.append(DynamicFragment(name=k, original=v, placeholder=f"<{k}>"))
 
-    fragments = extract_dynamic(base_content)
-    if not fragments:
+    # Clean content by stripping existing appendix block from wherever it sat
+    clean_content = APPENDIX_BLOCK_RE.sub("\n", content).rstrip()
+
+    new_fragments = extract_dynamic(clean_content)
+    if not new_fragments and not existing_frags:
         return content
 
-    # Sort fragments by original length descending to avoid substring collision
-    sorted_frags = sorted(fragments, key=lambda f: len(f.original), reverse=True)
+    # Merge new fragments with existing ones
+    combined_frags: list[DynamicFragment] = list(existing_frags)
+    for frag in new_fragments:
+        if frag.original not in seen_originals:
+            seen_originals.add(frag.original)
+            combined_frags.append(frag)
 
-    parts = FENCE_RE.split(base_content)
+    # Sort fragments by original length descending to avoid substring collision
+    sorted_frags = sorted(combined_frags, key=lambda f: len(f.original), reverse=True)
+
+    parts = FENCE_RE.split(clean_content)
     new_parts: list[str] = []
 
     for i, part in enumerate(parts):
@@ -144,7 +159,7 @@ def stabilize_prompt(content: str) -> str:
         APPENDIX_SEP,
         APPENDIX_START,
     ]
-    for frag in fragments:
+    for frag in combined_frags:
         appendix_lines.append(f"{frag.name}: {frag.original}")
     appendix_lines.append(APPENDIX_END)
 

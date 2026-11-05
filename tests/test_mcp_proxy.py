@@ -80,6 +80,24 @@ def test_filter_mcp_content_length_header():
     length = int(header.split(b": ")[1])
     assert length == len(rest)
 
+def test_filter_mcp_multi_header():
+    body = json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+            "tools": [
+                {"name": "tool_a"},
+                {"name": "tool_b"}
+            ]
+        }
+    })
+    raw = f"Content-Length: {len(body)}\r\nContent-Type: application/json\r\n\r\n{body}".encode("utf-8")
+    filtered = filter_mcp_message(raw, allow_tools={"tool_a"})
+    assert b"Content-Type: application/json" in filtered
+    assert b"tool_a" in filtered
+    assert b"tool_b" not in filtered
+
+
 def test_filter_mcp_fail_open_on_broken_json():
     broken = b"invalid json data {["
     assert filter_mcp_message(broken) == broken

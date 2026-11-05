@@ -14,7 +14,20 @@ import sys
 import threading
 from typing import Set
 
-HEADER_RE = re.compile(rb"^Content-Length:\s*(\d+)\r?\n\r?\n", re.IGNORECASE)
+HEADER_SEP_CRLF = b"\r\n\r\n"
+HEADER_SEP_LF = b"\n\n"
+CONTENT_LENGTH_RE = re.compile(rb"(?i)\bcontent-length:\s*(\d+)")
+
+
+def _split_headers_and_body(raw_bytes: bytes) -> tuple[bool, bytes, bytes]:
+    """Detect LSP-style Content-Length framing and split headers from body."""
+    sep = HEADER_SEP_CRLF if HEADER_SEP_CRLF in raw_bytes else (HEADER_SEP_LF if HEADER_SEP_LF in raw_bytes else None)
+    if sep is None:
+        return False, b"", raw_bytes
+    hdr_part, _, body = raw_bytes.partition(sep)
+    if not CONTENT_LENGTH_RE.search(hdr_part):
+        return False, b"", raw_bytes
+    return True, hdr_part, body
 
 
 def filter_mcp_message(
@@ -28,14 +41,8 @@ def filter_mcp_message(
     if not raw_bytes:
         return raw_bytes
 
-    has_header = False
-    body_bytes = raw_bytes
-    header_match = HEADER_RE.match(raw_bytes)
-    trailing_newline = raw_bytes.endswith(b"\n")
-
-    if header_match:
-        has_header = True
-        body_bytes = raw_bytes[header_match.end():]
+    has_header, hdr_part, body_bytes = _split_headers_and_body(raw_bytes)
+    trailing_newline = raw_bytes.endswith(b"\n") and not has_header
 
     # Strip UTF-8 BOM if present
     if body_bytes.startswith(b"\xef\xbb\xbf"):
@@ -92,7 +99,13 @@ def filter_mcp_message(
 
     new_body = json.dumps(data, ensure_ascii=False).encode("utf-8")
     if has_header:
-        return f"Content-Length: {len(new_body)}\r\n\r\n".encode("utf-8") + new_body
+        # Update Content-Length in existing header block
+        new_hdr = CONTENT_LENGTH_RE.sub(
+            f"Content-Length: {len(new_body)}".encode("ascii"),
+            hdr_part,
+            count=1,
+        )
+        return new_hdr + b"\r\n\r\n" + new_body
     if trailing_newline:
         return new_body + b"\n"
     return new_body
@@ -115,6 +128,17 @@ def _forward_stdin(child_stdin):
             child_stdin.close()
         except Exception:
             pass
+
+
+def _read_exact(stream, n: int) -> bytes:
+    """Read exactly n bytes from stream, or until EOF."""
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = stream.read(n - len(buf))
+        if not chunk:
+            break
+        buf.extend(chunk)
+    return bytes(buf)
 
 
 def run_mcp_proxy(
@@ -172,7 +196,7 @@ def run_mcp_proxy(
                 # Parse length
                 m = re.search(r"\d+", line.decode("ascii", errors="ignore"))
                 length = int(m.group(0)) if m else 0
-                body = child_stdout.read(length) if length > 0 else b""
+                body = _read_exact(child_stdout, length) if length > 0 else b""
                 raw_frame = b"".join(header_lines) + b"\r\n" + body
                 filtered = filter_mcp_message(raw_frame, allow_tools, deny_tools, instructions, kv_lock=kv_lock)
                 parent_stdout.write(filtered)

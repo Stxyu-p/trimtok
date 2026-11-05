@@ -57,6 +57,27 @@ def test_stabilize_idempotent_and_no_change_when_no_dynamic():
     dynamic_text = "Today is 2026-11-05."
     first_pass = stabilize_prompt(dynamic_text)
     second_pass = stabilize_prompt(first_pass)
-    # The appendix should appear only once
-    assert second_pass.count("<!-- kv-lock: dynamic context -->") == 1
+def test_stabilize_preserves_existing_appendix_when_new_dynamic_added():
+    # Prompt 1 stabilized
+    text1 = "Prompt 1 with Date: 2026-11-05."
+    res1 = stabilize_prompt(text1)
+    assert "date: 2026-11-05" in res1
+
+    # Prompt 2 adds new dynamic value before or after
+    text2 = "New task on 2026-11-06.\n" + res1
+    res2 = stabilize_prompt(text2)
+    # Both dates must be retained in the appendix
+    assert "2026-11-05" in res2
+    assert "2026-11-06" in res2
+    assert res2.count("<!-- kv-lock: dynamic context -->") == 1
+
+def test_stabilize_handles_text_after_appendix():
+    text = (
+        "Heading.\nDate: 2026-11-05.\n"
+        "---\n<!-- kv-lock: dynamic context -->\ndate: 2026-11-05\n<!-- end kv-lock -->\n"
+        "Crucial footer text that must not be deleted.\n"
+    )
+    stabilized = stabilize_prompt(text)
+    assert "Crucial footer text that must not be deleted." in stabilized
+
 

@@ -144,7 +144,13 @@ def build_codebase_map(
         if any(p in SKIP_DIRS for p in parts):
             continue
         base = os.path.basename(f)
-        if base.startswith("test_") or "_test." in base or ".test." in base or ".spec." in base:
+        if (
+            base.startswith(("test_", "test.", "spec_", "spec."))
+            or "_test." in base
+            or ".test." in base
+            or ".spec." in base
+            or base in ("test.py", "spec.py")
+        ):
             continue
         valid_files.append(f)
 
@@ -225,5 +231,6 @@ def build_codebase_map(
     full_text = f"{head}\n" + "\n".join(lines)
     if len(full_text) > budget_chars:
         # Fallback safeguard
-        full_text = full_text[:budget_chars].rsplit("\n", 1)[0]
+        trimmed = full_text[:budget_chars]
+        full_text = trimmed.rsplit("\n", 1)[0] if "\n" in trimmed else ""
     return full_text
