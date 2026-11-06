@@ -8,6 +8,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from eval.decision_eval import evaluate_decision_equivalence
+from trimtok import ccr
 
 def test_decision_equivalence_deterministic_scenarios():
     scenarios = [
@@ -31,6 +32,8 @@ def test_decision_equivalence_deterministic_scenarios():
     assert res["equivalent"] == 2
     assert res["decision_change_rate"] == 0.0
     assert res["critical_tokens_preserved_rate"] == 1.0
+    # A compressor that removes nothing cannot prove anything.
+    assert res["valid"] is False
 
 def test_decision_equivalence_catches_divergence():
     scenarios = [
@@ -51,3 +54,21 @@ def test_decision_equivalence_catches_divergence():
     assert res["equivalent"] == 0
     assert res["decision_change_rate"] == 1.0
     assert res["critical_tokens_preserved_rate"] == 0.0
+
+def test_ref_only_compression_is_not_counted_as_preserved():
+    """A compressor that emits only a ref must not pass the gate."""
+    context = "CRITICAL: memory leak detected in cache.py line 99. Run prune_cache."
+    scenarios = [{
+        "id": "ref-only",
+        "context": context,
+        "target_action": "prune_cache",
+        "critical_tokens": ["cache.py"],
+    }]
+
+    def ref_only(_text: str) -> str:
+        return f"[tt:folded 40L {ccr.put(context)}]"
+
+    res = evaluate_decision_equivalence(scenarios, compress_fn=ref_only)
+    assert res["equivalent"] == 0
+    assert res["recoverable_only"] == 1
+    assert res["decision_change_rate"] == 1.0

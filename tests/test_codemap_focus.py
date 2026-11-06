@@ -37,6 +37,28 @@ def test_codemap_focus_budget_omits_unrelated(tmp_path: Path):
     result = build_codebase_map(root=tmp_path, budget_chars=120, focus_file="core/runner.py")
     assert "core/: " in result
     assert "execute" in result
-    assert "utils/: " in result or "add" in result
+    assert "add" in result
     # Legacy should be truncated or omitted under tight budget
     assert "old_func_9" not in result
+
+def test_codemap_focus_missing_file_falls_back_to_unfocused(tmp_path: Path):
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "mod.py").write_text("def func(): pass\n", encoding="utf-8")
+
+    focused = build_codebase_map(root=tmp_path, budget_chars=400, focus_file="nope/missing.py")
+    plain = build_codebase_map(root=tmp_path, budget_chars=400)
+    assert focused == plain
+
+def test_codemap_focus_keeps_more_symbols_from_the_focus_file(tmp_path: Path):
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "target.py").write_text(
+        "".join(f"def target_func_{i}(): pass\n" for i in range(6)), encoding="utf-8"
+    )
+    for i in range(10):
+        (pkg / f"other_{i}.py").write_text(f"def other_func_{i}(): pass\n", encoding="utf-8")
+
+    result = build_codebase_map(root=tmp_path, budget_chars=400, focus_file="pkg/target.py")
+    # Busy directories collapse to one symbol per file, except the focus file.
+    assert "target_func_5" in result

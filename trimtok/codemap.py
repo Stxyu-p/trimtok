@@ -145,7 +145,14 @@ def _extract_import_stems(text: str, ext: str) -> set[str]:
                 if sub and sub not in (".", ".."):
                     stems.add(sub)
     elif lang == "go":
-        for m in re.finditer(r"['\"]([^'\"]+)['\"]", text):
+        # Only real import paths: a bare `"..."` anywhere would also catch
+        # every string literal in the file (fmt.Println("hello")).
+        for block in re.finditer(r"^import\s*\(([^)]*)\)", text, re.MULTILINE):
+            for m in re.finditer(r'"([^"]+)"', block.group(1)):
+                for part in m.group(1).rstrip("/").split("/"):
+                    if part:
+                        stems.add(part.lower())
+        for m in re.finditer(r'^import\s+(?:\w+\s+)?"([^"]+)"', text, re.MULTILINE):
             for part in m.group(1).rstrip("/").split("/"):
                 if part:
                     stems.add(part.lower())
@@ -190,18 +197,16 @@ def build_codebase_map(
         valid_files.append(f)
 
     focus_clean = ""
-    focus_stem = ""
     focus_dir = ""
     focus_imports: set[str] = set()
     if focus_file:
         fc = str(focus_file).replace("\\", "/").strip()
         if fc.startswith("./"):
             fc = fc[2:]
-        focus_clean = fc
-        focus_stem = Path(fc).stem.lower()
-        focus_dir = os.path.dirname(fc)
         fp = target_root / fc
         if fp.is_file():
+            focus_clean = fc
+            focus_dir = os.path.dirname(fc)
             try:
                 with open(fp, "r", encoding="utf-8", errors="ignore") as fh:
                     fcontent = fh.read(65536)
@@ -217,8 +222,9 @@ def build_codebase_map(
         f_stem = Path(f_norm).stem.lower()
         if f_norm == focus_clean or f_norm.endswith("/" + focus_clean):
             return (0, 0, f)
-        f_parts = {p.lower() for p in Path(f_norm).parts}
-        if f_stem in focus_imports or bool(f_parts & focus_imports):
+        # Match on the file stem or its immediate package only: matching any
+        # path component would rank every file under a top-level dir like src/.
+        if f_stem in focus_imports or Path(f_norm).parent.name.lower() in focus_imports:
             return (1, 0, f)
         if focus_dir and os.path.dirname(f_norm) == focus_dir:
             return (2, 0, f)
@@ -228,7 +234,7 @@ def build_codebase_map(
     valid_files.sort(key=file_relevance)
     valid_files = valid_files[:max_files]
 
-    dirs: Dict[str, list[list[str]]] = {}
+    dirs: Dict[str, list[tuple[str, list[str]]]] = {}
     dir_ranks: Dict[str, int] = {}
     for f in valid_files:
         full_path = target_root / f
@@ -247,7 +253,7 @@ def build_codebase_map(
 
         dir_name = os.path.dirname(f)
         dir_key = dir_name if dir_name else "."
-        dirs.setdefault(dir_key, []).append(names)
+        dirs.setdefault(dir_key, []).append((f, names))
         rank = file_relevance(f)[0]
         if dir_key not in dir_ranks or rank < dir_ranks[dir_key]:
             dir_ranks[dir_key] = rank
@@ -261,8 +267,13 @@ def build_codebase_map(
         per_file_symbols = dirs[dir_name]
         dir_symbols: list[str] = []
         seen: Set[str] = set()
-        for file_syms in per_file_symbols:
-            limit = 1 if len(per_file_symbols) > 8 else 3
+        for f, file_syms in per_file_symbols:
+            # The focus file keeps a wider slice of its own API; everything
+            # else collapses to one symbol per file once a directory is busy.
+            if focus_clean and (f == focus_clean or f.endswith("/" + focus_clean)):
+                limit = 8
+            else:
+                limit = 1 if len(per_file_symbols) > 8 else 3
             for s in file_syms[:limit]:
                 if s not in seen:
                     seen.add(s)

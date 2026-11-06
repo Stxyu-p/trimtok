@@ -133,13 +133,17 @@ def _is_hex_digest(s: str) -> bool:
 
 
 def _sanitize_fts5_query(query: str) -> str:
-    """Sanitize user search query for safe SQLite FTS5 MATCH execution."""
-    if not query:
-        return ""
-    tokens = re.findall(r'[a-zA-Z0-9_\u0E00-\u0E7F]+', query)
-    if not tokens:
-        return ""
-    return " ".join(f'"{tok}"' for tok in tokens)
+    """Quote each whitespace-separated token so FTS5 parses it literally.
+
+    Only quoting is applied; unicode61 does the tokenising, so any script the
+    SQLite build knows about is searchable. Tokens with no alphanumeric
+    character are dropped (FTS5 would match nothing and can error on them).
+    """
+    tokens: list[str] = []
+    for tok in re.split(r"\s+", (query or "").strip()):
+        if tok and any(ch.isalnum() for ch in tok):
+            tokens.append('"' + tok.replace('"', '""') + '"')
+    return " ".join(tokens)
 
 
 class FastCCRStore:
@@ -156,6 +160,7 @@ class FastCCRStore:
         self._conn: sqlite3.Connection | None = None
         self._alias_seq = 0
         self._writable = False
+        self._fts_ok = False
         try:
             self.base.mkdir(parents=True, exist_ok=True)
             self._conn = sqlite3.connect(
@@ -174,8 +179,9 @@ class FastCCRStore:
             )
             try:
                 cur.execute("CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(alias, content);")
+                self._fts_ok = True
             except Exception:
-                pass
+                self._fts_ok = False
             # Migrate legacy schema (sha12 column) to new (sha) column and ensure pinned exists.
             try:
                 cols = {r[1] for r in cur.execute("PRAGMA table_info(chunks)").fetchall()}
@@ -189,9 +195,25 @@ class FastCCRStore:
             cur.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);")
             row = cur.execute("SELECT value FROM meta WHERE key='alias_seq'").fetchone()
             self._alias_seq = int(row[0]) if row and str(row[0]).isdigit() else 0
+            if self._fts_ok:
+                self._backfill_fts(cur)
             self._writable = True
         except Exception:
             self._conn = None
+
+    @staticmethod
+    def _backfill_fts(cur: sqlite3.Cursor) -> None:
+        """Index chunks captured before the FTS table existed (one-time, cheap when empty)."""
+        try:
+            if cur.execute("SELECT 1 FROM chunks_fts LIMIT 1").fetchone():
+                return
+            rows = cur.execute("SELECT alias, content FROM chunks").fetchall()
+            for alias, blob in rows:
+                text = _decompress_payload(blob)
+                if alias and text:
+                    cur.execute("INSERT INTO chunks_fts (alias, content) VALUES (?, ?)", (alias, text))
+        except Exception:
+            pass
 
     def close(self) -> None:
         with self._lock:
@@ -249,7 +271,9 @@ class FastCCRStore:
                     (sha, alias, stored_blob, now),
                 )
                 try:
-                    cur.execute("DELETE FROM chunks_fts WHERE alias = ?", (alias,))
+                    # sha was absent above, so this alias is brand new: no stale
+                    # FTS row can exist and a DELETE here would scan the whole
+                    # index on the hot path.
                     cur.execute("INSERT INTO chunks_fts (alias, content) VALUES (?, ?)", (alias, content))
                 except Exception:
                     pass
@@ -359,25 +383,42 @@ class FastCCRStore:
                 self._alias_mem.pop(old_alias, None)
 
     def stats(self) -> dict[str, int]:
-        """Total entries and bytes cached."""
+        """Total entries and bytes cached (payload + full-text index)."""
         count = 0
-        total_bytes = 0
+        payload_bytes = 0
+        fts_bytes = 0
         with self._lock:
             if self._writable and self._conn is not None:
                 try:
                     cur = self._conn.cursor()
                     row = cur.execute("SELECT COUNT(*), SUM(LENGTH(content)) FROM chunks").fetchone()
                     count = row[0] or 0
-                    total_bytes = row[1] or 0
+                    payload_bytes = row[1] or 0
+                    # The FTS5 table keeps a plaintext copy for snippet(); it is
+                    # part of the on-disk footprint and must be reported, not hidden.
+                    try:
+                        fts_bytes = cur.execute(
+                            "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM chunks_fts"
+                        ).fetchone()[0] or 0
+                    except Exception:
+                        fts_bytes = 0
                 except Exception:
                     pass
             if not count:
                 count = len(self._mem)
-                total_bytes = sum(len(v) for v in self._mem.values())
-        return {"entries": count, "bytes": total_bytes}
+                payload_bytes = sum(len(v) for v in self._mem.values())
+                fts_bytes = 0
+        return {
+            "entries": count,
+            # `bytes` is the real footprint, so evict_to_size(x) and
+            # stats()["bytes"] <= x mean the same thing.
+            "bytes": payload_bytes + fts_bytes,
+            "payload_bytes": payload_bytes,
+            "fts_bytes": fts_bytes,
+        }
 
     def evict_to_size(self, max_bytes: int) -> int:
-        """Delete the oldest chunks until stored bytes are under `max_bytes`."""
+        """Delete the oldest chunks until payload + FTS index are under `max_bytes`."""
         if max_bytes <= 0:
             return 0
         evicted = 0
@@ -388,6 +429,11 @@ class FastCCRStore:
                 cur = self._conn.cursor()
                 row = cur.execute("SELECT COALESCE(SUM(LENGTH(content)), 0) FROM chunks").fetchone()
                 total = int(row[0] or 0)
+                try:
+                    fts_lens = dict(cur.execute("SELECT alias, LENGTH(content) FROM chunks_fts").fetchall())
+                except Exception:
+                    fts_lens = {}
+                total += sum(fts_lens.values())
                 if total <= max_bytes:
                     return 0
                 for sha, alias, size in cur.execute(
@@ -404,7 +450,7 @@ class FastCCRStore:
                         except Exception:
                             pass
                     cur.execute("DELETE FROM chunks WHERE sha = ?", (sha,))
-                    total -= int(size or 0)
+                    total -= int(size or 0) + int(fts_lens.pop(alias, 0) or 0)
                     evicted += 1
                 self._conn.commit()
                 if evicted:
@@ -539,22 +585,27 @@ class FastCCRStore:
             except Exception:
                 return False
 
-    def search(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
+    def search(self, query: str, limit: int = 5, ttl_hours: int = 24) -> list[dict[str, Any]]:
         """Search stored CCR payloads via SQLite FTS5 BM25. Never raises."""
         fts_query = _sanitize_fts5_query(query)
         if not fts_query:
             return []
         with self._lock:
-            if not (self._writable and self._conn is not None):
+            if not (self._writable and self._conn is not None) or not self._fts_ok:
                 return []
             try:
                 cur = self._conn.cursor()
+                # Join chunks so hits respect TTL and pinning: an alias that
+                # get() would refuse to serve must not be offered by search().
                 sql = (
-                    "SELECT alias, snippet(chunks_fts, 1, '<b>', '</b>', '...', 15), rank "
-                    "FROM chunks_fts WHERE chunks_fts MATCH ? ORDER BY rank LIMIT ?"
+                    "SELECT f.alias, snippet(chunks_fts, 1, '<b>', '</b>', '...', 15), f.rank "
+                    "FROM chunks_fts f JOIN chunks c ON c.alias = f.alias "
+                    "WHERE chunks_fts MATCH ? AND (c.pinned = 1 OR c.created_at >= ?) "
+                    "ORDER BY f.rank LIMIT ?"
                 )
+                cutoff = time.time() - (ttl_hours * 3600.0) if ttl_hours > 0 else 0.0
                 hits: list[dict[str, Any]] = []
-                for row in cur.execute(sql, (fts_query, max(1, limit))).fetchall():
+                for row in cur.execute(sql, (fts_query, cutoff, max(1, limit))).fetchall():
                     hits.append({
                         "alias": row[0] or "",
                         "snippet": row[1] if row[1] else "",
@@ -863,10 +914,19 @@ def unpin(ref: str, *, dir: Path | None = None) -> bool:
         return False
 
 
-def search(query: str, limit: int = 5, *, dir: Path | None = None) -> list[dict[str, Any]]:
+def search(query: str, limit: int = 5, *, dir: Path | None = None, ttl_hours: int = 24) -> list[dict[str, Any]]:
     """Search stored CCR payloads via SQLite FTS5 BM25."""
     try:
         base = Path(dir) if dir else default_dir()
-        return _get_store(base).search(query, limit=limit)
+        return _get_store(base).search(query, limit=limit, ttl_hours=ttl_hours)
     except Exception:
         return []
+
+
+def fts_ready(*, dir: Path | None = None) -> bool:
+    """False when this SQLite build has no FTS5, so callers can say so instead of 'no hits'."""
+    try:
+        base = Path(dir) if dir else default_dir()
+        return bool(_get_store(base)._fts_ok)
+    except Exception:
+        return False

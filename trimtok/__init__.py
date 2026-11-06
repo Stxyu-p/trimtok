@@ -57,8 +57,9 @@ RETRIEVE_SCHEMA = {
     "description": (
         "Retrieve the uncompressed original content of a previously folded or windowed "
         "tool result by its content reference: the short '#ref' shown in [tt:...] markers, "
-        "or a legacy 12-char hash. Supports optional line pagination (offset/limit), "
-        "focused section slicing (errors/diff/summary/tail), "
+        "or a legacy 12-char hash. Pass 'query' instead of 'hash' to search every stored "
+        "payload by keyword (SQLite FTS5 BM25) and get back matching refs. Supports optional "
+        "line pagination (offset/limit), focused section slicing (errors/diff/summary/tail), "
         "and grep regex filtering to inspect specific details without flooding context."
     ),
     "parameters": {
@@ -121,7 +122,7 @@ RETRIEVE_SCHEMA = {
                 ),
             },
         },
-        "required": ["hash"],
+        "anyOf": [{"required": ["hash"]}, {"required": ["query"]}],
     },
 }
 
@@ -774,16 +775,18 @@ def _render_context_intervals(
 
 
 def _handle_retrieve(args: dict, **kw: Any) -> str:
-    query = str((args or {}).get("query") or "").strip()
-    if query and not (args or {}).get("hash"):
-        limit = max(1, min(50, _safe_int((args or {}).get("limit"), 5)))
-        hits = ccr.search(query, limit=limit)
-        return _ok({"hits": hits, "count": len(hits), "query": query})
-    ref = _parse_ref((args or {}).get("hash"))
-    if not ref:
-        return _err("hash or query is required (e.g. '#c1' or search query)")
     ctx = getattr(_handle_retrieve, "_ctx", None)
     ttl_hours = _int_cfg(ctx, "ccr_ttl_hours", 24, 1, 24 * 30) if ctx is not None else 24
+    ref = _parse_ref((args or {}).get("hash"))
+    query = str((args or {}).get("query") or "").strip()
+    if query and not ref:
+        if not ccr.fts_ready():
+            return _err("FTS5 search is unavailable in this SQLite build; use hash retrieval instead.")
+        limit = max(1, min(50, _safe_int((args or {}).get("limit"), 5)))
+        hits = ccr.search(query, limit=limit, ttl_hours=ttl_hours)
+        return _ok({"hits": hits, "count": len(hits), "query": query})
+    if not ref:
+        return _err("hash or query is required (e.g. '#c1' or search query)")
     content = ccr_get(ref, ttl_hours=ttl_hours)
     if content is None:
         _usage_retrieve(args, hit=False, ctx=ctx)

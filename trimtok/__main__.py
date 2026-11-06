@@ -289,6 +289,9 @@ def main(argv: list[str] | None = None) -> int:
             pass
         return 0
     if ns.cmd == "search":
+        if not ccr.fts_ready():
+            sys.stderr.write("Error: FTS5 search is unavailable in this SQLite build.\n")
+            return 2
         hits = ccr.search(ns.query, limit=ns.limit)
         print(json.dumps({"query": ns.query, "count": len(hits), "hits": hits}, indent=2, ensure_ascii=False))
         return 0
@@ -354,7 +357,10 @@ def main(argv: list[str] | None = None) -> int:
             from .codemap import build_codebase_map
         except ImportError:
             from codemap import build_codebase_map  # type: ignore
-        out = build_codebase_map(root=ns.path, budget_chars=ns.budget, max_files=ns.max_files, focus_file=getattr(ns, "focus", None))
+        focus = getattr(ns, "focus", None)
+        if focus and not (Path(ns.path) / focus.replace("\\", "/")).is_file():
+            sys.stderr.write(f"Warning: --focus file not found: {focus} (map generated unfocused)\n")
+        out = build_codebase_map(root=ns.path, budget_chars=ns.budget, max_files=ns.max_files, focus_file=focus)
         if out:
             sys.stdout.write(out + "\n")
         return 0
