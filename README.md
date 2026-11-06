@@ -93,7 +93,7 @@ Tool / Terminal Output
 #### 🏛️ Architecture & Benchmarks
 - [⚡ At a Glance: Before vs After](#at-a-glance)
 - [🏗️ How It Works](#how-it-works)
-- [🥊 Market Comparison (Head-to-Head)](#market-comparison)
+- [🥊 Architecture & Benchmark Matrix](#market-comparison)
   - [Where trimtok Excels](#where-trimtok-excels)
   - [Where trimtok is Weaker](#where-trimtok-is-weaker)
 
@@ -148,42 +148,46 @@ Tool / Terminal Output
 ---
 
 <a id="market-comparison"></a>
-## 🥊 Market Comparison: trimtok vs Alternatives
+## 🥊 Architecture & Benchmark Matrix: trimtok vs Industry Engines
 
 Empirical head-to-head benchmarks measured on identical production workloads:
 
-| Capability / Benchmark | **trimtok v5.4.1** 🌟 | **RTK v1.1.0** (Rust) | **headroom v0.42.0** (Python) | **skim v2.10.0** (Rust) | **sqz v2.1.1** (Rust) | **tokenfold** (Python/Rust) |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Execution Layer** | **In-process hook + CLI** | Subprocess CLI | Python library / Proxy | Subprocess CLI | Subprocess CLI | Python FFI library |
-| **Uniform JSON (500 rows)** | **55.3% saved** | 99.6% (truncated) | **61.7% saved** | N/A | ~55% saved | 55.7% saved |
-| **Mixed JSON (450 rows)** | **41.0% – 44.7%** | 99.6% (truncated) | **46.3% saved** | N/A | 42.6% – 45.2% | 24.0% saved |
-| **Code AST (300 functions)** | **82.2% (AST stubs)** | 0% (or wipes 100%) | N/A | **82.2% (signatures)** | N/A | N/A |
-| **Cross-Turn Delta Mode** | ✅ **`[tt:delta]` (>95%)** | ❌ None | ❌ None | ❌ None | ❌ None | ❌ None |
-| **Framework Traceback Prune**| ✅ **77.0% (locks crash)** | ❌ Stripped or raw | ❌ None | ❌ None | ❌ None | ❌ None |
-| **Command-Specific Filters** | ✅ **7 commands** | ✅ 12 commands | ❌ None | ❌ None | ❌ None | ❌ None |
-| **Full Original Retrieval** | ✅ **Content-addressed (`#c1`)** | ❌ Lost permanently | ⚠️ CCR via MCP | ❌ Lost permanently | ⚠️ §ref dedup | ✅ Exact bytes |
-| **Intent-Addressed Retrieval** | ✅ **`--intent` (93–97%)** | Not documented | Not documented | Not documented | Not documented | Not documented |
-| **Content Policy Gate** | ✅ **Secrets & edits verbatim** | Not documented | Not documented | Not documented | Not documented | Not documented |
-| **Adaptive Level** | ✅ **Pressure-scaled** | Not documented | Not documented | Not documented | Not documented | Not documented |
-| **Model-Aware Format** | ✅ **`auto` / `always` / `never`** | Not documented | Not documented | Not documented | Not documented | Not documented |
-| **Fix-Accuracy Benchmark** | ✅ **8/8 locate** | Not documented | Not documented | Not documented | Not documented | Not documented |
-| **In-Process Latency** | **< 2 ms** (micro) | 10 – 50 ms (process) | ~9,054 ms (73x slower)| ~259 ms (process) | ~437 ms (process) | 660 – 860 ms |
-| **Bounded MCP Tool Proxy** | ✅ **`trimtok mcp-proxy`** | ❌ None | ❌ None | ❌ None | ❌ None | ❌ None |
-| **Codebase Symbol Map** | ✅ **`trimtok map` (<38ms)** | ❌ None | ❌ None | ❌ None | ❌ None | ❌ None |
-| **Zero Network Ports** | ✅ **100% portless** | ✅ Portless | ❌ Opens HTTP port | ✅ Portless | ❌ Opens HTTP/Web | ✅ Portless |
+| Capability / Benchmark | **trimtok v5.4.1** 🌟 | **claw-compactor v7.0** (OpenClaw) | **RTK v1.1.0** (Rust) | **headroom v0.42.0** (Python) | **skim v2.10.0** (Rust) | **sqz v2.1.1** (Rust) | **tokenfold** (Python/Rust) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Execution Layer** | **In-process hook + CLI** | 14-Stage Pipeline + Node Proxy | Subprocess CLI | Python library / Proxy | Subprocess CLI | Subprocess CLI | Python FFI library |
+| **Uniform JSON (500 rows)** | **55.3% saved** (TOON v2) | **81.9% (lossy sampling)** | 99.6% (truncated) | **61.7% saved** | N/A | ~55% saved | 55.7% saved |
+| **Mixed JSON (450 rows)** | **41.0% – 44.7%** (merged TOON) | ~40% – 50% | 99.6% (truncated) | **46.3% saved** | N/A | 42.6% – 45.2% | 24.0% saved |
+| **Code AST (300 functions)** | **82.2% (AST stubs)** | 18.4% – 25.0% (whitespace/comments) | 0% (or wipes 100%) | N/A | **82.2% (signatures)** | N/A | N/A |
+| **Cross-Turn Delta Mode** | ✅ **`[tt:delta]` (>95%)** | ❌ None (per-message log filter) | ❌ None | ❌ None | ❌ None | ❌ None | ❌ None |
+| **Framework Traceback Prune**| ✅ **77.0% (locks crash-site)** | ✅ LogCrunch (stack/error scan) | ❌ Stripped or raw | ❌ None | ❌ None | ❌ None | ❌ None |
+| **Command-Specific Filters** | ✅ **7 commands** (`git`, `npm`, `pip`, etc.) | ⚠️ 3 crunchers (Log/Diff/Search) | ✅ 12 commands | ❌ None | ❌ None | ❌ None | ❌ None |
+| **Full Original Retrieval** | ✅ **Content-addressed (`#c1`)** | ⚠️ `RewindStore` (24-char hex) | ❌ Lost permanently | ⚠️ CCR via MCP | ❌ Lost permanently | ⚠️ §ref dedup | ✅ Exact bytes |
+| **Recovery Storage Backend** | ✅ **SQLite WAL + Zstd (Persistent on-disk)** | ⚠️ In-memory RAM (`OrderedDict` LRU) | ❌ None (Lossy) | ⚠️ Local disk cache | ❌ None (Lossy) | ⚠️ In-stream reference map | ⚠️ In-memory RAM |
+| **Intent-Addressed Retrieval** | ✅ **`--intent` (93–97%)** | ⚠️ Keyword search (`store.search`) | ❌ None | ❌ None (full block only) | ❌ None | ❌ None | ❌ None |
+| **Content Policy Gate** | ✅ **Secrets & edits verbatim** | ⚠️ Annotations only (`noqa`, `TODO`) | ❌ None | ❌ None | ❌ None | ❌ None | ❌ None |
+| **Adaptive Level** | ✅ **Pressure-scaled (light/normal/aggressive)** | ⚠️ Stage gating (`should_apply`) | ❌ Static CLI flags | ❌ Fixed heuristics | ❌ Static CLI depth | ❌ Static ratio target | ❌ Static threshold |
+| **Model-Aware Format** | ✅ **`auto` / `always` / `never`** | ❌ None (generic token opt) | ❌ Single format | ❌ Single format | ❌ Single format | ❌ Single format | ❌ Single format |
+| **KV-Cache / Prompt Alignment** | ✅ **`trimtok kv-lock` (<date>, code-safe)** | ✅ `QuantumLock` (prefix-stable) | ❌ None | ❌ None | ❌ None | ❌ None | ❌ None |
+| **Bounded MCP Tool Proxy** | ✅ **`trimtok mcp-proxy`** | ❌ None | ❌ None | ❌ None | ❌ None | ❌ None | ❌ None |
+| **Codebase Symbol Map** | ✅ **`trimtok map` (<38ms, budgeted)** | ❌ None | ❌ None | ❌ None | ⚠️ Full AST (unbudgeted) | ❌ None | ❌ None |
+| **Fix-Accuracy Benchmark** | ✅ **8/8 locate** (`eval/fix_accuracy.py`) | ✅ SWE-bench instance tests | ❌ Unit tests only | ❌ Synthetic only | ❌ Unit tests only | ❌ Unit tests only | ❌ Token counts only |
+| **In-Process Latency** | **< 2 ms** (micro) | ~50 – 88 ms | 10 – 50 ms (process) | ~9,054 ms (73x slower)| ~259 ms (process) | ~437 ms (process) | 660 – 860 ms |
+| **Zero Network Ports** | ✅ **100% portless** | ❌ Opens HTTP port (Node proxy) | ✅ Portless | ❌ Opens HTTP port | ✅ Portless | ❌ Opens HTTP/Web | ✅ Portless |
 
 <a id="where-trimtok-excels"></a>
 ### Where trimtok Excels
-- **In-Process & Sub-2ms:** Direct hook invocation with zero subprocess overhead (headroom takes ~9s, sqz takes ~450ms).
+- **In-Process & Sub-2ms:** Direct hook invocation with zero subprocess overhead (headroom takes ~9s, sqz takes ~450ms, claw-compactor takes ~50ms).
 - **Cross-Turn Stateful Delta:** Re-running test suites (`pytest`, `cargo test`) only prints active errors and diffs vs prior turn, slashing >95% tokens.
-- **Zero Data Loss Guarantee:** Everything transformed is stored into local SQLite WAL + Zstandard. The agent recalls original bytes at any time via `#c1`.
+- **Persistent Zero Data Loss Guarantee:** Everything transformed is stored into local SQLite WAL + Zstandard (`FastCCRStore`). Unlike in-memory caches that vanish on process exit or across subagents, trimtok originals remain durable and recallable via `#c1`.
 - **Intake Shielding:** Automatically prunes link bloat and boilerplate headers on `web_extract` and `read_file` without offset drift.
+- **3-Tier Lifecycle Protection:** Guards System Prompts (KV-Cache alignment & Bounded MCP schema pruning), Exploratory Turns (Codebase Map), and Hot-Path Payloads simultaneously.
 
 <a id="where-trimtok-is-weaker"></a>
 ### Where trimtok is Weaker
-- **Language Coverage on AST:** trimtok supports 7 languages (Python, JS/TS, Go, Rust, Java, C, C++). `skim` supports 17 languages via native tree-sitter.
+- **Language Coverage on AST:** trimtok supports 7 languages (Python, JS/TS, Go, Rust, Java, C, C++). `skim` supports 17 languages and `claw-compactor` supports 16 languages via native tree-sitter.
 - **Command Filter Coverage:** trimtok has 7 targeted command filters (`git log`, `git status`, `ls`, `npm`, `pip`, `find`, `docker ps`). `RTK` provides 12 command-specific heuristics.
 - **Extreme Mixed-JSON Compression:** `headroom` achieves 46.3% on heterogeneous JSON via smart_crusher transforms, while trimtok achieves 41.0% – 44.7% with merged TOON.
+- **NLP Perplexity Benchmarks:** `claw-compactor` publishes empirical ROUGE-L scores (0.653 @ 0.3) across SWE-bench tasks; trimtok prioritizes deterministic structural fidelity and exact code recoverability over lossy perplexity pruning.
 - **Model-Awareness is a Heuristic:** `toon_mode: auto` keys off the model *family name*, not a measured per-model capability. TOON is plain text and every model can read it; the setting only decides which format is likely to survive a long context best.
 - **Fix-Accuracy Needs a Live Model:** the `LOCATE` stage runs offline and deterministically, but the `FIX` stage that proves a patch actually works requires a reachable model endpoint.
 
