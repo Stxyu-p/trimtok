@@ -2,6 +2,12 @@
 
 All notable changes to trimtok are documented here.
 
+## [5.7.1] - 2026-11-06
+
+### Fixed
+- Register `trimtok_exec` tool in `plugin.yaml` and `trimtok/__init__.py` so Hermes agent
+  can call it natively alongside `trimtok_retrieve`.
+
 ## [5.7.0] - 2026-11-06
 
 ### Added

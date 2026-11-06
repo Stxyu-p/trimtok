@@ -52,6 +52,29 @@ _MAX_AUDIT_BYTES = 1_048_576
 _MAX_USAGE_BYTES = 1_048_576
 _AUDIT_LOCK = threading.Lock()
 
+EXEC_SCHEMA = {
+    "name": "trimtok_exec",
+    "description": (
+        "Compute over a stored original WITHOUT loading it into context. Give it the "
+        "'#ref' from a [tt:...] marker and a short Python snippet; the payload path "
+        "arrives in $TRIMTOK_PAYLOAD (env var) and only stdout comes back. Use this for "
+        "aggregate questions over a large output -- counts, filters, top-N, 'does X "
+        "appear' -- where trimtok_retrieve would cost thousands of tokens to answer one "
+        "word. Runs in a subprocess with a 10s timeout and a 4KB output cap."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "hash": {"type": "string", "description": "The content ref from the [tt:... #ref] marker (e.g. '#c1'), or a 12-char hex hash."},
+            "code": {"type": "string", "description": "Python code. Read the payload at os.environ['TRIMTOK_PAYLOAD']."},
+            "timeout": {"type": "number", "description": "Seconds before the run is killed (default 10, max 30)."},
+        },
+        "required": ["hash", "code"],
+        "additionalProperties": False,
+    },
+}
+
+
 RETRIEVE_SCHEMA = {
     "name": "trimtok_retrieve",
     "description": (
@@ -775,6 +798,22 @@ def _render_context_intervals(
     return "\n[...]\n".join(chunks), returned_lines
 
 
+def _handle_exec(args: dict, **kw: Any) -> str:
+    from .exec_lane import run as _exec_run
+    a = args or {}
+    ref = _parse_ref(a.get("hash"))
+    if not ref:
+        return _err("hash is required (e.g. '#c1')")
+    code = str(a.get("code") or "")
+    if not code.strip():
+        return _err("code is required")
+    timeout = max(0.1, min(30.0, _safe_int(a.get("timeout"), 10) or 10))
+    res = _exec_run(ref, code, timeout=timeout)
+    if res.get("ok"):
+        return _ok(res)
+    return _err(f"exec failed (exit {res.get('exit_code')}): {str(res.get('output'))[:600]}")
+
+
 def _handle_retrieve(args: dict, **kw: Any) -> str:
     ctx = getattr(_handle_retrieve, "_ctx", None)
     ttl_hours = _int_cfg(ctx, "ccr_ttl_hours", 24, 1, 24 * 30) if ctx is not None else 24
@@ -1331,6 +1370,13 @@ def register(ctx: Any) -> None:
         schema=RETRIEVE_SCHEMA,
         handler=_handle_retrieve,
         emoji="\U0001f9f9",
+    )
+    ctx.register_tool(
+        name="trimtok_exec",
+        toolset="trimtok",
+        schema=EXEC_SCHEMA,
+        handler=_handle_exec,
+        emoji="🧮",
     )
     if hasattr(ctx, "register_command"):
         ctx.register_command(

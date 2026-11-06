@@ -34,3 +34,14 @@ def test_exec_enforces_the_timeout():
     ref = ccr.put("x")
     res = run(ref, "import time; time.sleep(5)", timeout=0.5)
     assert res["ok"] is False and res["exit_code"] == 124
+
+
+def test_handle_exec_plugin_wrapper():
+    from trimtok import _handle_exec
+    ref = ccr.put("hello world")
+    res = json.loads(_handle_exec({"hash": ref, "code": "print(123)"}))
+    assert res["ok"] is True
+    assert res["output"].strip() == "123"
+    err = json.loads(_handle_exec({"hash": "#bad", "code": "print(1)"}))
+    assert "error" in err
+
