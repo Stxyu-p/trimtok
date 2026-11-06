@@ -35,8 +35,8 @@ PATTERNS = [
         re.compile(
             r"\b(?:"
             r"\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)?"
-            r"|(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}"
-            r"|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s+\d{4}"
+            r"|(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),[ \t]+(?:January|February|March|April|May|June|July|August|September|October|November|December)[ \t]+\d{1,2},[ \t]+\d{4}"
+            r"|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[ \t]+\d{1,2},[ \t]+\d{4}"
             r")\b",
             re.IGNORECASE,
         ),
@@ -111,15 +111,19 @@ def stabilize_prompt(content: str) -> str:
     seen_originals: Set[str] = set()
     m = APPENDIX_BLOCK_RE.search(content)
     if m:
+        pairs: list[list[str]] = []
         for line in m.group(1).splitlines():
-            line = line.strip()
             if ":" in line:
                 k, _, v = line.partition(":")
-                k = k.strip()
-                v = v.strip()
-                if v and v not in seen_originals:
-                    seen_originals.add(v)
-                    existing_frags.append(DynamicFragment(name=k, original=v, placeholder=f"<{k}>"))
+                pairs.append([k.strip(), v.strip()])
+            elif pairs and line.strip():
+                # Continuation of a value that spans lines: dropping it would
+                # lose the tail of the value on the next stabilisation pass.
+                pairs[-1][1] += "\n" + line.strip()
+        for k, v in pairs:
+            if v and v not in seen_originals:
+                seen_originals.add(v)
+                existing_frags.append(DynamicFragment(name=k, original=v, placeholder=f"<{k}>"))
 
     # Clean content by stripping existing appendix block from wherever it sat
     clean_content = APPENDIX_BLOCK_RE.sub("\n", content).rstrip()

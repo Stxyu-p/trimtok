@@ -72,3 +72,18 @@ def test_ref_only_compression_is_not_counted_as_preserved():
     assert res["equivalent"] == 0
     assert res["recoverable_only"] == 1
     assert res["decision_change_rate"] == 1.0
+
+def test_recoverable_rate_is_zero_when_the_decision_is_destroyed():
+    """Regression: the rate was (total - recoverable_only)/total, which scored
+    a compressor that deletes everything at 100%."""
+    scenarios = [{
+        "id": "destroyed",
+        "context": "CRITICAL: memory leak in cache.py line 99. Run prune_cache.",
+        "target_action": "prune_cache",
+        "critical_tokens": ["cache.py"],
+    }]
+
+    res = evaluate_decision_equivalence(scenarios, compress_fn=lambda _t: "all good")
+
+    assert res["decision_change_rate"] == 1.0
+    assert res["decision_recoverable_rate"] == 0.0

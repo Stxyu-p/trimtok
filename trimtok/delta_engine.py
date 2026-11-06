@@ -60,8 +60,12 @@ _MAX_TOTAL_LINES = 24000  # per session
 _MAX_TOTAL_CHARS = 1_500_000  # per session
 
 _COSMETIC_FLAGS = frozenset({
-    "-v", "-vv", "-vvv", "-q", "-qq", "--verbose", "--quiet",
-    "-s", "--capture=no", "--capture=tee-sys",
+    # Only flags that leave the *content* of the output alone. -v/-s are gone:
+    # they add or reorder lines, so treating them as cosmetic merged
+    # `git status -s` with `git status` and reported reformatted lines as
+    # resolved failures.
+    "-q", "-qq", "--quiet",
+    "--capture=no", "--capture=tee-sys",
     "--tb=short", "--tb=line", "--tb=auto", "--tb=long",
     "--color=yes", "--color=no", "--color=auto",
     "--no-header", "--no-summary", "--color",

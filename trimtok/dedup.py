@@ -20,6 +20,7 @@ try:
         KEEP_PREFIX as _KEEP_PREFIX,
         LEGEND_TOON as _TOON_LEGEND,
         SENTINEL_RE,
+        has_marker_head,
         SLOT_RE as _SLOT_RE,
         adaptive_tool_head,
         estimate_bpe_gain,
@@ -46,6 +47,7 @@ except ImportError:
         KEEP_PREFIX as _KEEP_PREFIX,
         LEGEND_TOON as _TOON_LEGEND,
         SENTINEL_RE,
+        has_marker_head,
         SLOT_RE as _SLOT_RE,
         adaptive_tool_head,
         estimate_bpe_gain,
@@ -1377,7 +1379,7 @@ def _handle_read_file_v42(
     # If not a targeted slice, try safe cosmetic cleanup (clean license/banners)
     if not _is_targeted_slice(offset, limit, first_line_no, n_lines):
         _min_res, _min_stats = minify_lossless(result)
-        if _min_stats.get("saved_chars", 0) >= 40 and len(_min_res) < len(result) and not SENTINEL_RE.search(result[:2000]):
+        if _min_stats.get("saved_chars", 0) >= 40 and len(_min_res) < len(result) and not has_marker_head(result):
             tb, ta = _tok_pair(result, _min_res)
             if ta < tb:
                 return _min_res, {
@@ -1469,7 +1471,7 @@ def compress_tool_result(
     try:
         if not isinstance(result, str):
             return result, {"gate": "passthrough_non_str", "ms": 0.0}
-        if SENTINEL_RE.search(result[:2000]):
+        if has_marker_head(result):
             return result, {"gate": "passthrough_sentinel", "reason": "sentinel", "ms": 0.0}
         # Content policy: secrets, security policy and edit payloads are worth
         # more byte-exact than compressed, however large they are.
@@ -1513,7 +1515,7 @@ def compress_tool_result(
         if tool_name in _WEB_TOOLS:
             _rh = hashlib.sha256(result.encode("utf-8", "replace")).hexdigest()[:12]
             w_cand, w_stats = shave_tiered(result, {"domain": "web-doc", "lang": "markdown"})
-            if w_stats.get("saved_chars", 0) >= 40 and len(w_cand) < len(result) and not SENTINEL_RE.search(result[:2000]):
+            if w_stats.get("saved_chars", 0) >= 40 and len(w_cand) < len(result) and not has_marker_head(result):
                 tb, ta = _tok_pair(result, w_cand)
                 if ta < tb:
                     _ref = _ccr_put(result)

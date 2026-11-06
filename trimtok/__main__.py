@@ -318,8 +318,9 @@ def main(argv: list[str] | None = None) -> int:
         if not cmd_args:
             sys.stderr.write("Error: no command provided. Usage: trimtok rewrite -- <command> [args...]\n")
             return 1
-        from .prerewrite import rewrite_command
-        sys.stdout.write(rewrite_command(" ".join(cmd_args)) + "\n")
+        from .prerewrite import rewrite_argv
+        import shlex
+        sys.stdout.write(shlex.join(rewrite_argv(cmd_args)) + "\n")
         return 0
     if ns.cmd == "wrap":
         cmd_args = list(ns.command)
@@ -329,15 +330,10 @@ def main(argv: list[str] | None = None) -> int:
             sys.stderr.write("Error: no command provided to wrap. Usage: trimtok wrap -- <command> [args...]\n")
             return 1
         import subprocess
-        from .prerewrite import rewrite_command
-        # Pre-execution command rewriting (e.g. pytest -> pytest -q --tb=short)
-        rewritten_cmd = rewrite_command(" ".join(cmd_args))
-        if rewritten_cmd != " ".join(cmd_args):
-            import shlex
-            try:
-                cmd_args = shlex.split(rewritten_cmd)
-            except Exception:
-                pass
+        from .prerewrite import rewrite_argv
+        # Pre-execution command rewriting (e.g. pytest -> pytest -q --tb=short).
+        # Operates on argv so the caller's quoting survives.
+        cmd_args = rewrite_argv(cmd_args)
         proc = subprocess.run(cmd_args, capture_output=True, text=True, shell=False)
         combined = (proc.stdout or "") + (proc.stderr or "")
         cmd_name = Path(cmd_args[0]).stem

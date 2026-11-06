@@ -2,6 +2,48 @@
 
 All notable changes to trimtok are documented here.
 
+## [5.5.3] - 2026-11-06
+
+Bug-hunt pass. Eight defects, each reproduced before it was fixed and pinned by
+a test that fails if the fix is reverted.
+
+### Fixed
+- **`minify_lossless` could delete the rest of a file:** a line merely
+  *containing* `/*` (a string literal like `COMMENT_START = "/*"`) opened a
+  block comment that never closed, and once a later line matched a copyright
+  trigger every remaining line was dropped. Only a line that starts a comment
+  may open one now, and an unclosed opener is abandoned as soon as the text
+  stops looking like comment body.
+- **Failed installs were reported as successes:** `collapse_success_output`
+  guarded on five literal substrings, so yarn's `error ...` and pnpm's
+  `ERR_PNPM_...` slipped through and a failed install collapsed into
+  `[tt:success ...]`. The guard now asks `is_important()` per line.
+- **Error polarity missed common phrasings:** `cannot stat`, `no such file`,
+  `ERR_*`, and request-log 5xx lines (`GET /x 500`) were not treated as faults,
+  so the error rails could fold them away without announcing it.
+- **`kv_lock` lost values on the second pass:** the date pattern matched across
+  a newline, and the appendix parser read one line per value. Month/day
+  separators are now `[ \t]+`, and a continuation line is folded back into its
+  value.
+- **`trimtok wrap` corrupted argument boundaries:** argv was joined into a
+  string and re-split with `shlex`, so `pytest -k "not slow"` became four
+  arguments and silently selected different tests. Rewriting now works on the
+  argv list (`rewrite_argv`).
+- **Delta snapshots merged unrelated commands:** `-s`/`-v` were stripped as
+  cosmetic, so `git status -s` shared a baseline with `git status` and
+  reformatted lines were reported as resolved failures. Only flags that leave
+  the output content alone are normalised now.
+- **The sentinel guard fired on anything quoting a marker:** an unanchored
+  search over the first 2 KB meant any file mentioning `[tt:...]` bypassed
+  compression forever. The marker must now be on the first line.
+- **Web intake advertised a ref that was never stored:** the prose folder was
+  given a literal `#doc`, which resolves to nothing. It now carries the
+  payload digest, which the caller rewrites into the real alias.
+
+### Changed
+- `decision_recoverable_rate` is `(equivalent + recoverable_only) / total`; it
+  was inverted, so a compressor that destroyed every decision scored 100%.
+
 ## [5.5.2] - 2026-11-06
 
 ### Fixed

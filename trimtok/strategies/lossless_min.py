@@ -36,18 +36,28 @@ def minify_lossless(text: str, meta: dict[str, Any] | None = None) -> tuple[str,
         if _FN_SIG_RE.match(stripped):
             kept_fn_count += 1
 
-        # Check block comments
-        if "/*" in stripped:
-            in_block_comment = True
+        # Block comments. Only a line that *starts* a comment may open one, and
+        # an opener that never closes is abandoned as soon as a line stops
+        # looking like comment body -- otherwise a stray "/*" inside a string
+        # literal (COMMENT_START = "/*") swallows every line after it.
         if in_block_comment:
-            if _LICENSE_TRIGGER_RE.search(stripped):
-                in_license_block = True
             if "*/" in stripped:
                 in_block_comment = False
-                if in_license_block:
-                    in_license_block = False
-                    continue
-            if in_license_block:
+                in_license_block = False
+                continue
+            if stripped.startswith(("*", "//", "/*", "#", ";")):
+                if _LICENSE_TRIGGER_RE.search(stripped):
+                    in_license_block = True
+                continue
+            in_block_comment = False
+            in_license_block = False
+        elif stripped.startswith("/*"):
+            if "*/" not in stripped:
+                in_block_comment = True
+                in_license_block = bool(_LICENSE_TRIGGER_RE.search(stripped))
+                continue
+            # Inline block comment: keep the line when real code follows it.
+            if not stripped.split("*/", 1)[1].strip():
                 continue
 
         # Check line license comments

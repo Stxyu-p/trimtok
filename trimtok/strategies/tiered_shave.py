@@ -9,6 +9,7 @@ Balances high token reduction with single-turn comprehension and 100% patch safe
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Any
 
@@ -68,7 +69,13 @@ def shave_tiered(text: str, meta: dict[str, Any] | None = None) -> tuple[str, di
         if len(interim_text) >= 2000:
             from ..dedup import _unwrap_numbered_lines
             raw_body, prefixes, line_nos, _, _ = _unwrap_numbered_lines(interim_text)
-            folded_doc, d_saved = fold_text_structure(raw_body, ref="#doc", line_prefixes=prefixes, line_nos=line_nos)
+            # The caller rewrites "#<digest>" into the real CCR alias, so the
+            # marker must carry this payload's digest -- a literal "#doc"
+            # advertised a ref that never resolved.
+            _digest = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]
+            folded_doc, d_saved = fold_text_structure(
+                raw_body, ref=f"#{_digest}", line_prefixes=prefixes, line_nos=line_nos
+            )
             if d_saved > 200:
                 interim_text = folded_doc
 

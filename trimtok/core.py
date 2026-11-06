@@ -21,7 +21,7 @@ except Exception:
     _Levenshtein = None
     _FUZZY_AVAILABLE = False
 
-VERSION = "5.5.2"
+VERSION = "5.5.3"
 
 try:
     from . import delta_engine
@@ -29,6 +29,7 @@ try:
         KEEP_PREFIX as _KEEP_PREFIX,
         LEGEND_FOLD as LEGEND,
         SENTINEL_RE,
+        has_marker_head,
         SLOT_RE as _SLOT_RE,
         Deadline,
         estimate_tokens,
@@ -49,6 +50,7 @@ except (ImportError, ValueError):
         KEEP_PREFIX as _KEEP_PREFIX,
         LEGEND_FOLD as LEGEND,
         SENTINEL_RE,
+        has_marker_head,
         SLOT_RE as _SLOT_RE,
         Deadline,
         estimate_tokens,
@@ -420,7 +422,7 @@ def compress_terminal(
             # v4.2 Tier 0 for the 512..min_chars band: ANSI + hygiene are lossless,
             # so ship the cleaned text with no header at all instead of passing the
             # raw bytes through (telemetry: 1,306 calls sat in 1K-2K with 0 saving).
-            if len(output) >= 512 and not SENTINEL_RE.search(output[:512]):
+            if len(output) >= 512 and not has_marker_head(output):
                 try:
                     kind_small = detect_kind(output)
                     clean = strip_ansi(output)
@@ -465,7 +467,7 @@ def compress_terminal(
                 except Exception:
                     pass
             return output, {"gate": "passthrough_small", "reason": "below_min_chars", "ms": 0.0}
-        if SENTINEL_RE.search(output[:2000]):
+        if has_marker_head(output):
             return output, {"gate": "passthrough_sentinel", "reason": "sentinel", "ms": 0.0}
         if deadline is not None:
             deadline.check()

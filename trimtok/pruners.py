@@ -758,11 +758,12 @@ def collapse_success_output(cmd: str, text: str, exit_code: int = 0) -> str:
     clean_cmd = cmd.strip()
     if not any(clean_cmd.startswith(c) for c in _SUCCESS_COLLAPSE_CMDS):
         return text
-    # Safety guard: never swallow actual errors even if exit code was spoofed
-    lower = text.lower()
-    if any(k in lower for k in ("error:", "failed", "traceback", "npm err!", "panic:")):
-        return text
     lines = [l.strip() for l in text.splitlines() if l.strip()]
+    # Safety guard: never swallow a fault, whatever wording the tool uses.
+    # A fixed list of five substrings missed "error " (yarn) and "ERR_PNPM_"
+    # (pnpm), turning a failed install into "[tt:success ...]".
+    if any(is_important(l) for l in lines[:200]):
+        return text
     summary = lines[-1] if lines else "completed"
     if len(lines) > 1 and ("added" in lines[0] or "packages" in lines[0]):
         summary = lines[0]

@@ -112,6 +112,9 @@ _ERROR_RE = re.compile(
     r"ข้อผิดพลาด|ผิดพลาด|ล้มเหลว|ขัดข้อง)"
     r"(?![A-Za-z0-9_])"
     r"|\b[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception|Fault|Panic):"
+    r"|no such file|cannot stat|unable to locate|cannot (?:open|access)"
+    r"|(?<![A-Za-z0-9_])err_[a-z0-9_]{2,}"
+    r"|\b(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+\S+(?:\s+HTTP/[\d.]+)?\"?\s+5\d{2}(?![0-9])"
     r"|^\s*(?:File |  at |Caused by:|\d+:\s+0x[0-9a-fA-F]+)",
     re.I,
 )
@@ -122,6 +125,7 @@ _ERROR_HINTS = (
     "assert", "oom", "epipe", "exit code", "exit status", "out of memory",
     "oomkilled", "npm err!", "bad gateway", "undefined reference", "killed", "sigsegv", "sigabrt",
     "sigbus", "sigkill", "sigterm",
+    "no such file", "cannot stat", "unable to locate", "cannot open", "cannot access", "err_",
     "ผิดพลาด", "ล้มเหลว", "ขัดข้อง", "ข้อผิดพลาด",
     "file ", "  at ", "caused by:",
 )
@@ -133,6 +137,7 @@ _ERROR_HINTS = (
 # decides.
 _STATUS5_RE = re.compile(r"status(?:_code)?[=:\s]+5\d{2}(?![0-9])", re.I)
 _HTTP5_RE = re.compile(r"http[/\d.\s]*5\d{2}(?![0-9])", re.I)
+_HTTP_REQ5_RE = re.compile(r"\b(?:get|post|put|delete|patch|head|options)\s+\S+(?:\s+http/[\d.]+)?\"?\s+5\d{2}(?!\d)")
 _HEX_FRAME_RE = re.compile(r"\d+:\s+0x[0-9a-fA-F]+")
 _WS_COLLAPSE_RE = re.compile(r"\s+")
 
@@ -147,6 +152,8 @@ def looks_suspicious(low: str) -> bool:
     if "status" in low and _STATUS5_RE.search(low):
         return True
     if "http" in low and _HTTP5_RE.search(low):
+        return True
+    if " 5" in low and _HTTP_REQ5_RE.search(low):
         return True
     if "0x" in low and _HEX_FRAME_RE.search(low):
         return True
@@ -205,6 +212,18 @@ SENTINEL_RE = re.compile(
 )
 
 KEEP_PREFIX = "TRIMTOK_KEEP:"
+
+
+def has_marker_head(text: str) -> bool:
+    """True when the text *is* trimtok output: a marker on its first line.
+
+    An unanchored search let any payload that merely quotes a marker (a README,
+    trimtok's own source, a test echoing one) bypass compression forever.
+    """
+    if not text:
+        return False
+    head = text.lstrip()[:200].split("\n", 1)[0]
+    return bool(SENTINEL_RE.search(head))
 
 SLOT_RE = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"

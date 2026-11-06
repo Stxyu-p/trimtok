@@ -201,7 +201,7 @@ def evaluate_decision_equivalence(
         "equivalent": equivalent_count,
         "recoverable_only": recoverable_only_count,
         "decision_change_rate": round((total - equivalent_count) / total, 4),
-        "decision_recoverable_rate": round((total - recoverable_only_count) / total, 4),
+        "decision_recoverable_rate": round((equivalent_count + recoverable_only_count) / total, 4),
         "critical_tokens_total": total_critical,
         "critical_tokens_preserved": preserved_critical,
         "critical_tokens_preserved_rate": round(preserved_critical / max(1, total_critical), 4),
