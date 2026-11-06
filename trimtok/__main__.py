@@ -198,6 +198,10 @@ def main(argv: list[str] | None = None) -> int:
     p_ret.add_argument("--offset", type=int, help="1-indexed start line")
     p_ret.add_argument("--limit", type=int, help="Maximum lines to return")
 
+    p_search = sub.add_parser("search", help="Search stored CCR payloads via SQLite FTS5 BM25")
+    p_search.add_argument("query", help="Keyword or phrase to search across all stored payloads")
+    p_search.add_argument("--limit", type=int, default=5, help="Maximum matching payloads to return (default: 5)")
+
     p_comp = sub.add_parser("compress", help="Compress terminal or tool text from a file or stdin")
     p_comp.add_argument("input", nargs="?", default="-", help="File path or '-' for stdin")
     p_comp.add_argument("--command", default="", help="Shell command name (for terminal mode)")
@@ -282,6 +286,10 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
         except Exception:
             pass
+        return 0
+    if ns.cmd == "search":
+        hits = ccr.search(ns.query, limit=ns.limit)
+        print(json.dumps({"query": ns.query, "count": len(hits), "hits": hits}, indent=2, ensure_ascii=False))
         return 0
     if ns.cmd == "compress":
         raw = sys.stdin.read() if ns.input == "-" else Path(ns.input).read_text(encoding="utf-8", errors="replace")

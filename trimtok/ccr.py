@@ -132,6 +132,16 @@ def _is_hex_digest(s: str) -> bool:
     return len(s) >= 8 and all(c in "0123456789abcdef" for c in s.lower())
 
 
+def _sanitize_fts5_query(query: str) -> str:
+    """Sanitize user search query for safe SQLite FTS5 MATCH execution."""
+    if not query:
+        return ""
+    tokens = re.findall(r'[a-zA-Z0-9_\u0E00-\u0E7F]+', query)
+    if not tokens:
+        return ""
+    return " ".join(f'"{tok}"' for tok in tokens)
+
+
 class FastCCRStore:
     """Two-Tier content-addressed store: RAM LRU + SQLite WAL with Base62 aliases."""
 
@@ -162,6 +172,10 @@ class FastCCRStore:
                 "CREATE TABLE IF NOT EXISTS chunks ("
                 " sha TEXT PRIMARY KEY, alias TEXT UNIQUE, content BLOB, created_at REAL, pinned INTEGER DEFAULT 0)"
             )
+            try:
+                cur.execute("CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(alias, content);")
+            except Exception:
+                pass
             # Migrate legacy schema (sha12 column) to new (sha) column and ensure pinned exists.
             try:
                 cols = {r[1] for r in cur.execute("PRAGMA table_info(chunks)").fetchall()}
@@ -234,9 +248,23 @@ class FastCCRStore:
                     "ON CONFLICT(sha) DO UPDATE SET content=excluded.content, created_at=excluded.created_at",
                     (sha, alias, stored_blob, now),
                 )
+                try:
+                    cur.execute("DELETE FROM chunks_fts WHERE alias = ?", (alias,))
+                    cur.execute("INSERT INTO chunks_fts (alias, content) VALUES (?, ?)", (alias, content))
+                except Exception:
+                    pass
                 # Opportunistic TTL sweep (at most once every 50 writes)
                 if ttl_hours > 0 and (seq_num % 50 == 0):
                     expire_before = now - (ttl_hours * 3600.0)
+                    try:
+                        for row in cur.execute(
+                            "SELECT alias FROM chunks WHERE created_at < ? AND (pinned IS NULL OR pinned = 0)",
+                            (expire_before,),
+                        ).fetchall():
+                            if row and row[0]:
+                                cur.execute("DELETE FROM chunks_fts WHERE alias = ?", (row[0],))
+                    except Exception:
+                        pass
                     cur.execute("DELETE FROM chunks WHERE created_at < ? AND (pinned IS NULL OR pinned = 0)", (expire_before,))
 
                 cur.execute("COMMIT")
@@ -300,6 +328,11 @@ class FastCCRStore:
                         and (time.time() - float(created_at)) > (ttl_hours * 3600.0)
                     ):
                         cur.execute("DELETE FROM chunks WHERE sha=?", (sha,))
+                        if row_alias:
+                            try:
+                                cur.execute("DELETE FROM chunks_fts WHERE alias=?", (row_alias,))
+                            except Exception:
+                                pass
                         self._conn.commit()
                         self._mem.pop(sha, None)
                         self._sha_alias.pop(sha, None)
@@ -366,6 +399,10 @@ class FastCCRStore:
                     self._sha_alias.pop(sha, None)
                     if alias:
                         self._alias_mem.pop(alias, None)
+                        try:
+                            cur.execute("DELETE FROM chunks_fts WHERE alias = ?", (alias,))
+                        except Exception:
+                            pass
                     cur.execute("DELETE FROM chunks WHERE sha = ?", (sha,))
                     total -= int(size or 0)
                     evicted += 1
@@ -432,11 +469,19 @@ class FastCCRStore:
                             self._sha_alias.pop(sha, None)
                             if alias:
                                 self._alias_mem.pop(alias, None)
+                                try:
+                                    cur.execute("DELETE FROM chunks_fts WHERE alias = ?", (alias,))
+                                except Exception:
+                                    pass
                         cur.execute("DELETE FROM chunks WHERE created_at < ?", (cutoff,))
                     else:
                         row = cur.execute("SELECT COUNT(*) FROM chunks").fetchone()
                         count = row[0] or 0
                         cur.execute("DELETE FROM chunks")
+                        try:
+                            cur.execute("DELETE FROM chunks_fts")
+                        except Exception:
+                            pass
                     self._conn.commit()
                     self._conn.execute("VACUUM")
                 except Exception:
@@ -493,6 +538,31 @@ class FastCCRStore:
                 return cur.rowcount > 0
             except Exception:
                 return False
+
+    def search(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
+        """Search stored CCR payloads via SQLite FTS5 BM25. Never raises."""
+        fts_query = _sanitize_fts5_query(query)
+        if not fts_query:
+            return []
+        with self._lock:
+            if not (self._writable and self._conn is not None):
+                return []
+            try:
+                cur = self._conn.cursor()
+                sql = (
+                    "SELECT alias, snippet(chunks_fts, 1, '<b>', '</b>', '...', 15), rank "
+                    "FROM chunks_fts WHERE chunks_fts MATCH ? ORDER BY rank LIMIT ?"
+                )
+                hits: list[dict[str, Any]] = []
+                for row in cur.execute(sql, (fts_query, max(1, limit))).fetchall():
+                    hits.append({
+                        "alias": row[0] or "",
+                        "snippet": row[1] if row[1] else "",
+                        "rank": float(row[2]) if row[2] is not None else 0.0,
+                    })
+                return hits
+            except Exception:
+                return []
 
 
 # ---------------------------------------------------------------------------
@@ -791,3 +861,12 @@ def unpin(ref: str, *, dir: Path | None = None) -> bool:
         return _get_store(base).unpin(ref)
     except Exception:
         return False
+
+
+def search(query: str, limit: int = 5, *, dir: Path | None = None) -> list[dict[str, Any]]:
+    """Search stored CCR payloads via SQLite FTS5 BM25."""
+    try:
+        base = Path(dir) if dir else default_dir()
+        return _get_store(base).search(query, limit=limit)
+    except Exception:
+        return []

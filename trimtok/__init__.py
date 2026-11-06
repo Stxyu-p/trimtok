@@ -68,6 +68,10 @@ RETRIEVE_SCHEMA = {
                 "type": "string",
                 "description": "The content ref shown in the [tt:... #ref] marker (e.g. '#c1'), or a legacy hex hash.",
             },
+            "query": {
+                "type": "string",
+                "description": "Optional search term to discover matching stored payloads across sessions using SQLite FTS5 BM25.",
+            },
             "section": {
                 "type": "string",
                 "enum": ["errors", "diff", "summary", "tail"],
@@ -770,9 +774,14 @@ def _render_context_intervals(
 
 
 def _handle_retrieve(args: dict, **kw: Any) -> str:
+    query = str((args or {}).get("query") or "").strip()
+    if query and not (args or {}).get("hash"):
+        limit = max(1, min(50, _safe_int((args or {}).get("limit"), 5)))
+        hits = ccr.search(query, limit=limit)
+        return _ok({"hits": hits, "count": len(hits), "query": query})
     ref = _parse_ref((args or {}).get("hash"))
     if not ref:
-        return _err("hash is required (a '#ref' from a [tt:...] marker, or a legacy hex hash)")
+        return _err("hash or query is required (e.g. '#c1' or search query)")
     ctx = getattr(_handle_retrieve, "_ctx", None)
     ttl_hours = _int_cfg(ctx, "ccr_ttl_hours", 24, 1, 24 * 30) if ctx is not None else 24
     content = ccr_get(ref, ttl_hours=ttl_hours)
