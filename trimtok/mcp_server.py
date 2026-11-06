@@ -44,7 +44,10 @@ SERVER_INSTRUCTIONS = (
     "2. **Large Tool Outputs / Source Files / JSON Payloads (>2 KB):** Call `trimtok_compress_tool` (pass `result` or `file_path`) "
     "to apply lossless TOON v2 tabular JSON encoding, scoped search grouping, or AST code skeletonization without flooding your context window.\n"
     "3. **Lossless Section Retrieval:** Every compressed response stores the raw original in the SQLite WAL CCR cache and returns a `ref` (`#cN` or hex digest). "
-    "Call `trimtok_retrieve` with `hash` + optional `section` (`errors`, `diff`, `summary`, `tail`), `grep`, or `offset`/`limit` whenever you need exact omitted lines."
+    "Call `trimtok_retrieve` with `hash` + optional `section` (`errors`, `diff`, `summary`, `tail`), `grep`, or `offset`/`limit` whenever you need exact omitted lines.\n"
+    "4. **Aggregate Questions Over a `ref`:** When the answer is a count, a filter, a top-N or a yes/no over a large payload, do NOT retrieve the text — "
+    "call `trimtok_exec` with the `hash` and a short Python snippet. The payload path arrives in `$TRIMTOK_PAYLOAD`, and only stdout enters your context. "
+    "Measured: the same 627 KB JSON question cost 224,523 bytes as a compressed table and 155 bytes this way."
 )
 
 TOOLS = [
@@ -96,6 +99,25 @@ TOOLS = [
         "description": RETRIEVE_SCHEMA["description"],
         "inputSchema": {
             **RETRIEVE_SCHEMA["parameters"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "trimtok_exec",
+        "description": (
+            "Run code over a stored original (#ref) WITHOUT loading it into context. "
+            "The payload path is in $TRIMTOK_PAYLOAD. Use this for aggregate questions "
+            "over large outputs -- counts, filters, top-N, presence checks -- where "
+            "retrieving the text would cost far more tokens than the answer."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "hash": {"type": "string", "description": "CCR reference (#c1 or 12-char hex)"},
+                "code": {"type": "string", "description": "Python code; the payload path is in $TRIMTOK_PAYLOAD"},
+                "timeout": {"type": "number", "description": "Seconds before the run is killed (default 10)"},
+            },
+            "required": ["hash", "code"],
             "additionalProperties": False,
         },
     },
@@ -247,6 +269,15 @@ def _tool_retrieve(args: dict[str, Any]) -> dict[str, Any]:
         return {"result": raw_json}
 
 
+def _tool_exec(args: dict[str, Any]) -> dict[str, Any]:
+    from .exec_lane import run as _exec_run
+    return _exec_run(
+        str(args.get("hash") or ""),
+        str(args.get("code") or ""),
+        timeout=float(args.get("timeout") or 10.0),
+    )
+
+
 def _tool_status(args: dict[str, Any]) -> dict[str, Any]:
     action = str(args.get("action") or "status").strip().lower()
     if action not in ("status", "usage", "purge"):
@@ -265,6 +296,7 @@ _HANDLERS = {
     "trimtok_compress_terminal": _tool_compress_terminal,
     "trimtok_compress_tool": _tool_compress_tool,
     "trimtok_retrieve": _tool_retrieve,
+    "trimtok_exec": _tool_exec,
     "trimtok_status": _tool_status,
 }
 

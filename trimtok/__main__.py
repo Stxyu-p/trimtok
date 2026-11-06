@@ -194,6 +194,12 @@ def main(argv: list[str] | None = None) -> int:
     p_ret.add_argument("--offset", type=int, help="1-indexed start line")
     p_ret.add_argument("--limit", type=int, help="Maximum lines to return")
 
+    p_exec = sub.add_parser("exec", help="Run code over a stored original (#ref) without loading it into context")
+    p_exec.add_argument("ref", help="CCR reference (#c1 or 12-hex digest)")
+    p_exec.add_argument("--code", help="Python (default) or shell code; read $TRIMTOK_PAYLOAD")
+    p_exec.add_argument("--file", help="Read the code from a file instead of --code")
+    p_exec.add_argument("--timeout", type=float, default=10.0)
+
     p_search = sub.add_parser("search", help="Search stored CCR payloads via SQLite FTS5 BM25")
     p_search.add_argument("query", help="Keyword or phrase to search across all stored payloads")
     p_search.add_argument("--limit", type=int, default=5, help="Maximum matching payloads to return (default: 5)")
@@ -284,6 +290,14 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:
             pass
         return 0
+    if ns.cmd == "exec":
+        from .exec_lane import run as _exec_run
+        code = ns.code or ""
+        if ns.file:
+            code = Path(ns.file).read_text(encoding="utf-8", errors="replace")
+        res = _exec_run(ns.ref, code, timeout=ns.timeout)
+        print(json.dumps(res, indent=2, ensure_ascii=False))
+        return 0 if res.get("ok") else 1
     if ns.cmd == "search":
         if not ccr.fts_ready():
             sys.stderr.write("Error: FTS5 search is unavailable in this SQLite build.\n")

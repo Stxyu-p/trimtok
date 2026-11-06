@@ -2,6 +2,20 @@
 
 All notable changes to trimtok are documented here.
 
+## [5.7.0] - 2026-11-06
+
+### Added
+- **`trimtok_exec` / `trimtok exec`: compute over a `#ref` without loading it
+  into context.** A ref only supported retrieve(), which puts the whole text
+  back into the prompt — the wrong shape for "how many rows", "which shape
+  dominates", "does X appear". The payload path arrives in `$TRIMTOK_PAYLOAD`
+  and only stdout returns. Measured in the competitor lab, the same 627 KB JSON
+  question cost 224,523 bytes as a compressed TOON table and **155 bytes** as a
+  script result.
+  Python only: trimtok is a Python package, so the interpreter is guaranteed
+  present and a shell lane would need two env-var syntaxes for no capability
+  Python lacks. Hard 10 s timeout, 4 KB output cap, never raises.
+
 ## [5.6.2] - 2026-11-06
 
 ### Fixed
