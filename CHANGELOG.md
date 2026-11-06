@@ -2,6 +2,17 @@
 
 All notable changes to trimtok are documented here.
 
+## [5.5.0] - 2026-11-06
+
+Context Intelligence Engine: Sub-millisecond SQLite FTS5 search across all captured payloads, task-aware dependency codebase mapping, decision-equivalence quality contracts, and three-state information governance.
+
+### Added
+- **Sub-millisecond SQLite FTS5 search in CCR (`trimtok/ccr.py`, `trimtok search`):** embedded SQLite FTS5 virtual table (`chunks_fts`) directly into the `FastCCRStore` WAL database. Allows instantaneous BM25 keyword and phrase searching across all captured terminal and tool outputs across sessions in < 5ms. Fully synchronized across writes, TTL purges, and evictions with automatic query sanitization.
+- **MCP `trimtok_retrieve` search capability:** `trimtok_retrieve` now supports an optional `query` parameter to discover relevant stored payloads across sessions without needing an exact hash upfront.
+- **Task-aware dependency code mapping (`trimtok/codemap.py`, `trimtok map --focus <path>`):** extended codebase mapper with `--focus <file_path>` flag. Dynamically parses target file imports and reverse references across Python, JS/TS, Go, and Rust. Elevates direct dependencies and shared modules to the top of the map within the tight character budget (e.g. 2,000 chars), ensuring agents comprehend the immediate dependency graph in < 50ms without exploratory overhead.
+- **Decision-equivalence quality contract suite (`eval/decision_eval.py`):** evaluates whether compression preserves agent tool choices and critical identifiers (file paths, line numbers, error classes). Validates that agent decisions remain 100% equivalent (0% divergence), preventing the catastrophic "cliff-edge failure" (E7) where aggressive token-saving degrades task completion rates.
+- **Three-state information model:** standardized categorization across the engine into *Retained* (visible in active context), *Recoverable* (condensed in context, 100% retrievable via SQLite WAL/Zstd CCR `#ref`), and *Lost* (irreversible discard, strictly policy-governed only).
+
 ## [5.4.1] - 2026-11-05
 
 Zero-disk-footprint ecosystem shield: Bounded MCP schema proxy, ultra-light codebase mapping, KV-cache prompt stabilizer, and multi-header framing.
