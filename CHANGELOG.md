@@ -2,16 +2,57 @@
 
 All notable changes to trimtok are documented here.
 
+## [5.5.1] - 2026-11-06
+
+Correctness pass over 5.5.0. The search feature shipped unreachable, blind to
+existing payloads and to non-Latin scripts, and the quality gate could go green
+on total context loss. All four are fixed and covered by tests that fail if the
+fix is reverted.
+
+### Fixed
+- **MCP search was uncallable:** `RETRIEVE_SCHEMA` required `hash`, so a
+  schema-valid client could never send `query` alone. The schema now accepts
+  either (`anyOf`) and the handler branches on a resolved ref instead of the
+  raw argument.
+- **Existing payloads were invisible to search:** `chunks_fts` was created empty
+  and never populated for stores written before 5.5.0. The store now backfills
+  the index once on open when it is empty.
+- **Non-Latin queries silently returned nothing:** the sanitizer kept only
+  `[A-Za-z0-9_\u0E00-\u0E7F]`, dropping CJK, Cyrillic, Greek and accented
+  Latin. Tokens are now split on whitespace and quoted, letting FTS5's
+  unicode61 tokenizer handle any script.
+- **Search offered expired refs:** hits now join `chunks` and respect TTL and
+  pinning, so `search()` never returns an alias that `get()` would refuse.
+- **The FTS index was unaccounted disk:** `stats()` reported payload bytes only
+  while the index kept a plaintext copy. `stats()["bytes"]` is now the real
+  footprint (with `payload_bytes` / `fts_bytes` breakdown) and `evict_to_size()`
+  enforces the cap against the same number.
+- **`--focus` typo degraded the map silently:** a missing focus file now falls
+  back to the unfocused ordering, the CLI warns, and the focus file keeps a
+  wider symbol slice instead of collapsing to one symbol per file.
+- **Go import parsing matched string literals:** only real `import` statements
+  and import blocks are read now.
+
+### Changed
+- **Decision-equivalence gate is strict:** a scenario counts as preserved only
+  when the action is still visible in the emitted text; ref-only recovery is
+  reported separately as `recoverable_only`. A run where any scenario was not
+  compressed is marked invalid instead of green, `--json` propagates the exit
+  code, and the suite writes to a temporary store instead of `~/.trimtok`.
+- `pytest` is declared as the `dev` extra, so the documented runner installs.
+- Hot-path FTS write no longer issues a redundant full-index delete.
+
 ## [5.5.0] - 2026-11-06
 
-Context Intelligence Engine: Sub-millisecond SQLite FTS5 search across all captured payloads, task-aware dependency codebase mapping, decision-equivalence quality contracts, and three-state information governance.
+Context Intelligence Engine: SQLite FTS5 search across captured payloads,
+task-aware dependency codebase mapping, and a decision-equivalence quality
+contract.
 
 ### Added
-- **Sub-millisecond SQLite FTS5 search in CCR (`trimtok/ccr.py`, `trimtok search`):** embedded SQLite FTS5 virtual table (`chunks_fts`) directly into the `FastCCRStore` WAL database. Allows instantaneous BM25 keyword and phrase searching across all captured terminal and tool outputs across sessions in < 5ms. Fully synchronized across writes, TTL purges, and evictions with automatic query sanitization.
-- **MCP `trimtok_retrieve` search capability:** `trimtok_retrieve` now supports an optional `query` parameter to discover relevant stored payloads across sessions without needing an exact hash upfront.
-- **Task-aware dependency code mapping (`trimtok/codemap.py`, `trimtok map --focus <path>`):** extended codebase mapper with `--focus <file_path>` flag. Dynamically parses target file imports and reverse references across Python, JS/TS, Go, and Rust. Elevates direct dependencies and shared modules to the top of the map within the tight character budget (e.g. 2,000 chars), ensuring agents comprehend the immediate dependency graph in < 50ms without exploratory overhead.
-- **Decision-equivalence quality contract suite (`eval/decision_eval.py`):** evaluates whether compression preserves agent tool choices and critical identifiers (file paths, line numbers, error classes). Validates that agent decisions remain 100% equivalent (0% divergence), preventing the catastrophic "cliff-edge failure" (E7) where aggressive token-saving degrades task completion rates.
-- **Three-state information model:** standardized categorization across the engine into *Retained* (visible in active context), *Recoverable* (condensed in context, 100% retrievable via SQLite WAL/Zstd CCR `#ref`), and *Lost* (irreversible discard, strictly policy-governed only).
+- **SQLite FTS5 search in CCR (`trimtok/ccr.py`, `trimtok search`):** embedded FTS5 virtual table (`chunks_fts`) inside the existing `FastCCRStore` WAL database, giving BM25 keyword search across captured terminal and tool outputs in single-digit milliseconds. The index keeps a plaintext copy for snippet generation, so it is counted in `stats()` and in the `ccr_max_bytes` ceiling.
+- **MCP `trimtok_retrieve` search capability:** `trimtok_retrieve` accepts an optional `query` parameter to discover relevant stored payloads without an exact hash upfront.
+- **Task-aware dependency code mapping (`trimtok/codemap.py`, `trimtok map --focus <path>`):** `--focus <file_path>` parses the target file's imports (Python, JS/TS, Go, Rust) and ranks its dependencies above unrelated modules inside the character budget, in < 50 ms.
+- **Decision-equivalence quality contract suite (`eval/decision_eval.py`):** measures whether compression keeps the action and the critical identifiers an agent needs, instead of counting bytes only.
 
 ## [5.4.1] - 2026-11-05
 

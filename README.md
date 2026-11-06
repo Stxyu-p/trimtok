@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://pypi.org/project/trimtok/"><img src="https://img.shields.io/badge/pypi-v5.5.0-blue?style=flat-square" alt="PyPI" /></a>
+  <a href="https://pypi.org/project/trimtok/"><img src="https://img.shields.io/badge/pypi-v5.5.1-blue?style=flat-square" alt="PyPI" /></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10+-blue?style=flat-square" alt="Python" /></a>
   <a href="#7-ccr-recovery"><img src="https://img.shields.io/badge/storage-SQLite_WAL_+_Zstandard-07405E?style=flat-square" alt="Storage" /></a>
   <a href="#how-it-works"><img src="https://img.shields.io/badge/latency-%3C_2ms_in--process-10b981?style=flat-square" alt="Latency" /></a>
@@ -152,7 +152,7 @@ Tool / Terminal Output
 
 Empirical head-to-head benchmarks measured on identical production workloads:
 
-| Capability / Benchmark | **trimtok v5.5.0** 🌟 | **claw-compactor v7.0** (OpenClaw) | **RTK v1.1.0** (Rust) | **headroom v0.42.0** (Python) | **skim v2.10.0** (Rust) | **sqz v2.1.1** (Rust) | **tokenfold** (Python/Rust) |
+| Capability / Benchmark | **trimtok v5.5.1** 🌟 | **claw-compactor v7.0** (OpenClaw) | **RTK v1.1.0** (Rust) | **headroom v0.42.0** (Python) | **skim v2.10.0** (Rust) | **sqz v2.1.1** (Rust) | **tokenfold** (Python/Rust) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | **Execution Layer** | **In-process hook + CLI** | 14-Stage Pipeline + Node Proxy | Subprocess CLI | Python library / Proxy | Subprocess CLI | Subprocess CLI | Python FFI library |
 | **Uniform JSON (500 rows)** | **55.3% saved** (TOON v2) | **81.9% (lossy sampling)** | 99.6% (truncated) | **61.7% saved** | N/A | ~55% saved | 55.7% saved |
@@ -163,9 +163,9 @@ Empirical head-to-head benchmarks measured on identical production workloads:
 | **Command-Specific Filters** | ✅ **7 commands** (`git`, `npm`, `pip`, etc.) | ⚠️ 3 crunchers (Log/Diff/Search) | ✅ 12 commands | ❌ None | ❌ None | ❌ None | ❌ None |
 | **Full Original Retrieval** | ✅ **Content-addressed (`#c1`)** | ⚠️ `RewindStore` (24-char hex) | ❌ Lost permanently | ⚠️ CCR via MCP | ❌ Lost permanently | ⚠️ §ref dedup | ✅ Exact bytes |
 | **Recovery Storage Backend** | ✅ **SQLite WAL + Zstd (Persistent on-disk)** | ⚠️ In-memory RAM (`OrderedDict` LRU) | ❌ None (Lossy) | ⚠️ Local disk cache | ❌ None (Lossy) | ⚠️ In-stream reference map | ⚠️ In-memory RAM |
-| **Full-Text Payload Search** | ✅ **SQLite FTS5 BM25 (`<5ms`)** | ⚠️ In-memory substring scan | ❌ None | ❌ None | ❌ None | ❌ None | ❌ None |
+| **Full-Text Payload Search** | ✅ **SQLite FTS5 BM25 (`< 10 ms`)** | ⚠️ In-memory substring scan | ❌ None | ❌ None | ❌ None | ❌ None | ❌ None |
 | **Task-Aware Code Map** | ✅ **`trimtok map --focus`** | ❌ None | ❌ None | ❌ None | ⚠️ Full AST (unbudgeted) | ❌ None | ❌ None |
-| **Decision-Equivalence Eval** | ✅ **100% (0% divergence)** | ⚠️ SWE-bench partial | ❌ None | ❌ None | ❌ None | ❌ None | ❌ None |
+| **Decision-Equivalence Eval** | ✅ **3/3 preserved @ 91% cut** | ⚠️ SWE-bench partial | ❌ None | ❌ None | ❌ None | ❌ None | ❌ None |
 | **Intent-Addressed Retrieval** | ✅ **`--intent` (93–97%)** | ⚠️ Keyword search (`store.search`) | ❌ None | ❌ None (full block only) | ❌ None | ❌ None | ❌ None |
 | **Content Policy Gate** | ✅ **Secrets & edits verbatim** | ⚠️ Annotations only (`noqa`, `TODO`) | ❌ None | ❌ None | ❌ None | ❌ None | ❌ None |
 | **Adaptive Level** | ✅ **Pressure-scaled (light/normal/aggressive)** | ⚠️ Stage gating (`should_apply`) | ❌ Static CLI flags | ❌ Fixed heuristics | ❌ Static CLI depth | ❌ Static ratio target | ❌ Static threshold |
@@ -585,12 +585,14 @@ python eval/eval_real.py        # Per-payload reduction + gate failures on the 3
 python eval/audit_honesty.py    # Claimed vs proven reduction; unproven characters must be 0
 python eval/steps.py            # raw -> hook -> intent retrieval, per payload
 python eval/fix_accuracy.py     # Can an agent still fix the bug? (LOCATE, no model needed)
-python eval/decision_eval.py    # Decision-equivalence quality contract (0% decision divergence)
+python eval/decision_eval.py    # Decision-equivalence: action still visible after compression
 python eval/probe_ceiling.py    # Are folded lines announced and ref-reachable?
-pytest tests/                   # 119 unit tests
+pytest tests/                   # 132 tests (pip install -e ".[dev]" first)
 ```
 
-The honesty audit is the load-bearing check: it recomputes the claimed reduction from the recovery store and reports any character that was removed without a resolvable reference. Run `eval_real.py` immediately before `audit_honesty.py` against a fresh store — pointing both at the same empty `TRIMTOK_DATA_DIR` — so the audit scores exactly the corpus the first script produced. Current state — **73.19% claimed, 73.19% proven, 0 unproven characters**, 0 gate failures, 0 silent line loss, 0 unannounced faults, 119/119 tests passing.
+The honesty audit is the load-bearing check: it recomputes the claimed reduction from the recovery store and reports any character that was removed without a resolvable reference. Run `eval_real.py` immediately before `audit_honesty.py` against a fresh store — pointing both at the same empty `TRIMTOK_DATA_DIR` — so the audit scores exactly the corpus the first script produced. Current state — **73.19% claimed, 73.19% proven, 0 unproven characters**, 0 gate failures, 0 silent line loss, 0 unannounced faults, 132/132 tests passing.
+
+> **Storage note:** the FTS5 index keeps a plaintext copy of each payload so `snippet()` can highlight matches, so on-disk usage is roughly `compressed payloads + plaintext index`. Both are counted by `trimtok status` (`bytes`, `payload_bytes`, `fts_bytes`) and both are included in the `ccr_max_bytes` ceiling, so the cap is enforced against the real footprint rather than the compressed half of it.
 
 ---
 
