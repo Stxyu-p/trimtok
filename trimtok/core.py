@@ -337,6 +337,7 @@ def compress_terminal(
     delta_threshold: float = 0.65,
     deadline: Any | None = None,
     pressure: float = 0.0,
+    exit_code: int = 0,
     level: str = "",
     policy_enabled: bool = True,
 ) -> tuple[str, dict]:
@@ -390,7 +391,7 @@ def compress_terminal(
                 pass
         if command and len(output) >= 256:
             # Package manager / clean build outputs collapse to 1-line factsheet
-            clean_success = collapse_success_output(command, output)
+            clean_success = collapse_success_output(command, output, exit_code)
             if clean_success != output:
                 tb = estimate_tokens(output)
                 ta = estimate_tokens(clean_success)

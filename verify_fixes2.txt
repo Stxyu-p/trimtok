@@ -1,0 +1,10 @@
+=== 2. nonzero exit must not collapse to [tt:success] ===
+  hook envelope exit=1 -> ok (no false success)
+  _on_transform returncode=1 -> ok (no false success)
+  _on_transform returncode=0 -> collapsed
+=== 3. failed CCR write must not emit a marker ===
+  ref: '' | markers in compressed: none
+  compressed len: 12980 of 12980
+=== 4. MCP file path keeps the source path ===
+  package-lock 74246 -> 620 kind=lockfile
+  security/policy.yaml 6710 -> 6308 gate=passthrough_policy reason=security_path

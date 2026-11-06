@@ -19,6 +19,28 @@ All notable changes to trimtok are documented here.
 - **`trimtok/compaction.py`:** `stash_old_tool_results` had no production
   caller (only its own test), so it was deleted rather than maintained.
 
+### Fixed
+- **`trimtok purge --older-than -1` wiped the store:** a negative bound fell
+  through to the bare-purge branch, so a typo in a retention command deleted
+  every cached original. Negative bounds are now rejected with exit 2.
+- **A nonzero exit code could still become `[tt:success]`:** the success-collapse
+  lane had an `exit_code` guard that no public entry point ever reached. The
+  hook's `returncode`, the `wrap` child status, and the exit code inside the
+  terminal envelope are now threaded through to it.
+- **MCP could emit a `#ref` that resolves to nothing:** when the CCR write
+  failed, `trimtok_compress_terminal` / `trimtok_compress_tool` still shipped a
+  marker. They now fall back to the original text, matching the CLI.
+- **The MCP file path bypassed policy and the lockfile lane:**
+  `trimtok_compress_tool(file_path=...)` never passed the source path, so
+  `security/*.yaml` was compressed (it must stay byte-exact) and a 74 KB
+  `package-lock.json` compressed to 620 bytes only after the fix.
+- **Retrieval failures reported success:** `trimtok retrieve '#nope'` exited 0
+  and MCP returned `isError: false`. Both now report the failure.
+- **MCP traffic was invisible to the savings reports:** MCP events logged
+  `before_chars`/`saved_chars` while every summary aggregates `before`/`saved`,
+  so `usage`, `gain` and `discover` showed zero for MCP. MCP rows now use the
+  canonical schema with `surface: "mcp"`.
+
 ## [5.5.5] - 2026-11-06
 
 CCR store invariants. Five defects, each reproduced against a throwaway store

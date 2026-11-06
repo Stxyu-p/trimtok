@@ -119,6 +119,11 @@ def _run_purge(ns: Any) -> int:
 
     hours = float(getattr(ns, "older_than", 0.0) or 0.0)
     max_mb = float(getattr(ns, "max_mb", 0.0) or 0.0)
+    # A negative bound used to fall through to the bare-purge branch and wipe the
+    # store: `purge --older-than -1` deleted every cached original.
+    if hours < 0 or max_mb < 0:
+        sys.stderr.write("Error: --older-than and --max-mb must be >= 0\n")
+        return 2
 
     before = _ccr.stats()
 
@@ -274,7 +279,7 @@ def main(argv: list[str] | None = None) -> int:
         print(out)
         try:
             res_obj = json.loads(out)
-            if res_obj.get("status") == "error":
+            if "error" in res_obj:
                 return 1
         except Exception:
             pass
@@ -289,7 +294,8 @@ def main(argv: list[str] | None = None) -> int:
     if ns.cmd == "compress":
         raw = sys.stdin.read() if ns.input == "-" else Path(ns.input).read_text(encoding="utf-8", errors="replace")
         if ns.tool:
-            compressed, stats = compress_tool_result(ns.tool, raw, min_chars=ns.min_chars)
+            _src = {"path": ns.input} if ns.input != "-" else None
+            compressed, stats = compress_tool_result(ns.tool, raw, args=_src, min_chars=ns.min_chars)
         else:
             compressed, stats = compress_terminal(ns.command, raw, min_chars=ns.min_chars)
         if stats.get("gate") == "ok":
@@ -328,7 +334,7 @@ def main(argv: list[str] | None = None) -> int:
         proc = subprocess.run(cmd_args, capture_output=True, text=True, shell=False)
         combined = (proc.stdout or "") + (proc.stderr or "")
         cmd_name = Path(cmd_args[0]).stem
-        compressed, stats = compress_terminal(cmd_name, combined, min_chars=512)
+        compressed, stats = compress_terminal(cmd_name, combined, min_chars=512, exit_code=proc.returncode)
         if stats.get("gate") == "ok":
             ref = ccr.put(combined)
             if ref and stats.get("digest"):

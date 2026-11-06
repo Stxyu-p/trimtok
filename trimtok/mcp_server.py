@@ -131,6 +131,26 @@ def _read_file_arg(file_path: Any) -> tuple[str, str]:
         return fh.read(), resolved
 
 
+def _usage_row(hook: str, name: str, stats: dict[str, Any]) -> dict[str, Any]:
+    """Log MCP traffic in the schema the savings summaries read.
+
+    The summaries aggregate `before`/`after`/`saved`; logging `before_chars`
+    from the stats dict made every MCP event invisible to `usage`/`gain`.
+    """
+    key = "cmd" if hook == "terminal" else "tool"
+    return {
+        "hook": hook,
+        "surface": "mcp",
+        key: name,
+        "shape": stats.get("kind") or ("mixed" if hook == "terminal" else "tool"),
+        "gate": stats.get("gate"),
+        "before": stats.get("before_chars", 0),
+        "after": stats.get("after_chars", 0),
+        "saved": stats.get("saved_chars", 0),
+        "ms": round(float(stats.get("ms", 0.0)), 2),
+    }
+
+
 def _tool_compress_terminal(args: dict[str, Any]) -> dict[str, Any]:
     output = args.get("output")
     file_path = args.get("file_path")
@@ -158,8 +178,12 @@ def _tool_compress_terminal(args: dict[str, Any]) -> dict[str, Any]:
         ref = ccr.put(output)
         if ref and stats.get("digest"):
             compressed = compressed.replace(f"#{stats['digest']}", ref)
+        elif not ref and not stats.get("lossless_tier0"):
+            # The store refused the write, so the marker would resolve to
+            # nothing: ship the original text instead.
+            compressed = output
         _audit({"hook": "mcp_terminal", "cmd": command[:120], **stats})
-    _usage({"hook": "mcp_terminal", "cmd": command[:120], "shape": stats.get("kind", "mixed"), **stats})
+    _usage(_usage_row("terminal", command[:120], stats))
     resp: dict[str, Any] = {
         "compressed": compressed,
         "ref": ref,
@@ -178,7 +202,9 @@ def _tool_compress_tool(args: dict[str, Any]) -> dict[str, Any]:
         result, source_file = _read_file_arg(file_path)
     if not isinstance(result, str):
         raise ValueError("result or file_path must be provided")
-    default_tool = f"Read:{os.path.basename(source_file)}" if source_file else "tool"
+    # A file read must go through the read-file lane, otherwise the lockfile
+    # fast-gate and the secret/security path policy never run.
+    default_tool = "read_file" if source_file else "tool"
     tool_name = str(args.get("tool_name") or default_tool)
     session_id = str(args.get("session_id") or "mcp")
     toon_enabled = bool(args.get("toon_enabled", True))
@@ -189,6 +215,7 @@ def _tool_compress_tool(args: dict[str, Any]) -> dict[str, Any]:
     compressed, stats = compress_tool_result(
         tool_name,
         result,
+        args={"path": source_file} if source_file else None,
         session_id=session_id,
         min_chars=min_chars,
         toon_enabled=toon_enabled,
@@ -198,8 +225,10 @@ def _tool_compress_tool(args: dict[str, Any]) -> dict[str, Any]:
         ref = ccr.put(result)
         if ref and stats.get("digest"):
             compressed = compressed.replace(f"#{stats['digest']}", ref)
+        elif not ref and not stats.get("lossless_tier0"):
+            compressed = result
         _audit({"hook": "mcp_tool", "tool": tool_name[:120], **stats})
-    _usage({"hook": "mcp_tool", "tool": tool_name[:120], "shape": stats.get("kind", "tool"), **stats})
+    _usage(_usage_row("tool", tool_name[:120], stats))
     resp: dict[str, Any] = {
         "compressed": compressed,
         "ref": ref,
@@ -270,7 +299,9 @@ def handle(request: dict[str, Any]) -> dict[str, Any]:
             "content": [
                 {"type": "text", "text": json.dumps(result, ensure_ascii=False)}
             ],
-            "isError": False,
+            # A handler that returns {"error": ...} did not succeed; the agent
+            # must be able to tell that the context it asked for is missing.
+            "isError": isinstance(result, dict) and "error" in result,
         }
     raise MethodNotFound(str(method))
 

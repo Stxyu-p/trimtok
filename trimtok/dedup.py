@@ -1547,9 +1547,13 @@ def compress_tool_result(
                     command = str(args.get("command") or "")
                 try:
                     from .core import compress_terminal
+                    try:
+                        _code = int(envelope.get("exit_code") or 0)
+                    except (TypeError, ValueError):
+                        _code = 0
                     new_inner, inner_stats = compress_terminal(
                         command, inner_text, min_chars=min_chars, deadline=deadline,
-                        level=level, pressure=pressure,
+                        level=level, pressure=pressure, exit_code=_code,
                     )
                 except Exception:
                     new_inner, inner_stats = inner_text, {"gate": "error"}

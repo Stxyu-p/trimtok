@@ -599,6 +599,7 @@ def _on_transform(
         delta_threshold=_float_cfg(ctx, "delta_threshold", 0.65, 0.5, 1.0),
         deadline=Deadline(_float_cfg(ctx, "guard_ms", 200.0, 1.0, 1000.0)),
         pressure=_context_pressure(ctx, kw),
+        exit_code=_safe_int(returncode, 0),
     )
     _usage_terminal(command, output, stats, ctx)
     return _finalize(output, new_output, stats, ctx, {
