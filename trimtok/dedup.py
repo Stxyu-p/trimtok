@@ -1453,6 +1453,28 @@ def micro_minify_tool(result: str, session_id: str, t0: float) -> tuple[str, dic
                      "ms": (time.perf_counter() - t0) * 1000}
 
 
+def _terminal_envelope(text: str) -> tuple[str, dict] | None:
+    """Split {"output": str, "exit_code": N, ...} into (inner_text, envelope).
+
+    The host hands terminal results over as a JSON envelope, so without this the
+    JSON lane minifies one long line and the terminal lane never runs.
+    """
+    if not text or len(text) < 512:
+        return None
+    head = text.lstrip()
+    if not head.startswith("{"):
+        return None
+    try:
+        obj = _json.loads(head)
+    except Exception:
+        return None
+    if not isinstance(obj, dict) or not isinstance(obj.get("output"), str):
+        return None
+    if "exit_code" not in obj and "error" not in obj:
+        return None
+    return obj["output"], obj
+
+
 def compress_tool_result(
     tool_name: str,
     result: str,
@@ -1512,6 +1534,30 @@ def compress_tool_result(
                 pass
         if tool_name in _READ_FILE_TOOLS:
             return _handle_read_file_v42(result, session_id, args, min_chars, t0, deadline, level, toon_enabled)
+        # The host delivers terminal results as {"output": "...", "exit_code": N}.
+        # Classifying that envelope as JSON runs a minifier over a single line and
+        # leaves the text that actually matters untouched, so the terminal lane
+        # never sees it.
+        if tool_name == "terminal":
+            env = _terminal_envelope(result)
+            if env is not None:
+                inner_text, envelope = env
+                command = ""
+                if isinstance(args, dict):
+                    command = str(args.get("command") or "")
+                try:
+                    from .core import compress_terminal
+                    new_inner, inner_stats = compress_terminal(
+                        command, inner_text, min_chars=min_chars, deadline=deadline,
+                        level=level, pressure=pressure,
+                    )
+                except Exception:
+                    new_inner, inner_stats = inner_text, {"gate": "error"}
+                if inner_stats.get("gate") == "ok" and len(new_inner) < len(inner_text):
+                    return (
+                        _json.dumps({**envelope, "output": new_inner}, ensure_ascii=False),
+                        {**inner_stats, "kind": inner_stats.get("kind", "terminal_envelope")},
+                    )
         if tool_name in _WEB_TOOLS:
             _rh = hashlib.sha256(result.encode("utf-8", "replace")).hexdigest()[:12]
             w_cand, w_stats = shave_tiered(result, {"domain": "web-doc", "lang": "markdown"})

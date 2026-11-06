@@ -2,6 +2,23 @@
 
 All notable changes to trimtok are documented here.
 
+## [5.6.0] - 2026-11-06
+
+### Added
+- **Terminal results inside a JSON envelope are compressed again:** the host
+  delivers terminal output as `{"output": "...", "exit_code": N, ...}`, and the
+  whole envelope was classified as JSON — a minifier over one long line — so the
+  terminal lane never saw the text. That bucket was 37.7% of all measured tool
+  traffic at 0.5% saved. The envelope is now unwrapped, the inner text goes
+  through `compress_terminal`, and the envelope is repacked as valid JSON with
+  `exit_code`/`error` intact. On six real captured payloads the lane now saves
+  84.3% (625,849 → 98,027 chars) instead of ~0.5%, and the emitted `#ref`
+  resolves to the exact original envelope.
+
+### Removed
+- **`trimtok/compaction.py`:** `stash_old_tool_results` had no production
+  caller (only its own test), so it was deleted rather than maintained.
+
 ## [5.5.5] - 2026-11-06
 
 CCR store invariants. Five defects, each reproduced against a throwaway store
