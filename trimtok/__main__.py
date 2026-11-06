@@ -119,15 +119,8 @@ def _run_purge(ns: Any) -> int:
 
     hours = float(getattr(ns, "older_than", 0.0) or 0.0)
     max_mb = float(getattr(ns, "max_mb", 0.0) or 0.0)
-    ttl = int(getattr(ns, "ttl_hours", 0) or 0)
 
     before = _ccr.stats()
-    if ttl > 0:
-        try:
-            _ccr.set_ttl_hours(ttl)
-            print(f"CCR TTL set to {ttl}h")
-        except Exception as exc:
-            print(f"Could not set TTL: {exc}")
 
     purged = 0
     if hours > 0:
@@ -186,8 +179,6 @@ def main(argv: list[str] | None = None) -> int:
                          help="Only purge entries older than N hours (default: everything)")
     p_purge.add_argument("--max-mb", type=float, default=0.0,
                          help="After purging, evict oldest entries until the store is under N MB")
-    p_purge.add_argument("--ttl-hours", type=int, default=0,
-                         help="Override the CCR TTL for this store (persisted in its meta table)")
 
     p_ret = sub.add_parser("retrieve", help="Retrieve original content or a targeted section from CCR")
     p_ret.add_argument("ref", help="CCR reference (#c1 or 12-hex digest)")

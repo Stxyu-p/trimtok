@@ -2,6 +2,33 @@
 
 All notable changes to trimtok are documented here.
 
+## [5.5.5] - 2026-11-06
+
+CCR store invariants. Five defects, each reproduced against a throwaway store
+before the fix.
+
+### Fixed
+- **The TTL sweep reissued dead aliases:** it deleted expired rows from SQLite
+  but left them in the RAM LRU, so `put()` kept returning an alias whose row no
+  longer existed and the marker resolved to nothing after a restart.
+- **`put()` could raise `KeyError` on content it already held:** `unpin()` drops
+  the RAM entry but keeps the sha→alias map, and the fast path called
+  `move_to_end` on the missing key. The facade swallowed it, so the payload
+  silently got no reference. The fast path now requires both maps to agree.
+- **The file backend deleted the cache on a read:** `ttl_hours=0` means "no
+  expiry" in the SQLite tier, but the legacy file tier computed
+  `cutoff = now - 0` and unlinked the file during `get()`, `stats()` and
+  `evict()`. All three now skip expiry when `ttl_hours <= 0`.
+- **`stats()` and `evict_to_size()` counted characters, not bytes:**
+  `LENGTH(content)` returns characters for the TEXT rows used by small
+  payloads, so a non-ASCII store reported 140 bytes for 420 real ones and the
+  size cap could not be enforced. Both now use `LENGTH(CAST(content AS BLOB))`.
+
+### Removed
+- **`trimtok purge --ttl-hours`:** it persisted a value into the store's meta
+  table that no read path ever consulted, so it printed success and changed
+  nothing. The retention window is configured by `ccr_ttl_hours`.
+
 ## [5.5.4] - 2026-11-06
 
 ### Fixed

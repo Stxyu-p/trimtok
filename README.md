@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://pypi.org/project/trimtok/"><img src="https://img.shields.io/badge/pypi-v5.5.4-blue?style=flat-square" alt="PyPI" /></a>
+  <a href="https://pypi.org/project/trimtok/"><img src="https://img.shields.io/badge/pypi-v5.5.5-blue?style=flat-square" alt="PyPI" /></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10+-blue?style=flat-square" alt="Python" /></a>
   <a href="#7-ccr-recovery"><img src="https://img.shields.io/badge/storage-SQLite_WAL_+_Zstandard-07405E?style=flat-square" alt="Storage" /></a>
   <a href="#how-it-works"><img src="https://img.shields.io/badge/latency-%3C_2ms_in--process-10b981?style=flat-square" alt="Latency" /></a>
@@ -152,7 +152,7 @@ Tool / Terminal Output
 
 Empirical head-to-head benchmarks measured on identical production workloads:
 
-| Capability / Benchmark | **trimtok v5.5.4** 🌟 | **claw-compactor v7.0** (OpenClaw) | **RTK v1.1.0** (Rust) | **headroom v0.42.0** (Python) | **skim v2.10.0** (Rust) | **sqz v2.1.1** (Rust) | **tokenfold** (Python/Rust) |
+| Capability / Benchmark | **trimtok v5.5.5** 🌟 | **claw-compactor v7.0** (OpenClaw) | **RTK v1.1.0** (Rust) | **headroom v0.42.0** (Python) | **skim v2.10.0** (Rust) | **sqz v2.1.1** (Rust) | **tokenfold** (Python/Rust) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | **Execution Layer** | **In-process hook + CLI** | 14-Stage Pipeline + Node Proxy | Subprocess CLI | Python library / Proxy | Subprocess CLI | Subprocess CLI | Python FFI library |
 | **Uniform JSON (500 rows)** | **55.3% saved** (TOON v2) | **81.9% (lossy sampling)** | 99.6% (truncated) | **61.7% saved** | N/A | ~55% saved | 55.7% saved |
@@ -370,10 +370,9 @@ Recovery storage is bounded explicitly rather than growing until someone notices
 ```bash
 trimtok purge --older-than 24     # Remove entries older than 24 hours
 trimtok purge --max-mb 50         # Evict oldest entries until the store is under 50 MB
-trimtok purge --ttl-hours 72      # Persist a 72-hour retention window
 ```
 
-`--max-mb` alone evicts by age without wiping the store first, and the TTL is stored in the database `meta` table so it survives restarts. Defaults: 1,000 entries, 50 MB, 24 hours.
+`--max-mb` alone evicts by age without wiping the store first. Defaults: 1,000 entries, 50 MB, 24 hours; the retention window is configured with `ccr_ttl_hours`.
 
 <a id="14-fix-accuracy"></a>
 #### 14. Fix-Accuracy Verification
@@ -472,7 +471,7 @@ plugins:
 - **`/trimtok usage`**: Shows live telemetry breakdown across terminal and tool hooks (events, folds, chars saved, top gates).
 - **`/trimtok gain`**: Detailed savings breakdown by shape, tool, and command — identifies bottlenecks.
 - **`/trimtok discover`**: Scans telemetry → finds low-savings shapes/tools → suggests targeted filters.
-- **`/trimtok purge`**: Purges expired cache entries and vacuums the SQLite WAL database. Accepts `--older-than <hours>`, `--max-mb <size>` and `--ttl-hours <hours>`.
+- **`/trimtok purge`**: Purges expired cache entries and vacuums the SQLite WAL database. Accepts `--older-than <hours>` and `--max-mb <size>`.
 - **`/trimtok recall <#ref>`**: Retrieves original output by CCR reference (alias for `retrieve`).
 
 <a id="standalone-cli-wrapper"></a>
@@ -587,10 +586,10 @@ python eval/steps.py            # raw -> hook -> intent retrieval, per payload
 python eval/fix_accuracy.py     # Can an agent still fix the bug? (LOCATE, no model needed)
 python eval/decision_eval.py    # Decision-equivalence: action still visible after compression
 python eval/probe_ceiling.py    # Are folded lines announced and ref-reachable?
-pytest tests/                   # 152 tests (pip install -e ".[dev]" first)
+pytest tests/                   # 156 tests (pip install -e ".[dev]" first)
 ```
 
-The honesty audit is the load-bearing check: it recomputes the claimed reduction from the recovery store and reports any character that was removed without a resolvable reference. Run `eval_real.py` immediately before `audit_honesty.py` against a fresh store — pointing both at the same empty `TRIMTOK_DATA_DIR` — so the audit scores exactly the corpus the first script produced. Current state — **73.19% claimed, 73.19% proven, 0 unproven characters**, 0 gate failures, 0 silent line loss, 0 unannounced faults, 152/152 tests passing.
+The honesty audit is the load-bearing check: it recomputes the claimed reduction from the recovery store and reports any character that was removed without a resolvable reference. Run `eval_real.py` immediately before `audit_honesty.py` against a fresh store — pointing both at the same empty `TRIMTOK_DATA_DIR` — so the audit scores exactly the corpus the first script produced. Current state — **73.19% claimed, 73.19% proven, 0 unproven characters**, 0 gate failures, 0 silent line loss, 0 unannounced faults, 156/156 tests passing.
 
 > **Storage note:** the FTS5 index keeps a plaintext copy of each payload so `snippet()` can highlight matches, so on-disk usage is roughly `compressed payloads + plaintext index`. Both are counted by `trimtok status` (`bytes`, `payload_bytes`, `fts_bytes`) and both are included in the `ccr_max_bytes` ceiling, so the cap is enforced against the real footprint rather than the compressed half of it.
 

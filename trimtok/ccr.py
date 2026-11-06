@@ -257,7 +257,10 @@ class FastCCRStore:
             return ""
         sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
         with self._lock:
-            if sha in self._sha_alias:
+            # Both maps must agree: unpin()/resolve_hash() can drop the RAM entry
+            # while keeping the alias, and move_to_end would then raise KeyError
+            # out of put() and lose the payload.
+            if sha in self._sha_alias and sha in self._mem:
                 alias = self._sha_alias[sha]
                 self._mem.move_to_end(sha)
                 return alias
@@ -305,11 +308,19 @@ class FastCCRStore:
                     expire_before = now - (ttl_hours * 3600.0)
                     try:
                         for row in cur.execute(
-                            "SELECT alias FROM chunks WHERE created_at < ? AND (pinned IS NULL OR pinned = 0)",
+                            "SELECT sha, alias FROM chunks WHERE created_at < ? AND (pinned IS NULL OR pinned = 0)",
                             (expire_before,),
                         ).fetchall():
-                            if row and row[0]:
-                                cur.execute("DELETE FROM chunks_fts WHERE alias = ?", (row[0],))
+                            if not row or not row[1]:
+                                continue
+                            cur.execute("DELETE FROM chunks_fts WHERE alias = ?", (row[1],))
+                            # Drop the RAM entries too, or put() keeps handing out
+                            # an alias whose row no longer exists and the marker
+                            # dies at the next process start.
+                            if row[0]:
+                                self._mem.pop(row[0], None)
+                                self._sha_alias.pop(row[0], None)
+                            self._alias_mem.pop(row[1], None)
                     except Exception:
                         pass
                     cur.execute("DELETE FROM chunks WHERE created_at < ? AND (pinned IS NULL OR pinned = 0)", (expire_before,))
@@ -414,14 +425,14 @@ class FastCCRStore:
             if self._writable and self._conn is not None:
                 try:
                     cur = self._conn.cursor()
-                    row = cur.execute("SELECT COUNT(*), SUM(LENGTH(content)) FROM chunks").fetchone()
+                    row = cur.execute("SELECT COUNT(*), SUM(LENGTH(CAST(content AS BLOB))) FROM chunks").fetchone()
                     count = row[0] or 0
                     payload_bytes = row[1] or 0
                     # The FTS5 table keeps a plaintext copy for snippet(); it is
                     # part of the on-disk footprint and must be reported, not hidden.
                     try:
                         fts_bytes = cur.execute(
-                            "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM chunks_fts"
+                            "SELECT COALESCE(SUM(LENGTH(CAST(content AS BLOB))), 0) FROM chunks_fts"
                         ).fetchone()[0] or 0
                     except Exception:
                         fts_bytes = 0
@@ -450,17 +461,17 @@ class FastCCRStore:
                 return 0
             try:
                 cur = self._conn.cursor()
-                row = cur.execute("SELECT COALESCE(SUM(LENGTH(content)), 0) FROM chunks").fetchone()
+                row = cur.execute("SELECT COALESCE(SUM(LENGTH(CAST(content AS BLOB))), 0) FROM chunks").fetchone()
                 total = int(row[0] or 0)
                 try:
-                    fts_lens = dict(cur.execute("SELECT alias, LENGTH(content) FROM chunks_fts").fetchall())
+                    fts_lens = dict(cur.execute("SELECT alias, LENGTH(CAST(content AS BLOB)) FROM chunks_fts").fetchall())
                 except Exception:
                     fts_lens = {}
                 total += sum(fts_lens.values())
                 if total <= max_bytes:
                     return 0
                 for sha, alias, size in cur.execute(
-                    "SELECT sha, alias, LENGTH(content) FROM chunks ORDER BY created_at ASC"
+                    "SELECT sha, alias, LENGTH(CAST(content AS BLOB)) FROM chunks ORDER BY created_at ASC"
                 ).fetchall():
                     if total <= max_bytes:
                         break
@@ -698,7 +709,9 @@ def _file_get(digest: str, base: Path, ttl_hours: int = 24) -> str | None:
             match = matches[0]
         cutoff = time.time() - max(0, ttl_hours) * 3600
         st = match.stat()
-        if st.st_mtime < cutoff:
+        # ttl_hours=0 means "no expiry" here, matching the SQLite tier; it must
+        # not turn a read into a delete.
+        if ttl_hours > 0 and st.st_mtime < cutoff:
             match.unlink(missing_ok=True)
             with _LOCK:
                 _FILE_MEM_LRU.pop((base, match.stem), None)
@@ -726,7 +739,7 @@ def _file_evict(base: Path, max_entries: int, max_bytes: int, ttl_hours: int) ->
         for p in base.glob("*.txt"):
             try:
                 st = p.stat()
-                if st.st_mtime < cutoff:
+                if ttl_hours > 0 and st.st_mtime < cutoff:
                     p.unlink(missing_ok=True)
                 else:
                     files.append((p, st))
@@ -754,7 +767,7 @@ def _file_stats(base: Path, ttl_hours: int = 24) -> dict[str, int]:
         for p in base.glob("*.txt"):
             try:
                 st = p.stat()
-                if st.st_mtime < cutoff:
+                if ttl_hours > 0 and st.st_mtime < cutoff:
                     p.unlink(missing_ok=True)
                 else:
                     files.append((p, st))

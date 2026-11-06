@@ -977,7 +977,7 @@ wheels = [
 
 [[package]]
 name = "trimtok"
-version = "5.5.4"
+version = "5.5.5"
 source = { editable = "." }
 dependencies = [
     { name = "msgspec" },
