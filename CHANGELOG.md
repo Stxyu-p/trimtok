@@ -2,6 +2,30 @@
 
 All notable changes to trimtok are documented here.
 
+## [5.6.1] - 2026-11-06
+
+### Changed
+- **`trimtok map` now names files, not directories.** A directory-only line
+  (`trimtok/: default_dir, compress_agent_payload, ...`) could not tell the
+  reader which file defines a symbol, so every lookup cost an extra search
+  turn. Measured against Aider's repo map on this repo: Aider emitted 9 file
+  headers and 54 symbol lines at 1,024 tokens; trimtok emitted 0 file headers.
+  Now one line per file, ranked by the existing `--focus` score, 34 files in
+  1,999 chars.
+
+### Fixed
+- **The diff lane dropped changed lines.** `_budget_for("git diff", "diff")`
+  returns a 200-line window, and `_window` sampled the middle of any larger
+  diff: a real 31 KB patch shipped 198 of 453 changed lines while reporting
+  `gate=ok`. Every `+`/`-`/`@@` line is now forced and the window widens to fit
+  them, so only context is dropped. Measured on the same patch: 0% saved
+  before (policy blocked the lane), **18.8% saved with 453/453 changed lines
+  kept** after.
+- **`policy.classify` blocked every terminal diff.** `patch_payload` fired on
+  any text matching a diff header, including `git diff` output, which is a
+  report rather than an edit instruction. It now requires a tool name, so tool
+  payloads stay byte-exact and terminal diffs reach the (now safe) diff lane.
+
 ## [5.6.0] - 2026-11-06
 
 ### Added

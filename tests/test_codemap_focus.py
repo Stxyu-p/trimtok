@@ -13,7 +13,7 @@ def test_codemap_focus_prioritizes_related_imports(tmp_path: Path):
 
     # When focusing on service.py, auth and db symbols should be prioritized
     result = build_codebase_map(root=tmp_path, budget_chars=350, focus_file="src/service.py")
-    assert "src/: " in result
+    assert "src/service.py: " in result
     assert "run_service" in result
     assert "verify" in result
     assert "query" in result
@@ -35,7 +35,7 @@ def test_codemap_focus_budget_omits_unrelated(tmp_path: Path):
 
     # Tight budget with focus on core/runner.py
     result = build_codebase_map(root=tmp_path, budget_chars=120, focus_file="core/runner.py")
-    assert "core/: " in result
+    assert "core/runner.py: " in result
     assert "execute" in result
     assert "add" in result
     # Legacy should be truncated or omitted under tight budget

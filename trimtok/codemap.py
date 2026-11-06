@@ -11,7 +11,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Set
+from typing import Dict, Set
 
 SRC_EXTS = {
     ".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx",
@@ -266,46 +266,39 @@ def build_codebase_map(
     sorted_dir_keys = sorted(dirs.keys(), key=lambda d: (dir_ranks.get(d, 99), d))
     for dir_name in sorted_dir_keys:
         per_file_symbols = dirs[dir_name]
-        dir_symbols: list[str] = []
-        seen: Set[str] = set()
         for f, file_syms in per_file_symbols:
-            # The focus file keeps a wider slice of its own API; everything
-            # else collapses to one symbol per file once a directory is busy.
+            # The focus file keeps a wider slice of its own API.
             if focus_clean and (f == focus_clean or f.endswith("/" + focus_clean)):
                 limit = 8
             else:
-                limit = 1 if len(per_file_symbols) > 8 else 3
-            for s in file_syms[:limit]:
-                if s not in seen:
-                    seen.add(s)
-                    dir_symbols.append(s)
+                limit = 3
+            syms = file_syms[:limit]
+            if not syms:
+                continue
 
-        if not dir_symbols:
-            continue
+            # One line per file: a directory-only line cannot tell the reader
+            # which file defines a symbol, which costs an extra search turn.
+            prefix = f"{f}: "
+            remaining_budget = budget_chars - (used_len + len(prefix) + 20)
+            if remaining_budget <= 0 and lines:
+                skipped_count += 1
+                continue
 
-        dir_prefix = f"{dir_name}/: " if dir_name != "." else "./: "
-        remaining_budget = budget_chars - (used_len + len(dir_prefix) + 40)
-        if remaining_budget <= 0 and lines:
-            skipped_count += 1
-            continue
+            while len(", ".join(syms)) > max(10, remaining_budget) and len(syms) > 1:
+                syms.pop()
 
-        # Truncate symbols to fit line in remaining budget if needed
-        while len(", ".join(dir_symbols)) > max(20, remaining_budget) and len(dir_symbols) > 1:
-            dir_symbols.pop()
+            line = f"{prefix}{', '.join(syms[:30])}"
+            if used_len + len(line) + 1 > budget_chars and lines:
+                skipped_count += 1
+                continue
 
-        sym_str = ", ".join(dir_symbols[:30])
-        line = f"{dir_prefix}{sym_str}"
-        if used_len + len(line) + 1 > budget_chars and lines:
-            skipped_count += 1
-            continue
-
-        lines.append(line)
-        used_len += len(line) + 1
+            lines.append(line)
+            used_len += len(line) + 1
 
     if not lines:
         return ""
 
-    head = f"Codebase map ({len(lines)} directories"
+    head = f"Codebase map ({len(lines)} files"
     if skipped_count > 0:
         head += f", {skipped_count} omitted for budget"
     head += "):"

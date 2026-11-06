@@ -110,7 +110,10 @@ def classify(
 
     if tool in _EDIT_TOOLS:
         return Policy(verbatim=True, reason="edit_tool", level="off")
-    if _DIFF_HEAD_RE.search(text[:2048]):
+    # A diff from a tool payload *is* the edit instruction. A diff from a terminal
+    # command (`git diff`) is a report: the pruner keeps every changed line, so it
+    # can be folded safely. Gate on `tool` so both cases stay distinguishable.
+    if tool and _DIFF_HEAD_RE.search(text[:2048]):
         return Policy(verbatim=True, reason="patch_payload", level="off")
 
     if allow_secret_scan:

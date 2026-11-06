@@ -62,7 +62,10 @@ class TestContentPolicy(unittest.TestCase):
     def test_patch_payload_stays_verbatim(self):
         diff = "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-a\n+b\n"
         self.assertEqual(classify(diff, tool="patch").reason, "edit_tool")
-        self.assertEqual(classify(diff).reason, "patch_payload")
+        self.assertEqual(classify(diff, tool="read_file").reason, "patch_payload")
+        # A git diff arriving as terminal output is a report, not an edit
+        # instruction: the diff lane keeps every + and - line, so it may fold.
+        self.assertTrue(classify(diff).compress)
 
     def test_plain_output_is_compressible(self):
         pol = classify("INFO request 200 OK\n" * 50)

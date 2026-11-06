@@ -3,13 +3,13 @@
   "label": "run",
   "payloads": 32,
   "before_chars": 1135441,
-  "after_chars": 304464,
-  "saved_chars": 830977,
-  "reduction_pct": 73.19,
+  "after_chars": 297963,
+  "saved_chars": 837478,
+  "reduction_pct": 73.76,
   "gate_fail_payloads": 0,
-  "touched": 21,
-  "ms_total": 562.5,
-  "ms_p95": 51.9
+  "touched": 22,
+  "ms_total": 907.4,
+  "ms_p95": 75.2
  },
  "rows": [
   {
@@ -25,7 +25,7 @@
    "shape": "",
    "refs": 2,
    "missing": 569,
-   "ms": 40.3,
+   "ms": 75.2,
    "fails": []
   },
   {
@@ -41,7 +41,7 @@
    "shape": "",
    "refs": 2,
    "missing": 437,
-   "ms": 15.0,
+   "ms": 31.0,
    "fails": []
   },
   {
@@ -57,7 +57,7 @@
    "shape": "",
    "refs": 2,
    "missing": 146,
-   "ms": 30.6,
+   "ms": 6.9,
    "fails": []
   },
   {
@@ -73,7 +73,7 @@
    "shape": "",
    "refs": 2,
    "missing": 334,
-   "ms": 12.7,
+   "ms": 31.8,
    "fails": []
   },
   {
@@ -89,7 +89,7 @@
    "shape": "",
    "refs": 2,
    "missing": 896,
-   "ms": 37.5,
+   "ms": 96.1,
    "fails": []
   },
   {
@@ -97,15 +97,15 @@
    "kind": "read_file",
    "tool": "read_file",
    "before": 12673,
-   "after": 12673,
-   "saved": 0,
-   "pct": 0.0,
-   "gate": "passthrough_sentinel",
-   "reason": "sentinel",
+   "after": 6172,
+   "saved": 6501,
+   "pct": 51.3,
+   "gate": "ok",
+   "reason": "",
    "shape": "",
-   "refs": 0,
-   "missing": 0,
-   "ms": 0.0,
+   "refs": 2,
+   "missing": 130,
+   "ms": 10.1,
    "fails": []
   },
   {
@@ -121,7 +121,7 @@
    "shape": "",
    "refs": 2,
    "missing": 458,
-   "ms": 14.0,
+   "ms": 26.4,
    "fails": []
   },
   {
@@ -137,7 +137,7 @@
    "shape": "",
    "refs": 2,
    "missing": 53,
-   "ms": 33.4,
+   "ms": 4.7,
    "fails": []
   },
   {
@@ -153,7 +153,7 @@
    "shape": "",
    "refs": 2,
    "missing": 80,
-   "ms": 7.8,
+   "ms": 21.3,
    "fails": []
   },
   {
@@ -169,7 +169,7 @@
    "shape": "",
    "refs": 2,
    "missing": 33,
-   "ms": 2.5,
+   "ms": 7.0,
    "fails": []
   },
   {
@@ -185,7 +185,7 @@
    "shape": "",
    "refs": 2,
    "missing": 152,
-   "ms": 3.2,
+   "ms": 7.0,
    "fails": []
   },
   {
@@ -201,7 +201,7 @@
    "shape": "",
    "refs": 2,
    "missing": 194,
-   "ms": 53.9,
+   "ms": 10.2,
    "fails": []
   },
   {
@@ -217,7 +217,7 @@
    "shape": "",
    "refs": 0,
    "missing": 0,
-   "ms": 3.3,
+   "ms": 5.8,
    "fails": []
   },
   {
@@ -233,7 +233,7 @@
    "shape": "",
    "refs": 2,
    "missing": 298,
-   "ms": 9.9,
+   "ms": 27.6,
    "fails": []
   },
   {
@@ -249,7 +249,7 @@
    "shape": "",
    "refs": 0,
    "missing": 0,
-   "ms": 0.1,
+   "ms": 0.3,
    "fails": []
   },
   {
@@ -265,7 +265,7 @@
    "shape": "",
    "refs": 0,
    "missing": 0,
-   "ms": 0.2,
+   "ms": 0.4,
    "fails": []
   },
   {
@@ -281,7 +281,7 @@
    "shape": "",
    "refs": 0,
    "missing": 0,
-   "ms": 0.1,
+   "ms": 0.2,
    "fails": []
   },
   {
@@ -297,7 +297,7 @@
    "shape": "",
    "refs": 1,
    "missing": 129,
-   "ms": 8.7,
+   "ms": 32.4,
    "fails": []
   },
   {
@@ -313,7 +313,7 @@
    "shape": "",
    "refs": 1,
    "missing": 1801,
-   "ms": 124.4,
+   "ms": 312.6,
    "fails": []
   },
   {
@@ -329,7 +329,7 @@
    "shape": "",
    "refs": 1,
    "missing": 772,
-   "ms": 45.2,
+   "ms": 58.1,
    "fails": []
   },
   {
@@ -345,7 +345,7 @@
    "shape": "",
    "refs": 1,
    "missing": 774,
-   "ms": 38.3,
+   "ms": 55.5,
    "fails": []
   },
   {
@@ -409,7 +409,7 @@
    "shape": "",
    "refs": 0,
    "missing": 0,
-   "ms": 2.1,
+   "ms": 2.0,
    "fails": []
   },
   {
@@ -457,7 +457,7 @@
    "shape": "",
    "refs": 1,
    "missing": 73,
-   "ms": 1.6,
+   "ms": 2.0,
    "fails": []
   },
   {
@@ -473,7 +473,7 @@
    "shape": "",
    "refs": 0,
    "missing": 0,
-   "ms": 3.1,
+   "ms": 2.2,
    "fails": []
   },
   {
@@ -489,7 +489,7 @@
    "shape": "",
    "refs": 0,
    "missing": 0,
-   "ms": 0.6,
+   "ms": 0.4,
    "fails": []
   },
   {
@@ -505,7 +505,7 @@
    "shape": "",
    "refs": 0,
    "missing": 0,
-   "ms": 12.9,
+   "ms": 11.3,
    "fails": []
   },
   {
@@ -521,7 +521,7 @@
    "shape": "",
    "refs": 2,
    "missing": 389,
-   "ms": 51.9,
+   "ms": 59.7,
    "fails": []
   }
  ]

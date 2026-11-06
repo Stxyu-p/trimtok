@@ -21,7 +21,7 @@ except Exception:
     _Levenshtein = None
     _FUZZY_AVAILABLE = False
 
-VERSION = "5.6.0"
+VERSION = "5.6.1"
 
 try:
     from . import delta_engine
@@ -499,6 +499,13 @@ def compress_terminal(
         folded, hidden = _fold_repeats(flagged_all, deadline)
         folded, t_hidden, _t_groups = _fold_templates(folded, deadline)
         hidden += t_hidden
+        if kind == "diff":
+            # A dropped + or - line is a silently wrong patch. Force every changed
+            # line and widen the budget so the window cannot sample them away;
+            # only context lines may be dropped (RTK keeps 453/453 the same way).
+            folded = [(ln, True) if ln.startswith(("+", "-", "@")) else (ln, imp)
+                      for ln, imp in folded]
+            budget = max(budget, sum(1 for _, imp in folded if imp) + _HEAD_KEEP + _TAIL_KEEP)
         kept = [
             (ln, imp) for ln, imp in folded
             if imp

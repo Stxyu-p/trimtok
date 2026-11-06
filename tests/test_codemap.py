@@ -14,7 +14,7 @@ def test_codemap_extracts_symbols_within_budget(tmp_path: Path):
     (test_dir / "test_app.py").write_text("def test_run():\n    pass\n", encoding="utf-8")
 
     result = build_codebase_map(root=tmp_path, budget_chars=500)
-    assert "src/: " in result
+    assert "src/app.py: " in result
     assert "Server" in result
     assert "run" in result
     assert "helper" in result
@@ -30,4 +30,4 @@ def test_codemap_budget_truncation(tmp_path: Path):
     # Small budget
     result = build_codebase_map(root=tmp_path, budget_chars=120)
     assert len(result) <= 120
-    assert "pkg/: " in result
+    assert "pkg/mod_0.py: " in result
