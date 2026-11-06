@@ -2,6 +2,16 @@
 
 All notable changes to trimtok are documented here.
 
+## [5.5.4] - 2026-11-06
+
+### Fixed
+- **The auto-map hook described the wrong directory:** `_pre_llm_call` mapped
+  `Path.cwd()`, which inside a host application is that application's own home,
+  so every session was handed a 1.5 KB map of its uv cache. The hook now walks
+  up to the nearest project marker (`.git`, `pyproject.toml`, `package.json`,
+  `go.mod`, …) and injects nothing when there is none. `SKIP_DIRS` also learned
+  `site-packages`, `.cache`, `archive-v0`, `bower_components` and `.tox`.
+
 ## [5.5.3] - 2026-11-06
 
 Bug-hunt pass. Eight defects, each reproduced before it was fixed and pinned by

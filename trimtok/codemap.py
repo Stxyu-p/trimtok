@@ -21,7 +21,8 @@ SRC_EXTS = {
 SKIP_DIRS = {
     "node_modules", ".git", "dist", "build", "out", "vendor",
     "venv", ".venv", "__pycache__", "coverage", ".next", "target",
-    "migrations", "versions", "fixtures", "tests", "__tests__", "spec"
+    "migrations", "versions", "fixtures", "tests", "__tests__", "spec",
+    "site-packages", ".cache", "archive-v0", "bower_components", ".tox",
 }
 
 SHARED_KEYWORDS = re.compile(

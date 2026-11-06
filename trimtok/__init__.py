@@ -1265,6 +1265,28 @@ def compress_agent_payload(
         return payload, {"gate": "passthrough_exception"}
 
 
+_PROJECT_MARKERS = (
+    ".git", "pyproject.toml", "package.json", "go.mod", "Cargo.toml",
+    "setup.py", "setup.cfg", "pom.xml", "build.gradle", "Gemfile", "composer.json",
+)
+
+
+def _project_root(start: Path | None = None) -> Path | None:
+    """Nearest directory that looks like a project, or None.
+
+    The hook used to map whatever `Path.cwd()` happened to be. Inside a host
+    app that is the app's own home (e.g. ~/AppData/Local/hermes), so every
+    session was handed a 1.5 KB map of the uv cache instead of the repo.
+    """
+    root = (start or Path.cwd()).resolve()
+    for candidate in (root, *root.parents):
+        if any((candidate / marker).exists() for marker in _PROJECT_MARKERS):
+            return candidate
+        if candidate == candidate.parent:
+            break
+    return None
+
+
 def _pre_llm_call(session_id: str = "", conversation_history: Any = None, **_: Any) -> dict[str, str] | None:
     if os.environ.get("TRIMTOK_MAP", "1") == "0":
         return None
@@ -1279,7 +1301,10 @@ def _pre_llm_call(session_id: str = "", conversation_history: Any = None, **_: A
     except ImportError:
         from codemap import build_codebase_map  # type: ignore
     try:
-        cmap = build_codebase_map(budget_chars=1500)
+        root = _project_root()
+        if root is None:
+            return None
+        cmap = build_codebase_map(root=root, budget_chars=1500)
         if cmap:
             return {"context": cmap}
     except Exception:
