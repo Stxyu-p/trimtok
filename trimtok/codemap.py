@@ -124,10 +124,45 @@ def _extract_names(text: str, ext: str) -> list[str]:
     return names
 
 
+def _extract_import_stems(text: str, ext: str) -> set[str]:
+    """Extract imported module names / stems from file content without external dependencies."""
+    stems: set[str] = set()
+    lang = LANG_MAP.get(ext)
+    if lang == "py":
+        for m in re.finditer(r"(?:from\s+[\.]*([a-zA-Z0-9_\.]+)|import\s+([a-zA-Z0-9_\.,\s]+))", text):
+            matched = m.group(1) or m.group(2)
+            if matched:
+                for chunk in re.split(r"[,\s]+", matched):
+                    for sub in chunk.split("."):
+                        clean = sub.strip().lower()
+                        if clean and not clean.startswith("_"):
+                            stems.add(clean)
+    elif lang == "js":
+        for m in re.finditer(r"(?:from|require\()\s*['\"]([^'\"]+)['\"]", text):
+            path_str = m.group(1).rstrip("/")
+            for part in path_str.split("/"):
+                sub = os.path.splitext(part)[0].strip().lower()
+                if sub and sub not in (".", ".."):
+                    stems.add(sub)
+    elif lang == "go":
+        for m in re.finditer(r"['\"]([^'\"]+)['\"]", text):
+            for part in m.group(1).rstrip("/").split("/"):
+                if part:
+                    stems.add(part.lower())
+    elif lang == "rs":
+        for m in re.finditer(r"use\s+([a-zA-Z0-9_:]+)", text):
+            for part in m.group(1).split("::"):
+                part_clean = part.strip().lower()
+                if part_clean:
+                    stems.add(part_clean)
+    return stems
+
+
 def build_codebase_map(
     root: str | Path | None = None,
     budget_chars: int = 2000,
     max_files: int = 4000,
+    focus_file: str | None = None,
 ) -> str:
     """Build a compact, single-line-per-directory summary of code symbols."""
     target_root = Path(root) if root else Path.cwd()
@@ -154,21 +189,52 @@ def build_codebase_map(
             continue
         valid_files.append(f)
 
-    # Sort files prioritizing shared/common modules
-    def sort_key(f: str) -> tuple[int, str]:
-        is_shared = 0 if SHARED_KEYWORDS.search(f) else 1
-        return (is_shared, f)
+    focus_clean = ""
+    focus_stem = ""
+    focus_dir = ""
+    focus_imports: set[str] = set()
+    if focus_file:
+        fc = str(focus_file).replace("\\", "/").strip()
+        if fc.startswith("./"):
+            fc = fc[2:]
+        focus_clean = fc
+        focus_stem = Path(fc).stem.lower()
+        focus_dir = os.path.dirname(fc)
+        fp = target_root / fc
+        if fp.is_file():
+            try:
+                with open(fp, "r", encoding="utf-8", errors="ignore") as fh:
+                    fcontent = fh.read(65536)
+                focus_imports = _extract_import_stems(fcontent, os.path.splitext(fc)[1].lower())
+            except Exception:
+                pass
 
-    valid_files.sort(key=sort_key)
+    def file_relevance(f: str) -> tuple[int, int, str]:
+        if not focus_clean:
+            is_shared = 0 if SHARED_KEYWORDS.search(f) else 1
+            return (is_shared, 0, f)
+        f_norm = f.replace("\\", "/").strip()
+        f_stem = Path(f_norm).stem.lower()
+        if f_norm == focus_clean or f_norm.endswith("/" + focus_clean):
+            return (0, 0, f)
+        f_parts = {p.lower() for p in Path(f_norm).parts}
+        if f_stem in focus_imports or bool(f_parts & focus_imports):
+            return (1, 0, f)
+        if focus_dir and os.path.dirname(f_norm) == focus_dir:
+            return (2, 0, f)
+        is_shared = 0 if SHARED_KEYWORDS.search(f) else 1
+        return (3, is_shared, f)
+
+    valid_files.sort(key=file_relevance)
     valid_files = valid_files[:max_files]
 
     dirs: Dict[str, list[list[str]]] = {}
+    dir_ranks: Dict[str, int] = {}
     for f in valid_files:
         full_path = target_root / f
         try:
             if not full_path.is_file():
                 continue
-            # Read first 64KB
             with open(full_path, "r", encoding="utf-8", errors="ignore") as fh:
                 content = fh.read(65536)
         except Exception:
@@ -182,13 +248,17 @@ def build_codebase_map(
         dir_name = os.path.dirname(f)
         dir_key = dir_name if dir_name else "."
         dirs.setdefault(dir_key, []).append(names)
+        rank = file_relevance(f)[0]
+        if dir_key not in dir_ranks or rank < dir_ranks[dir_key]:
+            dir_ranks[dir_key] = rank
 
     lines: list[str] = []
     used_len = 0
     skipped_count = 0
 
-    # Format output lines
-    for dir_name, per_file_symbols in dirs.items():
+    sorted_dir_keys = sorted(dirs.keys(), key=lambda d: (dir_ranks.get(d, 99), d))
+    for dir_name in sorted_dir_keys:
+        per_file_symbols = dirs[dir_name]
         dir_symbols: list[str] = []
         seen: Set[str] = set()
         for file_syms in per_file_symbols:

@@ -221,6 +221,7 @@ def main(argv: list[str] | None = None) -> int:
     p_map.add_argument("path", nargs="?", default=".", help="Directory to scan (default: current)")
     p_map.add_argument("--budget", type=int, default=2000, help="Max character budget (default: 2000)")
     p_map.add_argument("--max-files", type=int, default=4000, help="Max files to scan (default: 4000)")
+    p_map.add_argument("--focus", help="Focus file path to prioritize its symbols and direct dependencies")
 
     p_mcp_proxy = sub.add_parser("mcp-proxy", help="Run bounded stdio MCP proxy filtering tools/list and injecting instructions")
     p_mcp_proxy.add_argument("--allow", help="Comma-separated allowlist of tool names")
@@ -353,7 +354,7 @@ def main(argv: list[str] | None = None) -> int:
             from .codemap import build_codebase_map
         except ImportError:
             from codemap import build_codebase_map  # type: ignore
-        out = build_codebase_map(root=ns.path, budget_chars=ns.budget, max_files=ns.max_files)
+        out = build_codebase_map(root=ns.path, budget_chars=ns.budget, max_files=ns.max_files, focus_file=getattr(ns, "focus", None))
         if out:
             sys.stdout.write(out + "\n")
         return 0
