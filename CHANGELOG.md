@@ -2,6 +2,16 @@
 
 All notable changes to trimtok are documented here.
 
+## [5.6.2] - 2026-11-06
+
+### Fixed
+- **A 644 KB single-line JSON cost 465 ms of regex scanning for nothing.**
+  `_fold_intra_templates` splits on newlines, so a one-line JSON document is a
+  single "line"; `is_important()` then ran 30+ regexes over the whole blob even
+  though one line can never join a >=3 template group. Lines over 4 KB now skip
+  the scan. `compress_tool_result` on a 645 KB telemetry array: **956 ms -> 299 ms**
+  (3.2x), same output, same 64.2%.
+
 ## [5.6.1] - 2026-11-06
 
 ### Changed

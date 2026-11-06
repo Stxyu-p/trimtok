@@ -348,6 +348,9 @@ def _fold_intra_repeats(text: str, deadline: Any | None = None) -> tuple[str, in
     return "\n".join(out), saved
 
 
+_MAX_TEMPLATE_LINE = 4096
+
+
 def _intra_template_key(line: str) -> str:
     norm = line.strip()
     if len(norm) < 20:
@@ -373,6 +376,10 @@ def _fold_intra_templates(
             deadline.check()
         if (
             not line.strip()
+            # A 644KB single-line JSON is data, not a log line: it can never join
+            # a >=3 template group, and is_important() would run 30+ regexes over
+            # the whole blob (465ms of a 1.2s call).
+            or len(line) > _MAX_TEMPLATE_LINE
             or line.startswith("[tt:")
             or line.startswith(_KEEP_PREFIX)
             or is_important(line)
