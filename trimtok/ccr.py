@@ -203,17 +203,40 @@ class FastCCRStore:
 
     @staticmethod
     def _backfill_fts(cur: sqlite3.Cursor) -> None:
-        """Index chunks captured before the FTS table existed (one-time, cheap when empty)."""
+        """Index chunks written before the FTS table existed, once per database."""
         try:
-            if cur.execute("SELECT 1 FROM chunks_fts LIMIT 1").fetchone():
+            done = cur.execute("SELECT value FROM meta WHERE key='fts_synced'").fetchone()
+            if done and str(done[0]) == "1":
                 return
-            rows = cur.execute("SELECT alias, content FROM chunks").fetchall()
-            for alias, blob in rows:
+            indexed = {r[0] for r in cur.execute("SELECT alias FROM chunks_fts").fetchall()}
+            missing = [
+                (alias, blob)
+                for alias, blob in cur.execute("SELECT alias, content FROM chunks").fetchall()
+                if alias and alias not in indexed
+            ]
+            if not missing:
+                cur.execute(
+                    "INSERT INTO meta(key, value) VALUES('fts_synced', '1') "
+                    "ON CONFLICT(key) DO UPDATE SET value='1'"
+                )
+                return
+            # One transaction: per-statement autocommit would re-wait the busy
+            # timeout on every row while another process holds the write lock.
+            cur.execute("BEGIN IMMEDIATE")
+            for alias, blob in missing:
                 text = _decompress_payload(blob)
-                if alias and text:
+                if text:
                     cur.execute("INSERT INTO chunks_fts (alias, content) VALUES (?, ?)", (alias, text))
+            cur.execute(
+                "INSERT INTO meta(key, value) VALUES('fts_synced', '1') "
+                "ON CONFLICT(key) DO UPDATE SET value='1'"
+            )
+            cur.execute("COMMIT")
         except Exception:
-            pass
+            try:
+                cur.execute("ROLLBACK")
+            except Exception:
+                pass
 
     def close(self) -> None:
         with self._lock:

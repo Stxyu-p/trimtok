@@ -2,6 +2,14 @@
 
 All notable changes to trimtok are documented here.
 
+## [5.5.2] - 2026-11-06
+
+### Fixed
+- **Backfill could stall the store open:** the one-time index backfill ran each
+  insert in autocommit, so a store held by another process re-waited the busy
+  timeout per row (minutes for a few hundred chunks). It now runs in a single
+  transaction, records `fts_synced` in `meta`, and skips entirely once done.
+
 ## [5.5.1] - 2026-11-06
 
 Correctness pass over 5.5.0. The search feature shipped unreachable, blind to
@@ -16,7 +24,8 @@ fix is reverted.
   raw argument.
 - **Existing payloads were invisible to search:** `chunks_fts` was created empty
   and never populated for stores written before 5.5.0. The store now backfills
-  the index once on open when it is empty.
+  every missing alias once per database, in a single transaction, tracked by a
+  `fts_synced` meta flag.
 - **Non-Latin queries silently returned nothing:** the sanitizer kept only
   `[A-Za-z0-9_\u0E00-\u0E7F]`, dropping CJK, Cyrillic, Greek and accented
   Latin. Tokens are now split on whitespace and quoted, letting FTS5's

@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://pypi.org/project/trimtok/"><img src="https://img.shields.io/badge/pypi-v5.5.1-blue?style=flat-square" alt="PyPI" /></a>
+  <a href="https://pypi.org/project/trimtok/"><img src="https://img.shields.io/badge/pypi-v5.5.2-blue?style=flat-square" alt="PyPI" /></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10+-blue?style=flat-square" alt="Python" /></a>
   <a href="#7-ccr-recovery"><img src="https://img.shields.io/badge/storage-SQLite_WAL_+_Zstandard-07405E?style=flat-square" alt="Storage" /></a>
   <a href="#how-it-works"><img src="https://img.shields.io/badge/latency-%3C_2ms_in--process-10b981?style=flat-square" alt="Latency" /></a>
@@ -152,7 +152,7 @@ Tool / Terminal Output
 
 Empirical head-to-head benchmarks measured on identical production workloads:
 
-| Capability / Benchmark | **trimtok v5.5.1** 🌟 | **claw-compactor v7.0** (OpenClaw) | **RTK v1.1.0** (Rust) | **headroom v0.42.0** (Python) | **skim v2.10.0** (Rust) | **sqz v2.1.1** (Rust) | **tokenfold** (Python/Rust) |
+| Capability / Benchmark | **trimtok v5.5.2** 🌟 | **claw-compactor v7.0** (OpenClaw) | **RTK v1.1.0** (Rust) | **headroom v0.42.0** (Python) | **skim v2.10.0** (Rust) | **sqz v2.1.1** (Rust) | **tokenfold** (Python/Rust) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | **Execution Layer** | **In-process hook + CLI** | 14-Stage Pipeline + Node Proxy | Subprocess CLI | Python library / Proxy | Subprocess CLI | Subprocess CLI | Python FFI library |
 | **Uniform JSON (500 rows)** | **55.3% saved** (TOON v2) | **81.9% (lossy sampling)** | 99.6% (truncated) | **61.7% saved** | N/A | ~55% saved | 55.7% saved |

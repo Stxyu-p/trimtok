@@ -46,9 +46,10 @@ def test_ccr_fts5_backfills_a_pre_existing_store(tmp_path: Path):
     """A store written before the FTS table existed must still be searchable."""
     store = ccr.FastCCRStore(tmp_path)
     alias = store.put("legacy_payload_marker_xyz")
-    # Simulate a 5.4.1 database: chunks present, index never built.
+    # Simulate a 5.4.1 database: chunks present, index never built, no sync flag.
     assert store._conn is not None
     store._conn.execute("DELETE FROM chunks_fts")
+    store._conn.execute("DELETE FROM meta WHERE key='fts_synced'")
     store._conn.commit()
     store.close()
 
