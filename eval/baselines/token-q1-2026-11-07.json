@@ -1,0 +1,13 @@
+{
+  "metric": "real-token-reduction (tiktoken cl100k)",
+  "corpus": "eval/corpus/*.json (32 payloads)",
+  "pipeline": "compress_tool_result/compress_terminal, min_chars=0, single shared session",
+  "notes": "All 32 payloads measured incl. passthrough. eval_real.py reports 73.76% chars over touched-only; raw chars over all 32 = 51.07%.",
+  "tokens_before": 391665,
+  "tokens_after": 174924,
+  "tokens_saved_pct": 55.34,
+  "chars_before": 1135441,
+  "chars_after": 555597,
+  "chars_saved_pct": 51.07,
+  "date": "2026-11-07"
+}

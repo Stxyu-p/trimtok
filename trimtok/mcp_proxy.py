@@ -176,7 +176,6 @@ def run_mcp_proxy(
         return proc.wait()
     parent_stdout = sys.stdout.buffer
 
-    buffer = bytearray()
     try:
         while True:
             line = child_stdout.readline()

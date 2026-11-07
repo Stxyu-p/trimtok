@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import os
 import threading
 from typing import Any
 
@@ -58,6 +59,18 @@ _MAX_SNAPSHOT_LINES = 6000  # per command; larger outputs skip delta
 _MAX_SNAPSHOT_CHARS = 400_000  # per command
 _MAX_TOTAL_LINES = 24000  # per session
 _MAX_TOTAL_CHARS = 1_500_000  # per session
+
+# Compaction guard (v5.8.0): a delta chain is only valid while the base
+# snapshot the previous result was compared against is still in the agent's
+# context. Host compaction can drop that base without telling us, so a chain
+# longer than MAX_DELTA_TURNS is followed by one forced full (base) output
+# that re-anchors the chain. 0 = disabled; TRIMTOK_DELTA_MAX_TURNS overrides.
+def _max_delta_turns() -> int:
+    try:
+        v = int(os.environ.get("TRIMTOK_DELTA_MAX_TURNS", "3"))
+        return max(0, v)
+    except (TypeError, ValueError):
+        return 3
 
 _COSMETIC_FLAGS = frozenset({
     # Only flags that leave the *content* of the output alone. -v/-s are gone:
@@ -134,26 +147,35 @@ class StatefulDeltaEngine:
         # (session, cmd) -> (raw_text, lines, unique_fault_lines)
         self._state: dict[tuple[str, str], tuple[str, list[str], list[str]]] = {}
         self._lock = threading.RLock()
+        # (session, cmd) -> consecutive deltas delivered since the last base output
+        self._turns: dict[tuple[str, str], int] = {}
 
     def clear(self, session_id: str = "") -> None:
         sid = str(session_id or "")
         with self._lock:
             if not sid:
                 self._state.clear()
+                self._turns.clear()
                 return
             for key in [k for k in self._state if k[0] == sid]:
                 self._state.pop(key, None)
+            for key in [k for k in self._turns if k[0] == sid]:
+                self._turns.pop(key, None)
 
     def _evict(self, sid: str) -> None:
         keys = [k for k in self._state if k[0] == sid]
         while len(keys) > _MAX_COMMANDS:
-            self._state.pop(keys.pop(0), None)
+            evicted = keys.pop(0)
+            self._state.pop(evicted, None)
+            self._turns.pop(evicted, None)
         if not keys:
             return
         total_lines = sum(len(v[1]) for k, v in self._state.items() if k[0] == sid)
         total_chars = sum(len(v[0]) for k, v in self._state.items() if k[0] == sid)
         while keys and (total_lines > _MAX_TOTAL_LINES or total_chars > _MAX_TOTAL_CHARS):
-            ent = self._state.pop(keys.pop(0), None)
+            evicted = keys.pop(0)
+            ent = self._state.pop(evicted, None)
+            self._turns.pop(evicted, None)
             if ent is not None:
                 total_lines -= len(ent[1])
                 total_chars -= len(ent[0])
@@ -173,7 +195,7 @@ class StatefulDeltaEngine:
                 return None
             if deadline is not None:
                 deadline.check()
-            lines = [ln.rstrip("\r") for ln in text.split("\n")]
+            lines = [ln.rstrip(chr(13)) for ln in text.split(chr(10))]
             if (
                 len(lines) < MIN_LINES
                 or len(lines) > _MAX_SNAPSHOT_LINES
@@ -188,8 +210,15 @@ class StatefulDeltaEngine:
                 prev = self._state.pop(key, None)
                 self._state[key] = (text, lines, fault_lines)  # refresh LRU position
                 self._evict(sid)
-            if prev is None:
-                return None
+                turns = self._turns.get(key, 0)
+                if prev is None:
+                    self._turns[key] = 0
+                    return None
+                limit = _max_delta_turns()
+                if limit and turns >= limit:
+                    # Compaction guard: force one full output to re-anchor the chain.
+                    self._turns[key] = 0
+                    return None
             prev_text, prev_lines, _prev_faults = prev
             prev_set = set(prev_lines)
             if deadline is not None:
@@ -223,6 +252,10 @@ class StatefulDeltaEngine:
                     effective_sim = max(effective_sim, fuzzy_sim)
 
             if effective_sim < threshold:
+                # Output diverged: the full/regular-compressed result is the new
+                # base the agent sees, so a later delta compares against it.
+                with self._lock:
+                    self._turns[key] = 0
                 return None
 
             if sim >= threshold:
@@ -274,6 +307,8 @@ class StatefulDeltaEngine:
                 if len(removed) > _MAX_REMOVED:
                     body.append(f"  .. (-{len(removed) - _MAX_REMOVED} more in {prev_ref}) ..")
             head = delta_head(str(command or ""), effective_sim, len(added), len(removed), len(still), cur_ref, prev_ref)
+            with self._lock:
+                self._turns[key] = turns + 1
             return "\n".join([head, LEGEND_DELTA] + body)
         except Exception:
             return None

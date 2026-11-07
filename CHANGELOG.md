@@ -2,6 +2,28 @@
 
 All notable changes to trimtok are documented here.
 
+## [5.8.0] - 2026-11-08
+
+### Added
+- **Delta chain compaction guard.** A `[tt:delta]` chain is only readable while
+  the base snapshot it is compared against is still in the agent's context, and
+  host-side context compaction can drop that base without telling trimtok.
+  `delta_engine.py` now forces one full (base) output after
+  `TRIMTOK_DELTA_MAX_TURNS` (default 3, `0` disables) consecutive deltas per
+  command family, re-anchoring the chain and ending the desync window.
+  Counters are strictly isolated per `(session_id, command)` so interleaving
+  unrelated commands does not defeat the compaction guard. A run whose output
+  diverges past the similarity threshold (full output delivered) also resets the
+  counter, because that full output is the new base.
+
+### Fixed
+- **Screaming snake-case error prefixes in `_ERROR_RE`.** Diagnosed during Colab
+  Needle-In-A-Haystack (NIAH) testing: log lines starting with `CRITICAL_ALERT_EVENT:`,
+  `FATAL_CRITICAL:`, or `ERROR_CODE:` were rejected by the trailing negative lookahead
+  `(?![A-Za-z0-9_])`. Extended pattern to explicitly recognize diagnostic/log event
+  identifiers ending with a colon or enclosed in brackets without creating false
+  positives on benign code variables.
+
 ## [5.7.1] - 2026-11-06
 
 ### Fixed

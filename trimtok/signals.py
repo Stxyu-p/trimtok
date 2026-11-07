@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -41,6 +42,14 @@ _SAMPLE_THRESHOLD = 65536
 _BPE_PAT = re.compile(
     r"'s|'t|'re|'ve|'m|'ll|'d| ?\w+| ?\d+| ?[^\s\w\d]+|\s+(?!\S)|\s+"
 )
+
+
+def digest(text: str) -> str:
+    """Content-addressed 12-hex key, shared by every module."""
+    try:
+        return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]
+    except Exception:
+        return ""
 
 
 def fast_json_loads(data: str | bytes) -> Any:
@@ -111,7 +120,9 @@ _ERROR_RE = re.compile(
     r"http[/\d.\s]*5\d{2}(?![0-9])|bad\s+gateway|"
     r"ข้อผิดพลาด|ผิดพลาด|ล้มเหลว|ขัดข้อง)"
     r"(?![A-Za-z0-9_])"
-    r"|\b[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception|Fault|Panic):"
+    r"|\b[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception|Fault|Panic|Alert):"
+    r"|(?<![A-Za-z0-9_])(?:CRITICAL|FATAL|ERROR|FAIL|FAILED|FAULT|PANIC)_[A-Za-z0-9_]{2,}:"
+    r"|\[(?:CRITICAL|FATAL|ERROR|FAIL|FAILED|FAULT|PANIC)_[A-Za-z0-9_]+\]"
     r"|no such file|cannot stat|unable to locate|cannot (?:open|access)"
     r"|(?<![A-Za-z0-9_])err_[a-z0-9_]{2,}"
     r"|\b(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+\S+(?:\s+HTTP/[\d.]+)?\"?\s+5\d{2}(?![0-9])"

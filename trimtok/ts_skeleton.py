@@ -5,7 +5,6 @@ Supports Python, JavaScript/TypeScript, Go, Rust, Java, C, and C++.
 All operations are 100% fail-open, non-recursive, patch-safe, and never raise.
 """
 import os
-import re
 
 _LANG_MAP = {
     ".py": "python",

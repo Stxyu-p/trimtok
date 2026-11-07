@@ -1100,7 +1100,6 @@ def _gain_summary(days: int = 0) -> str:
 
         # Overall stats
         terminal_rows = [r for r in rows if r.get("hook") in ("terminal", "tool")]
-        n_events = len(rows)
         n_folds = sum(1 for r in terminal_rows if r.get("gate") == "ok")
         total_before = sum(int(r.get("before") or 0) for r in terminal_rows)
         total_after = sum(int(r.get("after") or 0) for r in terminal_rows)
@@ -1230,8 +1229,6 @@ def _handle_ts_command(raw_args: str) -> str:
                     if audit_file.exists():
                         lines.extend(audit_file.read_text(encoding="utf-8").splitlines())
             saved = sum((json.loads(ln).get("saved_chars") or 0) for ln in lines if ln.strip().startswith("{"))
-            ctx = getattr(_handle_ts_command, "_ctx", None)
-            ttl_hours = _int_cfg(ctx, "ccr_ttl_hours", 24, 1, 24 * 30) if ctx is not None else 24
             c_stat = ccr_stats()
             return (
                 f"trimtok v{VERSION}: {len(lines)} transforms logged (recent window), ~{saved:,} chars saved.\n"

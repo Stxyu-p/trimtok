@@ -15,7 +15,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
-from typing import List, Set, Tuple
+from typing import Set
 
 APPENDIX_START = "<!-- kv-lock: dynamic context -->"
 APPENDIX_END = "<!-- end kv-lock -->"

@@ -21,7 +21,7 @@ except Exception:
     _Levenshtein = None
     _FUZZY_AVAILABLE = False
 
-VERSION = "5.7.1"
+VERSION = "5.8.0"
 
 try:
     from . import delta_engine
@@ -39,7 +39,6 @@ try:
         _VALUE_LINE_RE,
         strip_ansi,
         adaptive_terminal_head,
-        terminal_head,
         score_anchor_preservation,
     )
     from .pruners import prune_traceback, prune_unified_diff, collapse_success_output
@@ -60,7 +59,6 @@ except (ImportError, ValueError):
         _VALUE_LINE_RE,
         strip_ansi,
         adaptive_terminal_head,
-        terminal_head,
         score_anchor_preservation,
     )
     from trimtok.pruners import prune_traceback, prune_unified_diff, collapse_success_output
