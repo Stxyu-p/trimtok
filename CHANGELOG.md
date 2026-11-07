@@ -17,6 +17,12 @@ All notable changes to trimtok are documented here.
   counter, because that full output is the new base.
 
 ### Fixed
+- **CCR SQLite WAL transient write lock retry.** Diagnosed during Colab Red-Team
+  hardening audit: concurrent subagents or rapid-fire parallel writes triggering
+  transient `sqlite3.OperationalError: database is locked` on `BEGIN IMMEDIATE`
+  previously aborted write transactions immediately and fell open without emitting
+  a CCR `#ref`. Implemented bounded exponential backoff retry (up to 3 attempts,
+  15ms/30ms) before failing open, eliminating transient lock dropouts.
 - **Screaming snake-case error prefixes in `_ERROR_RE`.** Diagnosed during Colab
   Needle-In-A-Haystack (NIAH) testing: log lines starting with `CRITICAL_ALERT_EVENT:`,
   `FATAL_CRITICAL:`, or `ERROR_CODE:` were rejected by the trailing negative lookahead

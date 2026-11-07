@@ -270,71 +270,82 @@ class FastCCRStore:
                 # resolved after a process restart (in-memory-only alias).
                 return ""
 
-            try:
-                cur = self._conn.cursor()
-                cur.execute("BEGIN IMMEDIATE")
-                row = cur.execute("SELECT alias FROM chunks WHERE sha=?", (sha,)).fetchone()
-                if row:
-                    alias = row[0]
+            for attempt in range(3):
+                try:
+                    cur = self._conn.cursor()
+                    cur.execute("BEGIN IMMEDIATE")
+                    row = cur.execute("SELECT alias FROM chunks WHERE sha=?", (sha,)).fetchone()
+                    if row:
+                        alias = row[0]
+                        cur.execute("COMMIT")
+                        self._set_mem(sha, alias, content)
+                        return alias
+
+                    cur.execute(
+                        "INSERT INTO meta (key, value) VALUES ('alias_seq', '1') "
+                        "ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)"
+                    )
+                    seq_row = cur.execute("SELECT value FROM meta WHERE key='alias_seq'").fetchone()
+                    seq_num = int(seq_row[0]) if seq_row and str(seq_row[0]).isdigit() else 1
+                    self._alias_seq = max(self._alias_seq, seq_num)
+                    alias = f"#c{_to_base62(seq_num)}"
+
+                    now = time.time()
+                    stored_blob = _compress_payload(content)
+                    cur.execute(
+                        "INSERT INTO chunks (sha, alias, content, created_at) VALUES (?, ?, ?, ?) "
+                        "ON CONFLICT(sha) DO UPDATE SET content=excluded.content, created_at=excluded.created_at",
+                        (sha, alias, stored_blob, now),
+                    )
+                    try:
+                        # sha was absent above, so this alias is brand new: no stale
+                        # FTS row can exist and a DELETE here would scan the whole
+                        # index on the hot path.
+                        cur.execute("INSERT INTO chunks_fts (alias, content) VALUES (?, ?)", (alias, content))
+                    except Exception:
+                        pass
+                    # Opportunistic TTL sweep (at most once every 50 writes)
+                    if ttl_hours > 0 and (seq_num % 50 == 0):
+                        expire_before = now - (ttl_hours * 3600.0)
+                        try:
+                            for row in cur.execute(
+                                "SELECT sha, alias FROM chunks WHERE created_at < ? AND (pinned IS NULL OR pinned = 0)",
+                                (expire_before,),
+                            ).fetchall():
+                                if not row or not row[1]:
+                                    continue
+                                cur.execute("DELETE FROM chunks_fts WHERE alias = ?", (row[1],))
+                                # Drop the RAM entries too, or put() keeps handing out
+                                # an alias whose row no longer exists and the marker
+                                # dies at the next process start.
+                                if row[0]:
+                                    self._mem.pop(row[0], None)
+                                    self._sha_alias.pop(row[0], None)
+                                self._alias_mem.pop(row[1], None)
+                        except Exception:
+                            pass
+                        cur.execute("DELETE FROM chunks WHERE created_at < ? AND (pinned IS NULL OR pinned = 0)", (expire_before,))
+
                     cur.execute("COMMIT")
                     self._set_mem(sha, alias, content)
                     return alias
-
-                cur.execute(
-                    "INSERT INTO meta (key, value) VALUES ('alias_seq', '1') "
-                    "ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)"
-                )
-                seq_row = cur.execute("SELECT value FROM meta WHERE key='alias_seq'").fetchone()
-                seq_num = int(seq_row[0]) if seq_row and str(seq_row[0]).isdigit() else 1
-                self._alias_seq = max(self._alias_seq, seq_num)
-                alias = f"#c{_to_base62(seq_num)}"
-
-                now = time.time()
-                stored_blob = _compress_payload(content)
-                cur.execute(
-                    "INSERT INTO chunks (sha, alias, content, created_at) VALUES (?, ?, ?, ?) "
-                    "ON CONFLICT(sha) DO UPDATE SET content=excluded.content, created_at=excluded.created_at",
-                    (sha, alias, stored_blob, now),
-                )
-                try:
-                    # sha was absent above, so this alias is brand new: no stale
-                    # FTS row can exist and a DELETE here would scan the whole
-                    # index on the hot path.
-                    cur.execute("INSERT INTO chunks_fts (alias, content) VALUES (?, ?)", (alias, content))
-                except Exception:
-                    pass
-                # Opportunistic TTL sweep (at most once every 50 writes)
-                if ttl_hours > 0 and (seq_num % 50 == 0):
-                    expire_before = now - (ttl_hours * 3600.0)
+                except sqlite3.OperationalError:
                     try:
-                        for row in cur.execute(
-                            "SELECT sha, alias FROM chunks WHERE created_at < ? AND (pinned IS NULL OR pinned = 0)",
-                            (expire_before,),
-                        ).fetchall():
-                            if not row or not row[1]:
-                                continue
-                            cur.execute("DELETE FROM chunks_fts WHERE alias = ?", (row[1],))
-                            # Drop the RAM entries too, or put() keeps handing out
-                            # an alias whose row no longer exists and the marker
-                            # dies at the next process start.
-                            if row[0]:
-                                self._mem.pop(row[0], None)
-                                self._sha_alias.pop(row[0], None)
-                            self._alias_mem.pop(row[1], None)
+                        self._conn.execute("ROLLBACK")
                     except Exception:
                         pass
-                    cur.execute("DELETE FROM chunks WHERE created_at < ? AND (pinned IS NULL OR pinned = 0)", (expire_before,))
-
-                cur.execute("COMMIT")
-                self._set_mem(sha, alias, content)
-                return alias
-            except Exception:
-                try:
-                    self._conn.execute("ROLLBACK")
+                    if attempt < 2:
+                        time.sleep(0.015 * (attempt + 1))
+                        continue
+                    return ""
                 except Exception:
-                    pass
-                # Strict fail-open: never emit an unresolvable in-memory alias!
-                return ""
+                    try:
+                        self._conn.execute("ROLLBACK")
+                    except Exception:
+                        pass
+                    # Strict fail-open: never emit an unresolvable in-memory alias!
+                    return ""
+            return ""
 
     def get(self, ref: str, *, ttl_hours: int = 24) -> str | None:
         """Retrieve original content by #ref (e.g. #c1) or sha hash."""
