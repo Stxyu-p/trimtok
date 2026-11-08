@@ -124,6 +124,22 @@ def _is_hex_digest(s: str) -> bool:
     return len(s) >= 8 and all(c in "0123456789abcdef" for c in s.lower())
 
 
+_SHORT_ALIAS_RE = re.compile(r"^c[0-9A-Za-z]+$")
+
+
+def _norm_ref(ref: str) -> str:
+    """`c1` -> `#c1`; everything else is stripped and returned as-is."""
+    target = (ref or "").strip()
+    if _SHORT_ALIAS_RE.match(target) and len(target) <= 8:
+        return f"#{target}"
+    return target
+
+
+def _is_alias_ref(target: str) -> bool:
+    """True for a `#c...` alias, false for a `#<hex>` content digest."""
+    return target.startswith("#c") or (target.startswith("#") and not _is_hex_digest(target.lstrip("#")))
+
+
 def _sanitize_fts5_query(query: str) -> str:
     """Quote each whitespace-separated token so FTS5 parses it literally.
 
@@ -343,9 +359,7 @@ class FastCCRStore:
         """Retrieve original content by #ref (e.g. #c1) or sha hash."""
         if not ref:
             return None
-        target = ref.strip()
-        if re.match(r"^c[0-9A-Za-z]+$", target) and len(target) <= 8:
-            target = f"#{target}"
+        target = _norm_ref(ref)
         with self._lock:
             # A "#<hex>" ref may be a digest (content hash) rather than a CCR
             # alias; resolve by sha prefix in that case.
@@ -395,10 +409,7 @@ class FastCCRStore:
                             except Exception:
                                 pass
                         self._conn.commit()
-                        self._mem.pop(sha, None)
-                        self._sha_alias.pop(sha, None)
-                        if row_alias:
-                            self._alias_mem.pop(row_alias, None)
+                        self._forget(sha, row_alias)
                         return None
                     decomp = _decompress_payload(blob)
                     if decomp is not None:
@@ -454,6 +465,19 @@ class FastCCRStore:
             "fts_bytes": fts_bytes,
         }
 
+    def _forget(self, sha: str, alias: str | None) -> None:
+        """Drop RAM maps + FTS row for a chunk (the chunks row is the caller's job)."""
+        self._mem.pop(sha, None)
+        self._sha_alias.pop(sha, None)
+        if not alias:
+            return
+        self._alias_mem.pop(alias, None)
+        if self._conn is not None:
+            try:
+                self._conn.execute("DELETE FROM chunks_fts WHERE alias = ?", (alias,))
+            except Exception:
+                pass
+
     def evict_to_size(self, max_bytes: int) -> int:
         """Delete the oldest chunks until payload + FTS index are under `max_bytes`."""
         if max_bytes <= 0:
@@ -478,14 +502,7 @@ class FastCCRStore:
                 ).fetchall():
                     if total <= max_bytes:
                         break
-                    self._mem.pop(sha, None)
-                    self._sha_alias.pop(sha, None)
-                    if alias:
-                        self._alias_mem.pop(alias, None)
-                        try:
-                            cur.execute("DELETE FROM chunks_fts WHERE alias = ?", (alias,))
-                        except Exception:
-                            pass
+                    self._forget(sha, alias)
                     cur.execute("DELETE FROM chunks WHERE sha = ?", (sha,))
                     total -= int(size or 0) + int(fts_lens.pop(alias, 0) or 0)
                     evicted += 1
@@ -548,14 +565,7 @@ class FastCCRStore:
                         ).fetchall()
                         count = len(rows)
                         for sha, alias in rows:
-                            self._mem.pop(sha, None)
-                            self._sha_alias.pop(sha, None)
-                            if alias:
-                                self._alias_mem.pop(alias, None)
-                                try:
-                                    cur.execute("DELETE FROM chunks_fts WHERE alias = ?", (alias,))
-                                except Exception:
-                                    pass
+                            self._forget(sha, alias)
                         cur.execute("DELETE FROM chunks WHERE created_at < ?", (cutoff,))
                     else:
                         row = cur.execute("SELECT COUNT(*) FROM chunks").fetchone()
@@ -578,15 +588,13 @@ class FastCCRStore:
         """Mark a chunk as pinned so it will not be deleted by TTL sweep."""
         if not ref:
             return False
-        target = ref.strip()
-        if re.match(r"^c[0-9A-Za-z]+$", target) and len(target) <= 8:
-            target = f"#{target}"
+        target = _norm_ref(ref)
         with self._lock:
             if not self._writable or self._conn is None:
                 return False
             try:
                 cur = self._conn.cursor()
-                if target.startswith("#c") or (target.startswith("#") and not _is_hex_digest(target.lstrip("#"))):
+                if _is_alias_ref(target):
                     cur.execute("UPDATE chunks SET pinned = 1 WHERE alias = ?", (target,))
                 else:
                     sha = target.lstrip("#")
@@ -600,15 +608,13 @@ class FastCCRStore:
         """Unpin a chunk, allowing it to expire according to TTL."""
         if not ref:
             return False
-        target = ref.strip()
-        if re.match(r"^c[0-9A-Za-z]+$", target) and len(target) <= 8:
-            target = f"#{target}"
+        target = _norm_ref(ref)
         with self._lock:
             if not self._writable or self._conn is None:
                 return False
             try:
                 cur = self._conn.cursor()
-                if target.startswith("#c") or (target.startswith("#") and not _is_hex_digest(target.lstrip("#"))):
+                if _is_alias_ref(target):
                     row = cur.execute("SELECT sha FROM chunks WHERE alias = ?", (target,)).fetchone()
                     sha = row[0] if row else ""
                     cur.execute("UPDATE chunks SET pinned = 0 WHERE alias = ?", (target,))
@@ -913,9 +919,7 @@ def resolve_hash(ref: str) -> str | None:
     """Resolve an alias #c... or hex digest to the canonical 12-hex hash."""
     if not ref:
         return None
-    target = ref.strip()
-    if re.match(r"^c[0-9A-Za-z]+$", target) and len(target) <= 8:
-        target = f"#{target}"
+    target = _norm_ref(ref)
     store = _get_store()
     sha = store._alias_mem.get(target)
     if sha:

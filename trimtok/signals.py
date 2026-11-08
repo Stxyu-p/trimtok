@@ -11,12 +11,10 @@ from functools import lru_cache
 from typing import Any
 
 # Optional accelerators
-_TIKTOKEN_AVAILABLE = False
 _TOKENIZER: Any = None
 try:
     import tiktoken
     _TOKENIZER = tiktoken.get_encoding("cl100k_base")
-    _TIKTOKEN_AVAILABLE = True
 except Exception:
     pass
 
@@ -101,10 +99,6 @@ def estimate_tokens(text: str) -> int:
 def estimate_bpe_gain(before: str, after: str) -> int:
     """Token gain of a fold (before - after); >0 means the fold is worth it."""
     return estimate_bpe_tokens(before) - estimate_bpe_tokens(after)
-
-
-def is_tiktoken_available() -> bool:
-    return _TIKTOKEN_AVAILABLE
 
 
 # ---------------------------------------------------------------------------
