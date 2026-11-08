@@ -2,6 +2,17 @@
 
 All notable changes to trimtok are documented here.
 
+## [5.8.1] - 2026-11-08
+
+### Added
+- **Cross-Lane Causal Hotspots (`trimtok/signals.py`, `trimtok/dedup.py`, `trimtok/pruners.py`, `trimtok/ts_skeleton.py`).**
+  Eliminates the multi-turn retrieval penalty when debugging terminal test/command failures.
+  When a terminal execution fails with an error traceback or non-zero exit code, `extract_traceback_hotspots`
+  captures `(file_path, line_no)` coordinates into a lightweight session-scoped ring buffer (`_seen(session_id)["hotspots"]`).
+  During the subsequent `read_file` call on that file, `_handle_read_file_v42` passes matching `focus_lines`
+  to the AST code skeletonizers (`smart_skeletonize_code` and `ts_skeleton.py`), keeping the failing function
+  100% verbatim with real line numbers while continuing to fold unrelated functions elsewhere in the file.
+
 ## [5.8.0] - 2026-11-08
 
 ### Added
