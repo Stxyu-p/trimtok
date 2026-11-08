@@ -1,9 +1,4 @@
-"""trimtok core: deterministic terminal-output compression.
-
-Stdlib + optional rapidfuzz (fuzzy fold) + optional tiktoken (token estimation).
-Pipeline per SPEC: detect kind -> filter -> token-gate -> error-preservation
-quality-gate. Never raises: every entry point catches and returns input.
-"""
+"""trimtok core: deterministic terminal-output compression. Never raises."""
 
 from __future__ import annotations
 
@@ -13,7 +8,7 @@ import time
 from functools import lru_cache
 from typing import Any
 
-# Optional fuzzy matcher (rapidfuzz is a declared dependency; difflib fallback).
+# rapidfuzz is a declared dependency; difflib fallback.
 try:
     from rapidfuzz.distance import Levenshtein as _Levenshtein
     _FUZZY_AVAILABLE = True
@@ -104,8 +99,7 @@ def _template_key(line: str) -> str:
     norm = _normalize_line(line)
     if len(norm) < 20:
         return ""
-    # Distinct port/config values must not collapse into one template key
-    # (would hide differing values in context). Skip grouping for such lines.
+    # Distinct port/config values must not share a template key.
     if _VALUE_LINE_RE.search(line or ""):
         return ""
     key = _SLOT_RE.sub("{}", norm)
@@ -118,14 +112,7 @@ def _fold_templates(
     flagged: list[tuple[str, bool]],
     deadline: Any | None = None,
 ) -> tuple[list[tuple[str, bool]], int, int]:
-    """Fold scattered same-template runs. Returns (flagged, hidden, groups).
-
-    Adjacent-repeat folding cannot fire when template lines interleave with
-    other content, so group by template key instead of position. First
-    occurrence stays verbatim (keep-earliest), rest collapse into one
-    [template ×N] marker. Important lines never group. Groups of <3 pass
-    through (same threshold as adjacent runs).
-    """
+    """Fold scattered same-template runs, keeping the first of each group."""
     groups: dict[str, list[int]] = {}
     for idx, (line, important) in enumerate(flagged):
         if deadline is not None and (idx & 511) == 0:
@@ -162,11 +149,9 @@ _SESSION_ID_RE = re.compile(r"\[local-[0-9a-f]{16,}\]", re.I)
 
 @lru_cache(maxsize=8192)
 def _fault_sig(line: str) -> str:
-    """Identity of a fault line, ignoring only timestamps and session ids.
+    """Fault-line identity, ignoring only timestamps and session ids.
 
-    Digits stay in the key on purpose: stripping them conflated `attempt 2/3`
-    with `attempt 3/3` and separate traceback frames, which is the detail a
-    debugger reads the log for.
+    Digits stay in: stripping them merged `attempt 2/3` with `attempt 3/3`.
     """
     key = _SESSION_ID_RE.sub("[SESSION]", _normalize_line(line))
     return key if len(key) >= 20 else ""
@@ -177,14 +162,10 @@ def _fold_fault_sigs(
     deadline: Any | None = None,
     min_group: int = 3,
 ) -> tuple[list[tuple[str, bool]], int]:
-    """Fold fault lines that repeat with only their timestamp/session id changed.
+    """Fold fault lines that repeat with only timestamp/session id changed.
 
-    `_fold_templates` never folds an important line, so a log that is one
-    traceback looped N times keeps all N copies -- 80% of a 163KB error log is
-    fault lines (measured on eval/corpus/t-log-errors.json). Copies are
-    byte-identical after timestamp/session normalisation, so folding them loses
-    no information: the first and the last stay inline, the marker counts the
-    middle, and the header's hidden=N plus the #ref restore the rest.
+    `_fold_templates` skips important lines, so a looped traceback kept every
+    copy. First and last stay inline, the middle becomes `[template xN]`.
     """
     groups: dict[str, list[int]] = {}
     for idx, (line, important) in enumerate(flagged):
@@ -262,10 +243,7 @@ def _fold_repeats(
             continue
         norm = _normalize_line(line)
         j = i + 1
-        # Fuzzy fold: lines whose normalized form is >= 0.85 similar are
-        # treated as the same template (handles variation like "request 123"
-        # vs "request 124"). Falls back to exact match when rapidfuzz absent.
-        # Guard: only fuzzy on short lines (<200 chars) to limit O(n^2) cost.
+        # Fuzzy template match (>=0.85) on short lines only: O(n^2) guard.
         _do_fuzzy = _FUZZY_AVAILABLE and len(norm) < 200
         while j < n and not flagged[j][1]:
             other_norm = _normalize_line(flagged[j][0])
@@ -305,7 +283,7 @@ def _window(
         return lines, 0
     forced_set = {i for i, (_, imp) in enumerate(flagged) if imp}
 
-    # Balanced head and tail: summaries and failure stats live at tail
+    # Summaries and failure stats live at the tail.
     head_count = max(_HEAD_KEEP, min(budget // 4, 30))
     tail_count = max(_TAIL_KEEP, min(budget // 3, 40))
 
@@ -319,9 +297,7 @@ def _window(
             sorted_all = sorted(keep_set)
             keep_set = set(sorted_all[:budget]) | essential
         else:
-            # Fault-dense payload: keeping the FIRST `budget` faults silently throws
-            # away every later error. Sample the fault set evenly and always keep
-            # its tail (the failure that ended the run lives there).
+            # Fault-dense: sample faults evenly and always keep the tail.
             faults = sorted(forced_set)
             tail_n = min(max(_TAIL_KEEP, budget // 4), len(faults))
             head_n = max(1, budget - tail_n)
@@ -408,8 +384,7 @@ def compress_terminal(
     try:
         if not isinstance(output, str):
             return output, {"gate": "passthrough_non_str", "ms": 0.0}
-        # Adaptive + policy: a secret-bearing dump stays verbatim, and the line
-        # budget follows how much context window is left.
+        # Secrets stay verbatim; the budget follows context pressure.
         if policy_enabled:
             try:
                 from .policy import budget_for as _budget_for_level, classify as _classify_policy
@@ -425,18 +400,14 @@ def compress_terminal(
             except Exception:
                 pass
         if deadline is not None and len(output) > 100_000:
-            # A large payload legitimately needs more CPU than a tiny one: the guard
-            # exists to bound pathological work, not to punish size. Killing a 435KB
-            # log at 200ms shipped it raw (0% saved) for the sake of 22ms of folding.
+            # Scale the deadline with payload size: the guard bounds work, not size.
             _remain = max(0.0, (getattr(deadline, "deadline", 0.0) - time.monotonic()) * 1000.0)
             _base = getattr(deadline, "budget_ms", 200.0)
             _scaled = _base + (len(output) - 100_000) / 1200.0
             if _scaled > _remain:
                 deadline = Deadline(min(_base * 3.0, max(_scaled, _remain)))
         if session_id and command:
-            # A shell command that rewrites files invalidates the cached body for
-            # the path it touched -- otherwise the next read_file would claim the
-            # file is "unchanged" when it is not.
+            # A command that rewrites files invalidates that path's cached body.
             try:
                 from .dedup import invalidate_shell_mutations
             except (ImportError, ValueError):
@@ -476,16 +447,13 @@ def compress_terminal(
                         "ms": (time.perf_counter() - t0) * 1000,
                     }
         if len(output) < min_chars:
-            # v4.2 Tier 0 for the 512..min_chars band: ANSI + hygiene are lossless,
-            # so ship the cleaned text with no header at all instead of passing the
-            # raw bytes through (telemetry: 1,306 calls sat in 1K-2K with 0 saving).
+            # 512..min_chars: ship the cleaned text with no header (tier 0).
             if len(output) >= 512 and not has_marker_head(output):
                 try:
                     kind_small = detect_kind(output)
                     clean = strip_ansi(output)
                     if kind_small != "diff":
-                        # A unified diff carries " " on its blank context lines --
-                        # hygiene would strip that space and corrupt the diff.
+                        # Diff context lines carry a leading space; hygiene would strip it.
                         try:
                             from .dedup import hygiene
                         except (ImportError, ValueError):
@@ -556,9 +524,7 @@ def compress_terminal(
         folded, t_hidden, _t_groups = _fold_templates(folded, deadline)
         hidden += t_hidden
         if kind == "diff":
-            # A dropped + or - line is a silently wrong patch. Force every changed
-            # line and widen the budget so the window cannot sample them away;
-            # only context lines may be dropped (RTK keeps 453/453 the same way).
+            # A dropped + or - line is a silently wrong patch: force all of them.
             folded = [(ln, True) if ln.startswith(("+", "-", "@")) else (ln, imp)
                       for ln, imp in folded]
             budget = max(budget, sum(1 for _, imp in folded if imp) + _HEAD_KEEP + _TAIL_KEEP)
@@ -569,10 +535,7 @@ def compress_terminal(
             or (not _PROGRESS_RE.match(ln) and not _NOISE_LINE_RE.match(ln))
         ]
         windowed, dropped = _window(kept, budget)
-        # Fault folding runs AFTER the window on purpose. Before it, folding hides
-        # lines the window would have dropped for free and its markers eat budget
-        # slots (measured: 163KB log went 49K -> 58K). After it, it only removes
-        # duplicates the sampler already chose to ship.
+        # Fold after the window: before it, markers ate budget slots (49K -> 58K).
         windowed_f, f_hidden = _fold_fault_sigs(
             [(ln, is_important(ln)) for ln in windowed], deadline)
         if f_hidden:
@@ -583,11 +546,7 @@ def compress_terminal(
             _ccr_put(output)
         except Exception:
             pass
-        # Faults the window could not keep must be announced in the header, not
-        # silently dropped: the #ref restores them, but only if the reader knows.
-        # Count by multiset, don't substring-search: a set loses duplicate fault lines
-        # (5 identical errors, 1 kept -> 4 hidden but reported 0), and `needle not in
-        # out_txt` over a 400KB payload blew the guard budget.
+        # Announce faults the window dropped: multiset count, not substring search.
         fault_counts: dict[str, int] = {}
         for _ln, _imp in flagged_all:
             if _imp and _ln and not _ln.startswith(_KEEP_PREFIX):
@@ -604,12 +563,7 @@ def compress_terminal(
         new_output = "\n".join(head + windowed) if head else "\n".join(windowed)
         tokens_after = estimate_tokens(new_output)
         if len(new_output) >= len(output) or tokens_after >= tokens_before:
-            # v4.2 cascade rescue: a header that eats the saving IS the 2KB-4KB
-            # reverted_gate band (558 telemetry events). Try the nano header, then
-            # lossless-only ANSI/hygiene strip, before giving up on the payload.
-            #
-            # ponytail: no retry budget / no loop -- two fixed fallbacks, because a
-            # third tier has never paid for its own header in the telemetry.
+            # Rescue: nano header, then lossless strip, before giving up.
             if omitted_total > 0:
                 nano = adaptive_terminal_head(
                     kind, omitted_total, digest, len(output), gross_saved, LEGEND, force_tier=1,
@@ -636,9 +590,7 @@ def compress_terminal(
                     "saved_chars": 0, "ms": (time.perf_counter() - t0) * 1000,
                 }
         if n_missing_faults:
-            # Emit partial (windowed output + omitted count) instead of reverting
-            # to raw: keeps compression benefit while flagging lost errors for
-            # retrieval via #ref (F2). Revert only if windowed output is empty.
+            # Partial output keeps the saving; the #ref restores the rest.
             if not new_output:
                 return output, {
                     "gate": "reverted_quality", "kind": kind,
@@ -662,9 +614,7 @@ def compress_terminal(
             and kind not in ("log", "repeat")
             and len(output) < 50_000
         ):
-            # Guard against over-compression destroying navigation anchors on code/diff/test outputs.
-            # The check only matters below 50 KB: at/above it the revert never fires, so scoring
-            # multi-megabyte outputs (~2 s on 1 MB) is dead work for no decision.
+            # Below 50KB only: above it the revert never fires.
             anchor_score = score_anchor_preservation(output, new_output)
             if anchor_score < 0.70:
                 return output, {
@@ -682,8 +632,7 @@ def compress_terminal(
             "ms": (time.perf_counter() - t0) * 1000,
         }
     except TimeoutError:
-        # The budget died mid-fold. If the payload is huge (>20KB), stashing in CCR
-        # and shipping head+tail avoids blowing the context window with raw bytes.
+        # Budget died mid-fold: stash in CCR, ship head+tail.
         try:
             if len(output) >= 20_000:
                 _ref = _ccr_put(output)

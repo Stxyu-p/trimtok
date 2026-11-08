@@ -292,33 +292,17 @@ def adaptive_terminal_head(
     force_tier: int | None = None,
     errors_hidden: int = 0,
 ) -> list[str]:
-    """Return header lines scaled to payload size and savings (Tier 0..3).
+    """Header lines scaled by saving, not payload size.
 
-    Tier 0: omitted_lines == 0 (lossless hygiene/ANSI strip only) -> [] (0 chars)
-    Tier 1: small payload AND small saving -> 1-line nano tag (~18 chars)
-    Tier 2: medium payload AND moderate saving -> 1-line compact tag (~60 chars)
-    Tier 3: everything else -> full terminal_head + legend (~165 chars)
-
-    NOTE (v4.2): the plan (TRIMTOK_V4_ARGON_PLAN.md 4.1) spells the tier test as
-    ``raw_len <= 4096 or gross_saved_chars < 240``.  That literal reading makes
-    the header depend on payload size ONLY: every payload <= 4096 chars would
-    drop the legend, which silently changes the long-standing v4.1 wire format
-    (tests/test_core.py asserts ``out.startswith("[tt:terminal")`` and that the
-    second line is exactly LEGEND_FOLD).  The plan's own docstring says the
-    header is "scaled to payload size AND savings", and the telemetry goal is
-    only to avoid a header that eats the saving, so the two conditions are
-    combined with AND here: a small header is used when the saving is small
-    (that is the 2KB-4KB band that produced 558 reverted_gate events), and the
-    full header is kept whenever the saving comfortably pays for it.
+    Tier 0 none, tier 1 nano (~18c), tier 2 compact (~60c), tier 3 full (~165c).
     """
     if omitted_lines <= 0 and force_tier is None:
         return []
     ref = digest if digest.startswith("#") else f"#{digest}"
     tier = force_tier
     if tier is None:
-        # Driven by the SAVING, not by the payload size: a 10 KB payload that only
-        # saved 100 chars must not carry a 165-char header (that is the band that
-        # produced the reverted_gate failures).
+        # Driven by the saving: a 10 KB payload that saved 100 chars must not
+        # carry a 165-char header.
         if gross_saved_chars < 240:
             tier = 1
         elif gross_saved_chars < 450:

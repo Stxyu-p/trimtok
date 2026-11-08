@@ -488,22 +488,9 @@ def smart_skeletonize_code(
     line_nos: list[int] | None = None,
     focus_lines: set[int] | list[int] | None = None,
 ) -> tuple[str, int, int]:
-    """Line-anchored AST code skeletonizer with Zero Loss of Signatures/Types.
+    """Line-anchored AST skeleton: keeps every signature, type and decorator.
 
-    When `line_prefixes` / `line_nos` are provided (Hermes `LINE|CONTENT`
-    output), `text` must be the unprefixed source and the skeleton re-attaches
-    the exact original `LINE|` prefix to every kept line.
-
-    Preserves 100% of:
-      - Imports, module constants, global assignments, type definitions
-      - Class/Function decorators, full multi-line signatures & type annotations
-      - First line of docstrings
-      - Short functions/methods (<= min_body_lines)
-      - Final return/yield/raise statement of folded functions (for return-type clarity)
-    Replaces only the interior implementation body of long functions with an exact
-    1-indexed line-range marker so the agent can call read_file(offset=..., limit=...).
-
-    Returns: (skeleton_text, saved_chars, folded_functions_count)
+    Long function bodies become a line-range marker; LINE| prefixes are kept.
     """
     try:
         tree = ast.parse(text)
@@ -680,18 +667,9 @@ def fold_text_structure(
     line_prefixes: list[str] | None = None,
     line_nos: list[int] | None = None,
 ) -> tuple[str, int]:
-    """Fold long prose runs in markdown/yaml/rst/jsonl, keeping every structural line.
+    """Fold long prose in markdown/yaml/rst/jsonl, keeping structural lines.
 
-    The Python AST lane is useless for non-code (it returns nothing), so a 21KB
-    CHANGELOG used to pass through untouched. This keeps headings, fences, tables
-    and key lines with their exact original `LINE|` prefix, and replaces prose with
-    a marker naming the real line range so the agent can read_file(offset=...) or
-    trimtok_retrieve instead of guessing.
-
-    Records (jsonl / list rows) are never swallowed whole: the first record of
-    every distinct key shape survives, so the reader still sees the schema.
-
-    Returns (folded_text, saved_chars); (text, 0) when the fold is not worth it.
+    Headings, fences, tables and the first record of each key shape survive.
     """
     try:
         lines = text.split("\n")

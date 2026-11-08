@@ -1,12 +1,4 @@
-"""trimtok CCR: Unified Two-Tier Content-Addressed Retrieval Store with Zstandard compression.
-
-Tier 1 — in-memory LRU (OrderedDict, 512 entries).
-Tier 2 — ONE SQLite WAL database in ~/.trimtok/, replacing thousands of per-slice files.
-Refs are short Base62 aliases (#c1, #c2, ...); legacy 12-hex digests keep resolving.
-
-Also supports directory-parameterized file-based operations (for testing/seaming).
-Never raises: every entry point fails open gracefully.
-"""
+"""trimtok CCR: two-tier content-addressed store (LRU + SQLite WAL, zstd). Never raises."""
 
 from __future__ import annotations
 

@@ -1,8 +1,4 @@
-"""trimtok tool-result compression (cross-turn span fold + hygiene + AST code skeletonization).
-
-Stdlib only, pure functions + tiny module-level session corpus.
-Never raises.
-"""
+"""trimtok tool-result compression: span fold, hygiene, AST skeleton. Never raises."""
 
 from __future__ import annotations
 
@@ -143,8 +139,7 @@ def expire_old_turns(
             seen = _seen(session_id)
             turns = seen.get("turns", {})
             ids = list(turns.keys())
-            # File bodies stay relevant far longer than 2 tool steps: a loop of
-            # read -> search -> terminal -> read must still recognise the file.
+            # A read -> search -> terminal -> read loop must still recognise the file.
             file_keep = max(keep_turns * 4, _FILE_KEEP_TURNS)
             stale_file_hashes: set[str] = set()
             if len(ids) > file_keep:
@@ -171,9 +166,7 @@ def expire_old_turns(
             for line, owner in list(seen["lines"].items()):
                 if owner in doomed:
                     del seen["lines"][line]
-            # A cached file body whose turn expired must not be served later as
-            # "identical to prior read in active context" -- the agent can no
-            # longer see that body in its context window.
+            # An expired body is no longer in the agent's context.
             for fmeta in seen.get("files", {}).values():
                 if isinstance(fmeta, dict) and fmeta.get("digest") in stale_file_hashes:
                     fmeta["expired"] = True
@@ -378,9 +371,7 @@ def _fold_intra_templates(
             deadline.check()
         if (
             not line.strip()
-            # A 644KB single-line JSON is data, not a log line: it can never join
-            # a >=3 template group, and is_important() would run 30+ regexes over
-            # the whole blob (465ms of a 1.2s call).
+            # A huge single line is data: 30+ regexes over it cost 465ms.
             or len(line) > _MAX_TEMPLATE_LINE
             or line.startswith("[tt:")
             or line.startswith(_KEEP_PREFIX)
@@ -679,9 +670,6 @@ def minify_json(text: str) -> tuple[str, int]:
         return text, 0
 
 
-# ---------------------------------------------------------------------------
-# 5. v4.2: Stateful Read-File Engine, Micro-Minify, raw_hashes fix
-# ---------------------------------------------------------------------------
 _MICRO_MIN_CHARS = 512
 _COLD_READ_SKELETON_MIN_CHARS = 12_000  # legacy fallback threshold for unknown formats
 _CODE_SKELETON_MIN_CHARS = 4_096        # code files >= 4KB with oversized functions get safe AST skeletonization
@@ -689,8 +677,7 @@ _NON_CODE_MIN_CHARS = 2_000             # non-code docs/configs have no patch li
 _CODE_EXTS = frozenset({
     "py", "ts", "js", "jsx", "tsx", "go", "rs", "java", "c", "cpp", "h", "hpp", "cs", "rb", "php", "swift", "kt", "scala"
 })
-# Prose/config files get the structural fold. Code extensions are deliberately
-# absent: folding a .py file with no long functions would break patch-by-offset.
+# Prose only: folding code would break patch-by-offset.
 _TEXT_STRUCT_EXTS = frozenset({
     "md", "markdown", "rst", "txt", "yaml", "yml", "toml", "ini", "cfg", "jsonl", "log", "csv",
 })
@@ -1037,12 +1024,7 @@ def _handle_read_file_v42(
     level: str = "normal",
     toon_enabled: bool = True,
 ) -> tuple[str, dict]:
-    """3-Tier Stateful Handler for read_file / read_file_extra with 100% Patch Safety.
-
-    Hermes hands us `LINE|CONTENT` payloads and always fills offset=1/limit=2000,
-    so the payload is unwrapped to raw source first and the original line
-    numbers are re-attached to whatever we emit.
-    """
+    """Stateful read_file handler: numbered `LINE|` prefixes map 1:1 to patch targets."""
     json_envelope = None
     file_body = result
     if result.lstrip().startswith("{"):
@@ -1116,9 +1098,7 @@ def _handle_read_file_v42(
             and prev_entry.get("digest") == digest
             and not prev_entry.get("expired", False)
         ):
-            # Anti-poisoning rail: if the agent already got a stub (or only a
-            # skeleton) for this file, hand over the real body instead of
-            # another pointer -- otherwise it loops on stubs.
+            # Anti-poisoning: never answer a stub with another stub.
             if prev_entry.get("skeleton_only") or prev_entry.get("stub_hits", 0) >= 1:
                 prev_entry["skeleton_only"] = False
                 prev_entry["stub_hits"] = 0
@@ -1199,8 +1179,7 @@ def _handle_read_file_v42(
             prev_digest = prev_entry.get("digest", "")
             # SequenceMatcher is O(n*m) on lines -- skip the delta for big files.
             if prev_raw and n_lines <= 1500:
-                # The header advertises #prev_ref, so the previous body has to be
-                # retrievable by that ref -> store it in the CCR now.
+                # #prev_ref ships in the header, so store the body now.
                 prev_ref = prev_digest
                 try:
                     stored = _ccr_put(prev_full)
@@ -1242,9 +1221,7 @@ def _handle_read_file_v42(
             "reads": 1, "stub_hits": 0, "expired": False, "skeleton_only": False,
         }
 
-        # Case C: cold first read of a large file -> line-anchored AST skeleton.
-        # Fail-open: if the guard budget is already gone, ship the verbatim file
-        # instead of blowing the deadline.
+        # Case C: cold large file -> AST skeleton. Fail open on a spent budget.
         budget_left = True
         if deadline is not None:
             try:
@@ -1259,9 +1236,7 @@ def _handle_read_file_v42(
         else:
             min_skel = _COLD_READ_SKELETON_MIN_CHARS
         if budget_left and (len(result) >= min_skel or len(raw_body) >= min_skel):
-            # The skeleton advertises retrieve(hash=#...), so the full body must be in
-            # the CCR before the marker ships -- otherwise the folded 60% of the file
-            # is unreachable (dead pointer). No store -> stay verbatim.
+            # Store the body before the marker ships, else it is a dead pointer.
             _sk_ref = _ccr_put(result)
             if not _sk_ref:
                 return result, {
@@ -1313,8 +1288,7 @@ def _handle_read_file_v42(
                 except Exception:
                     pass
             if not (sk_saved > 200 and fn_count > 0) and _ext in _TEXT_STRUCT_EXTS:
-                # Not Python (markdown/yaml/rst/jsonl): the AST lane has nothing to
-                # say, so fold prose instead of shipping the whole file verbatim.
+                # Non-Python: the AST lane has nothing to say, so fold prose.
                 sk_body, sk_saved = fold_text_structure(
                     raw_body, ref=f"#{_sk_ref.lstrip('#')}", line_prefixes=prefixes, line_nos=line_nos,
                 )
@@ -1323,9 +1297,7 @@ def _handle_read_file_v42(
             if sk_saved > 200 and fn_count > 0:
                 rebuilt = "\n".join(headers + [sk_body] + footers) if (headers or footers) else sk_body
                 actual_saved = len(result) - len(rebuilt)
-                # Say how many lines were folded in the header so the reader
-                # knows the file is not complete without clicking through a
-                # [tt:body]/[tt:prose] marker.
+                # The header counts folded lines so the reader knows it is incomplete.
                 sk_lines_hidden = max(0, len(raw_body.split("\n")) - len(sk_body.split("\n")))
                 head = adaptive_tool_head(max(actual_saved, sk_saved), digest, len(result),
                                           hidden_lines=sk_lines_hidden, hidden_kind="folded",
@@ -1347,9 +1319,7 @@ def _handle_read_file_v42(
                         "ms": (time.perf_counter() - t0) * 1000,
                     }
 
-    # JSON files: neither the AST lane nor the prose lane can touch them, so a
-    # `.json` read used to pass through verbatim at any size. TOON (arrays) and
-    # whole-doc minify (objects) are both lossless and round-trip verified.
+    # JSON: TOON for arrays, minify for objects, both round-trip verified.
     if _ext in ("json",) or (raw_body.lstrip()[:1] in "{[" and _ext in ("json", "jsonl", "")):
         _jbody = raw_body.strip()
         if len(_jbody) >= 512:
@@ -1371,8 +1341,7 @@ def _handle_read_file_v42(
                     pass
             if _jcand is not None:
                 _jout = _jcand
-                # Minified/columnar text is not byte-identical to the file, so the
-                # original must stay retrievable: emit a real #ref or stay verbatim.
+                # Output is not byte-identical: ship a #ref or stay verbatim.
                 _jref = _ccr_put(result)
                 if not _jref:
                     _jcand = None
@@ -1436,8 +1405,7 @@ def micro_minify_tool(result: str, session_id: str, t0: float) -> tuple[str, dic
     char-based estimate is both safe and honest here.
     """
     digest = hashlib.sha256(result.encode("utf-8", "replace")).hexdigest()[:12]
-    # A unified diff carries " " on its blank context lines -- hygiene would strip
-    # that space and corrupt the diff.
+    # Diff context lines carry a leading space; hygiene would strip it.
     if "diff --git" in result[:512] or "\n@@ -" in result[:512]:
         text, h_saved = result, 0
     else:
@@ -1521,8 +1489,7 @@ def compress_tool_result(
             return result, {"gate": "passthrough_non_str", "ms": 0.0}
         if has_marker_head(result):
             return result, {"gate": "passthrough_sentinel", "reason": "sentinel", "ms": 0.0}
-        # Content policy: secrets, security policy and edit payloads are worth
-        # more byte-exact than compressed, however large they are.
+        # Secrets and edit payloads stay byte-exact at any size.
         if policy_enabled:
             try:
                 from .policy import classify as _classify_policy
@@ -1544,9 +1511,7 @@ def compress_tool_result(
                     toon_enabled = False
             except Exception:
                 pass
-        # A mutating tool changes the file, but the cached body is what the next
-        # read is diffed against -- dropping it here meant the file_delta lane
-        # could never fire in a real read -> patch -> re-read loop.
+        # Keep the body: the next read diffs against it (delta lane).
         if tool_name in _MUTATING_TOOLS:
             try:
                 mut_path, _, _ = _extract_file_args(args)
@@ -1560,10 +1525,7 @@ def compress_tool_result(
                 pass
         if tool_name in _READ_FILE_TOOLS:
             return _handle_read_file_v42(result, session_id, args, min_chars, t0, deadline, level, toon_enabled)
-        # The host delivers terminal results as {"output": "...", "exit_code": N}.
-        # Classifying that envelope as JSON runs a minifier over a single line and
-        # leaves the text that actually matters untouched, so the terminal lane
-        # never sees it.
+        # Unwrap the {"output": ...} envelope so the terminal lane sees the text.
         if tool_name == "terminal":
             env = _terminal_envelope(result)
             inner_text = result
@@ -1669,10 +1631,7 @@ def compress_tool_result(
             pass
         seen_state = _seen(session_id or "default")
         failed_hashes = seen_state.setdefault("failed_raw", set())
-        # Only a hash that previously FAILED (reverted_gate) and has no span in
-        # the fold index may be skipped; a result that was compressed
-        # successfully before must flow into fold_spans() again so it can be
-        # folded down to a pointer instead of shipping in full.
+        # Only a previously reverted hash without a span may be skipped.
         if _rh in failed_hashes and not any(h == _rh for h, _ in seen_state["spans"]):
             return result, {"gate": "passthrough_repeat", "ms": 0.0}
         if deadline is not None:
@@ -1795,8 +1754,7 @@ def compress_tool_result(
         tok_before = estimate_tokens(result)
         tok_after = estimate_tokens(new_result)
         if len(new_result) >= len(result) or tok_after >= tok_before:
-            # Cascade Gate Rescue: a header that costs more than it saves is
-            # reverted wholesale today. Try the nano header first.
+            # Header costs more than it saves: try the nano header first.
             if not is_lossless_only and ht_saved == 0:
                 nano_head = adaptive_tool_head(
                     len(result) - len(folded), digest, len(result), force_tier=1,
@@ -1835,8 +1793,7 @@ def compress_tool_result(
         return result, {"gate": "passthrough_timeout", "reason": "deadline",
                         "ms": (time.perf_counter() - t0) * 1000}
     except Exception as _e:
-        # Surface the cause: a swallowed exception here silently disables ALL
-        # tool-result compression, which is invisible in telemetry without this.
+        # Surface the cause: a swallowed error here disables all compression.
         return result, {"gate": "passthrough_exception",
                         "error": f"{type(_e).__name__}: {_e}"[:300],
                         "ms": (time.perf_counter() - t0) * 1000}
