@@ -95,7 +95,7 @@ Direct architectural comparison across context compression paradigms:
 | :--- | :---: | :---: | :---: |
 | **Execution Layer** | **In-process hook + CLI** | External subprocess fork | Local HTTP daemon / reverse proxy |
 | **Runtime Overhead** | **sub-ms hook** (microsecond in-process call) | 10 – 50 ms (process fork) | proxy queue + network hop |
-| **Lossless CCR (SQLite WAL + Zstd)** | ❌ Irreversible truncation | ⚠️ Disk cache / ephemeral handles |
+| **Data Loss Model** | **Lossless CCR (SQLite WAL + Zstd)** | ❌ Irreversible truncation | ⚠️ Disk cache / ephemeral handles |
 | **Ref Intelligence** | ✅ **`trimtok_exec` (compute on `#ref`)** | ❌ None | ⚠️ Whole-block retrieve only |
 | **Cross-Turn State** | ✅ **`[tt:delta]` (>95% on reruns)** | ❌ None (stateless per command) | ❌ None (stateless stream) |
 | **Structured JSON** | ✅ **Lossless TOON v2 (55% – 65%)** | ⚠️ Lossy head sample (99.6% lossy) | ⚠️ Reversible / dictionary encoder |
