@@ -2,6 +2,24 @@
 
 All notable changes to trimtok are documented here.
 
+## [5.8.2] - 2026-11-08
+
+### Added
+- **Fault-signature folding (`trimtok/core.py: _fold_fault_sigs`, `_fault_sig`).**
+  `_fold_templates` never folds an important line, so a log that is one traceback
+  looped N times kept all N copies: 80% of a 163KB error log is fault lines.
+  Repeated faults that differ only by timestamp/session id now fold to their first
+  and last occurrence plus a `[template ×N]` count. Digits stay in the signature on
+  purpose -- stripping them merged `attempt 2/3` with `attempt 3/3` and separate
+  traceback frames, which is the detail the log is read for.
+
+### Changed
+- The fold runs **after** the line window, not before. Before it, folding hid lines
+  the window would have dropped for free and its markers consumed budget slots
+  (163KB log measured 49K -> 58K). After it, only duplicates the sampler chose to
+  ship are removed. Corpus: 73.76% -> 74.83% reduction (-12,137 chars), 0 gate
+  failures, `audit_honesty` CLAIMED == PROVEN, timing within noise.
+
 ## [5.8.1] - 2026-11-08
 
 ### Added

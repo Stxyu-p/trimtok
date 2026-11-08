@@ -21,7 +21,7 @@ except Exception:
     _Levenshtein = None
     _FUZZY_AVAILABLE = False
 
-VERSION = "5.8.1"
+VERSION = "5.8.2"
 
 try:
     from . import delta_engine
@@ -155,6 +155,64 @@ def _fold_templates(
             _, count = first_of[idx]
             out.append((f"[template ×{count - 1}]", False))
     return out, hidden, len(big)
+
+
+_SESSION_ID_RE = re.compile(r"\[local-[0-9a-f]{16,}\]", re.I)
+
+
+@lru_cache(maxsize=8192)
+def _fault_sig(line: str) -> str:
+    """Identity of a fault line, ignoring only timestamps and session ids.
+
+    Digits stay in the key on purpose: stripping them conflated `attempt 2/3`
+    with `attempt 3/3` and separate traceback frames, which is the detail a
+    debugger reads the log for.
+    """
+    key = _SESSION_ID_RE.sub("[SESSION]", _normalize_line(line))
+    return key if len(key) >= 20 else ""
+
+
+def _fold_fault_sigs(
+    flagged: list[tuple[str, bool]],
+    deadline: Any | None = None,
+    min_group: int = 3,
+) -> tuple[list[tuple[str, bool]], int]:
+    """Fold fault lines that repeat with only their timestamp/session id changed.
+
+    `_fold_templates` never folds an important line, so a log that is one
+    traceback looped N times keeps all N copies -- 80% of a 163KB error log is
+    fault lines (measured on eval/corpus/t-log-errors.json). Copies are
+    byte-identical after timestamp/session normalisation, so folding them loses
+    no information: the first and the last stay inline, the marker counts the
+    middle, and the header's hidden=N plus the #ref restore the rest.
+    """
+    groups: dict[str, list[int]] = {}
+    for idx, (line, important) in enumerate(flagged):
+        if deadline is not None and (idx & 511) == 0:
+            deadline.check()
+        if not important or not line.strip():
+            continue
+        key = _fault_sig(line)
+        if key:
+            groups.setdefault(key, []).append(idx)
+    big = {k: v for k, v in groups.items() if len(v) >= min_group}
+    if not big:
+        return flagged, 0
+    hide: set[int] = set()
+    marker_at: dict[int, int] = {}
+    for members in big.values():
+        hide.update(members[1:-1])
+        marker_at[members[-1]] = len(members) - 2
+    out: list[tuple[str, bool]] = []
+    hidden = 0
+    for idx, item in enumerate(flagged):
+        if idx in hide:
+            hidden += 1
+            continue
+        out.append(item)
+        if idx in marker_at:
+            out.append((f"[template ×{marker_at[idx]}]", False))
+    return out, hidden
 
 
 def detect_kind(text: str) -> str:
@@ -511,6 +569,15 @@ def compress_terminal(
             or (not _PROGRESS_RE.match(ln) and not _NOISE_LINE_RE.match(ln))
         ]
         windowed, dropped = _window(kept, budget)
+        # Fault folding runs AFTER the window on purpose. Before it, folding hides
+        # lines the window would have dropped for free and its markers eat budget
+        # slots (measured: 163KB log went 49K -> 58K). After it, it only removes
+        # duplicates the sampler already chose to ship.
+        windowed_f, f_hidden = _fold_fault_sigs(
+            [(ln, is_important(ln)) for ln in windowed], deadline)
+        if f_hidden:
+            windowed = [ln for ln, _ in windowed_f]
+            hidden += f_hidden
         digest = hashlib.sha256(output.encode("utf-8", "replace")).hexdigest()[:12]
         try:
             _ccr_put(output)
