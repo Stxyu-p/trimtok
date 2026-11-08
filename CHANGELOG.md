@@ -2,6 +2,18 @@
 
 All notable changes to trimtok are documented here.
 
+## [5.8.3] - 2026-11-08
+
+### Fixed
+- **`_TS_PREFIX_RE` swallowed every timestamped line without a `]`.** The tail
+  `[^\]]*` was unbounded, so `2026-10-25 22:02:43,678 WARNING ... fork` normalised
+  to `""`. `_fault_sig()` and `_template_key()` both return `""` for a short key,
+  so neither fold could group those lines -- the majority of every log payload.
+  The regex now matches only real timestamp tails (`.ms`, `,ms`, `Z`, `+07:00`).
+  Corpus: 74.83% -> **76.07%** (-14,169 chars). A/B on the three log payloads
+  shows the count of distinct important messages kept in the output is unchanged
+  (+0 across all three): only duplicate copies were removed.
+
 ## [5.8.2] - 2026-11-08
 
 ### Added

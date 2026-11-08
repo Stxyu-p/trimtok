@@ -16,7 +16,7 @@ except Exception:
     _Levenshtein = None
     _FUZZY_AVAILABLE = False
 
-VERSION = "5.8.2"
+VERSION = "5.8.3"
 
 try:
     from . import delta_engine
@@ -71,7 +71,7 @@ except Exception:
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][AB0]")
 
 _TS_PREFIX_RE = re.compile(
-    r"^\[?\d{4}[-/]\d{2}[-/]\d{2}[T ]\d{2}:\d{2}:\d{2}[^\]]*\]?\s*"
+    r"^\[?\d{4}[-/]\d{2}[-/]\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,9})?(?:Z|[+-]\d{2}:?\d{2})?\]?\s*"
 )
 _PID_PREFIX_RE = re.compile(r"^\[\d+\]\s*|^pid[=:]\s*\d+\s*", re.I)
 _PROGRESS_RE = re.compile(

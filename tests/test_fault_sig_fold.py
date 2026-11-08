@@ -59,3 +59,27 @@ def test_terminal_compression_still_announces_hidden_lines():
     assert stats["gate"] == "ok"
     assert len(out) < len(payload)
     assert "hidden=" in out.split("\n", 1)[0]
+
+
+def test_ts_prefix_keeps_message_without_bracket():
+    """Greedy `[^\]]*` used to swallow the whole line, so no log line grouped."""
+    from trimtok.core import _fault_sig, _normalize_line
+
+    line = "2026-10-25 22:02:43,678 WARNING agent.x: compression skipped: fork"
+    assert _normalize_line(line) == "WARNING agent.x: compression skipped: fork"
+
+    other = line.replace("fork", "race")
+    assert _fault_sig(line) != _fault_sig(other)
+    assert len(_fault_sig(line)) >= 20
+
+
+def test_ts_prefix_variants_normalize_to_message():
+    from trimtok.core import _normalize_line
+
+    for line in (
+        "[2026-10-25 22:02:43] INFO worker: done",
+        "2026-10-25T22:02:43.123Z GET /api 200",
+        "2026-10-25T22:02:43+07:00 INFO x",
+        "no timestamp here",
+    ):
+        assert _normalize_line(line)
