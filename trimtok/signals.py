@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import time
 from functools import lru_cache
@@ -510,5 +511,61 @@ def check_command_thrash(session_id: str, cmd: str, output: str, exit_code: int)
     if state["streak"] >= 3:
         return f"[tt:loop_warning streak={state['streak']} hint=\"'{cmd}' failed {state['streak']} times; inspect root cause instead of re-running\"]"
     return None
+
+
+_SOURCE_CODE_EXTS = frozenset({
+    ".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+    ".rs", ".go", ".c", ".h", ".cpp", ".cc", ".cxx", ".hpp",
+    ".java", ".kt", ".swift", ".cs", ".rb", ".php", ".scala"
+})
+
+_HOTSPOT_PY_RE = re.compile(r'File "([^"]+)", line (\d+)')
+_HOTSPOT_GENERIC_RE = re.compile(
+    r'(?:^|[\s\(\[\'"])((?:[a-zA-Z]:[\\/]|/|[a-zA-Z0-9_\-\.]+)[a-zA-Z0-9_\-\./\\]+\.([a-zA-Z0-9_]+)):(\d+)(?::\d+)?'
+)
+
+
+def extract_traceback_hotspots(text: str, max_files: int = 5) -> dict[str, list[int]]:
+    """Extract (file_path, line_no) failure hotspots from traceback/compiler output.
+
+    Pure stdlib, sub-millisecond regex scanner. Returns mapping of normalized
+    path -> sorted list of line numbers, bounded by `max_files`.
+    """
+    if not text or not isinstance(text, str):
+        return {}
+    # Cheap prefilter: if no line numbers or file markers exist, skip scanning
+    if "line " not in text and ":" not in text:
+        return {}
+
+    found: dict[str, set[int]] = {}
+
+    # Pass 1: Python-style File "path", line N
+    for m in _HOTSPOT_PY_RE.finditer(text):
+        p, ln = m.group(1).strip(), m.group(2)
+        _, ext = os.path.splitext(p)
+        if ext.lower() in _SOURCE_CODE_EXTS:
+            norm_p = os.path.normcase(os.path.normpath(p))
+            try:
+                found.setdefault(norm_p, set()).add(int(ln))
+            except (ValueError, TypeError):
+                pass
+            if len(found) >= max_files:
+                break
+
+    # Pass 2: Compiler/pytest-style path.ext:line[:col]
+    if len(found) < max_files:
+        for m in _HOTSPOT_GENERIC_RE.finditer(text):
+            p, ext, ln = m.group(1).strip(), "." + m.group(2).lower(), m.group(3)
+            if ext in _SOURCE_CODE_EXTS:
+                norm_p = os.path.normcase(os.path.normpath(p))
+                try:
+                    found.setdefault(norm_p, set()).add(int(ln))
+                except (ValueError, TypeError):
+                    pass
+                if len(found) >= max_files:
+                    break
+
+    return {p: sorted(lines)[:10] for p, lines in list(found.items())[:max_files]}
+
 
 
