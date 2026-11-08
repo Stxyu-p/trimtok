@@ -120,11 +120,12 @@ def detect_language(code: str, filename: str = "") -> str:
 
 def _skeletonize_ts_core(
     code: str,
-    lang: str,
+    lang: str = "javascript",
     min_body_lines: int = 8,
     ref: str = "",
     line_prefixes: list[str] | None = None,
     line_nos: list[int] | None = None,
+    focus_lines: set[int] | list[int] | None = None,
 ) -> tuple[str, int, int]:
     """Extract signatures and fold function bodies using tree-sitter. Returns (text, saved_chars, count)."""
     ts = _get_ts_lang(lang)
@@ -151,6 +152,7 @@ def _skeletonize_ts_core(
 
     # Collect ranges to fold: (start_line_1idx, end_line_1idx, indent_str, name)
     fold_ranges = []
+    focus_set = set(focus_lines) if focus_lines else None
 
     # Iterative depth-first traversal to avoid recursion limits
     stack = [tree.root_node]
@@ -163,6 +165,16 @@ def _skeletonize_ts_core(
             "constructor_declaration", "arrow_function",
         )
         if is_func:
+            fn_node_s = node.start_point[0] + 1
+            fn_node_e = node.end_point[0] + 1
+            if focus_set and fn_node_s and fn_node_e:
+                if use_prefixes and line_nos:
+                    r_s = line_nos[fn_node_s - 1] if 0 <= fn_node_s - 1 < len(line_nos) else fn_node_s
+                    r_e = line_nos[fn_node_e - 1] if 0 <= fn_node_e - 1 < len(line_nos) else fn_node_e
+                else:
+                    r_s, r_e = fn_node_s, fn_node_e
+                if any(r_s <= fl <= r_e for fl in focus_set):
+                    continue
             body = None
             for child in node.children:
                 if child.type in (
@@ -257,6 +269,7 @@ def skeletonize_code_full(
     line_prefixes: list[str] | None = None,
     line_nos: list[int] | None = None,
     min_body_lines: int = 8,
+    focus_lines: set[int] | list[int] | None = None,
 ) -> tuple[str, int, int]:
     """Full multi-language code skeletonizer with exact line prefixes and line numbers.
     Returns: (skeleton_text, saved_chars, folded_functions_count)
@@ -269,7 +282,8 @@ def skeletonize_code_full(
             from .pruners import smart_skeletonize_code
             res, saved, count = smart_skeletonize_code(
                 code, ref=ref, min_body_lines=min_body_lines,
-                line_prefixes=line_prefixes, line_nos=line_nos
+                line_prefixes=line_prefixes, line_nos=line_nos,
+                focus_lines=focus_lines,
             )
             if saved > 0 and count > 0:
                 return res, saved, count
@@ -278,7 +292,8 @@ def skeletonize_code_full(
     if lang in ("python", "javascript", "go", "rust", "java", "c", "cpp", "csharp", "bash"):
         return _skeletonize_ts_core(
             code, lang=lang, min_body_lines=min_body_lines, ref=ref,
-            line_prefixes=line_prefixes, line_nos=line_nos
+            line_prefixes=line_prefixes, line_nos=line_nos,
+            focus_lines=focus_lines,
         )
     return code, 0, 0
 

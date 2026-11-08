@@ -486,6 +486,7 @@ def smart_skeletonize_code(
     min_body_lines: int = _MIN_FOLD_BODY_LINES,
     line_prefixes: list[str] | None = None,
     line_nos: list[int] | None = None,
+    focus_lines: set[int] | list[int] | None = None,
 ) -> tuple[str, int, int]:
     """Line-anchored AST code skeletonizer with Zero Loss of Signatures/Types.
 
@@ -519,12 +520,24 @@ def smart_skeletonize_code(
     )
     # Ranges to fold: (fold_start_1idx, fold_end_1idx, indent_str, func_name)
     fold_ranges: list[tuple[int, int, str, str]] = []
+    focus_set = set(focus_lines) if focus_lines else None
 
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         if not getattr(node, "body", None) or not hasattr(node, "end_lineno"):
             continue
+        # Hotspot focus protection: if this function contains any focus line, preserve verbatim!
+        fn_node_start = getattr(node, "lineno", 0)
+        fn_node_end = getattr(node, "end_lineno", 0)
+        if focus_set and fn_node_start and fn_node_end:
+            if use_prefixes and line_nos:
+                r_s = line_nos[fn_node_start - 1] if 0 <= fn_node_start - 1 < len(line_nos) else fn_node_start
+                r_e = line_nos[fn_node_end - 1] if 0 <= fn_node_end - 1 < len(line_nos) else fn_node_end
+            else:
+                r_s, r_e = fn_node_start, fn_node_end
+            if any(r_s <= fl <= r_e for fl in focus_set):
+                continue
         # Skip folding nested functions inside a parent that is itself folded.
         first_stmt = node.body[0]
         first_fold_stmt = first_stmt

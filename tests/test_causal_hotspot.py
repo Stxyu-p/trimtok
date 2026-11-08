@@ -62,5 +62,92 @@ class TestTracebackHotspotExtraction(unittest.TestCase):
         self.assertEqual(len(spots), 0)
 
 
+class TestAstFocusProtection(unittest.TestCase):
+    def test_smart_skeletonize_protects_hotspot_function(self):
+        from trimtok.pruners import smart_skeletonize_code
+
+        code_lines = [
+            "def helper_func(x):",
+        ] + [f"    a_{i} = {i}" for i in range(25)] + [
+            "    return a_0",
+            "",
+            "def target_func(y):",
+        ] + [f"    b_{i} = {i}" for i in range(25)] + [
+            "    return b_0",
+        ]
+        code = "\n".join(code_lines)
+        line_prefixes = [f"{i+1}|" for i in range(len(code_lines))]
+        line_nos = list(range(1, len(code_lines) + 1))
+
+        # Without focus_lines: both functions should be folded
+        res_default, _, count = smart_skeletonize_code(
+            code, line_prefixes=line_prefixes, line_nos=line_nos
+        )
+        self.assertEqual(count, 2)
+        self.assertIn("[tt:body", res_default)
+
+        # Target line inside target_func (approx line 32)
+        target_line = 32
+        res_focused, _, count_focused = smart_skeletonize_code(
+            code, line_prefixes=line_prefixes, line_nos=line_nos, focus_lines=[target_line]
+        )
+        self.assertEqual(count_focused, 1)  # only helper_func folded!
+        self.assertIn("def helper_func", res_focused)
+        self.assertIn("def target_func", res_focused)
+        # helper_func was folded:
+        self.assertIn("[tt:body L2-", res_focused)
+        # target_func was NOT folded:
+        self.assertIn("35|    b_5 = 5", res_focused)
+
+    def test_ts_skeleton_protects_hotspot_function(self):
+        from trimtok.ts_skeleton import skeletonize_code_full, _get_ts_lang
+
+        # Test python dispatch through skeletonize_code_full
+        py_lines = [
+            "def helperFunc():",
+        ] + [f"    a_{i} = 'some_long_padding_string_{i}'" for i in range(25)] + [
+            "    return 0",
+            "",
+            "def targetFunc():",
+        ] + [f"    b_{i} = 'some_long_padding_string_{i}'" for i in range(25)] + [
+            "    return 1",
+        ]
+        py_code = "\n".join(py_lines)
+        pfx = [f"{i+1}|" for i in range(len(py_lines))]
+        nos = list(range(1, len(py_lines) + 1))
+        res_py, _, count_py = skeletonize_code_full(
+            py_code, filename="index.py", line_prefixes=pfx, line_nos=nos,
+            focus_lines=[32]
+        )
+        self.assertEqual(count_py, 1)
+        self.assertIn("35|    b_5 = ", res_py)
+
+        # Test tree-sitter JS if available
+        if _get_ts_lang("javascript") is None:
+            return
+
+        code_lines = [
+            "function helperFunc() {",
+        ] + [f"    const a_{i} = 'some_long_padding_string_{i}';" for i in range(25)] + [
+            "    return 0;",
+            "}",
+            "",
+            "function targetFunc() {",
+        ] + [f"    const b_{i} = 'some_long_padding_string_{i}';" for i in range(25)] + [
+            "    return 1;",
+            "}",
+        ]
+        code = "\n".join(code_lines)
+        line_prefixes = [f"{i+1}|" for i in range(len(code_lines))]
+        line_nos = list(range(1, len(code_lines) + 1))
+
+        res_focused, _, count_focused = skeletonize_code_full(
+            code, filename="index.js", line_prefixes=line_prefixes, line_nos=line_nos,
+            focus_lines=[32]
+        )
+        self.assertEqual(count_focused, 1)
+        self.assertIn("35|    const b_5 = ", res_focused)
+
+
 if __name__ == "__main__":
     unittest.main()
