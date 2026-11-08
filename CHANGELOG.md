@@ -2,6 +2,17 @@
 
 All notable changes to trimtok are documented here.
 
+## [Unreleased]
+
+### Tests
+- `test_dedup_checks_pass` / `test_core_checks_pass` could fail intermittently:
+  both assert a module-level `check.failed` counter that any later import or
+  shared-store pollution could perturb. They now assert a snapshot taken right
+  after their own sequence (`_IMPORT_FAILURES`), and the dedup sequence resets
+  turn state first, because every test module sharing `TRIMTOK_DATA_DIR` means
+  the first importer's store is everyone's store. Verified with a negative
+  control: inverting one module-level check still fails the pytest test.
+
 ## [5.8.4] - 2026-11-08
 
 ### Added

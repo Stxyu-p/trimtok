@@ -31,6 +31,10 @@ def check(name, cond):
     if not cond:
         check.failed += 1
 check.failed = 0
+# An earlier module may share this store (setdefault keeps the first importer's
+# dir), so reset turn state before the sequence; module-level checks are
+# order-sensitive by nature.
+clear_session()
 
 check("direct-test-ccr-isolated", _Path(_ccr_default_dir()) == _Path(os.environ["TRIMTOK_DATA_DIR"]))
 
@@ -418,11 +422,15 @@ finally:
     clear_session("span-budget")
     clear_session("line-budget")
 
+# Snapshot: pytest must fail if any module-level check above failed,
+# even if a later module or a duplicate import perturbs the counter.
+_IMPORT_FAILURES = check.failed
+
 import unittest
 
 class TestDedupSuite(unittest.TestCase):
     def test_dedup_checks_pass(self) -> None:
-        self.assertEqual(check.failed, 0)
+        self.assertEqual(_IMPORT_FAILURES, 0)
 
 
 print(f"\n{check.failed} failures")
