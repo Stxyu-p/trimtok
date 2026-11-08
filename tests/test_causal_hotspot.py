@@ -149,5 +149,62 @@ class TestAstFocusProtection(unittest.TestCase):
         self.assertIn("35|    const b_5 = ", res_focused)
 
 
+class TestCrossToolHotspotFlow(unittest.TestCase):
+    def test_terminal_error_protects_subsequent_read_file(self):
+        import json
+        from trimtok.dedup import compress_tool_result
+
+        sess_id = "test_causal_session"
+        other_sess = "test_other_session"
+
+        # 1. Terminal error referencing foo/big_module.py line 85 (inside target_func)
+        tb = (
+            'Traceback (most recent call last):\n'
+            '  File "foo/big_module.py", line 85, in target_func\n'
+            '    assert False, "failure"\n'
+            'AssertionError: failure\n'
+        )
+        term_payload = json.dumps({"output": tb, "exit_code": 1})
+        compress_tool_result("terminal", term_payload, session_id=sess_id)
+
+        # 2. Large code file (> 2500 chars to exceed cold read threshold)
+        code_lines = [
+            "def helper_func(x):",
+        ] + [f"    # long descriptive helper comment {i}\n    val_{i} = {i} * 100" for i in range(35)] + [
+            "    return val_0",
+            "",
+            "def target_func(y):",
+        ] + [f"    # long descriptive target comment {i}\n    tgt_{i} = {i} * 200" for i in range(35)] + [
+            "    return tgt_0",
+        ]
+        flattened_lines = []
+        for l in code_lines:
+            flattened_lines.extend(l.split("\n"))
+
+        file_body = "\n".join([f"{i+1}|{ln}" for i, ln in enumerate(flattened_lines)])
+        # Must be large enough (> 2048 chars)
+        self.assertGreater(len(file_body), 2048)
+
+        # 3. Read file in the same session
+        res, stats = compress_tool_result(
+            "read_file", file_body, args={"path": "foo/big_module.py"},
+            session_id=sess_id, min_chars=1024
+        )
+        self.assertEqual(stats["gate"], "ok")
+        # helper_func folded
+        self.assertIn("[tt:body", res)
+        self.assertIn("helper_func", res)
+        # target_func kept intact (tgt_5 exists in output)
+        self.assertIn("tgt_5 =", res)
+
+        # 4. Read file in other session without hotspot -> target_func folded too
+        res_other, stats_other = compress_tool_result(
+            "read_file", file_body, args={"path": "foo/big_module.py"},
+            session_id=other_sess, min_chars=1024
+        )
+        self.assertEqual(stats_other["gate"], "ok")
+        self.assertNotIn("tgt_5 =", res_other)
+
+
 if __name__ == "__main__":
     unittest.main()

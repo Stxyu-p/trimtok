@@ -100,13 +100,15 @@ def _seen(session_id: str) -> dict:
         entry = _SEEN.get(key)
         if entry is None:
             entry = {
-                "spans": [], "span_chars": 0, "lines": {}, "raw": set(), "turns": {}
+                "spans": [], "span_chars": 0, "lines": {}, "raw": set(), "turns": {}, "hotspots": {}
             }
             _SEEN[key] = entry
         if "span_chars" not in entry:
             entry["span_chars"] = sum(len(text) for _, text in entry["spans"])
         if "turns" not in entry:
             entry["turns"] = {}
+        if "hotspots" not in entry:
+            entry["hotspots"] = {}
         return entry
 
 
@@ -1274,9 +1276,25 @@ def _handle_read_file_v42(
                 skel_body_lines = _fold_min(level)
             except Exception:
                 pass
+            focus_lines = None
+            if norm_path:
+                with _SEEN_LOCK:
+                    h_dict = _seen(session_id).get("hotspots", {})
+                    if norm_path in h_dict:
+                        focus_lines = h_dict[norm_path]
+                    else:
+                        for hp, lns in h_dict.items():
+                            if (
+                                norm_path.endswith(hp)
+                                or hp.endswith(norm_path)
+                                or norm_path.endswith(os.path.normpath(hp))
+                            ):
+                                focus_lines = lns
+                                break
             sk_body, sk_saved, fn_count = smart_skeletonize_code(
                 raw_body, ref=f"#{_sk_ref.lstrip('#')}", line_prefixes=prefixes, line_nos=line_nos,
                 min_body_lines=skel_body_lines,
+                focus_lines=focus_lines,
             )
             sk_kind = "file_skeleton"
             _ext = (norm_path or "").rsplit(".", 1)[-1].lower() if "." in (norm_path or "") else ""
@@ -1286,6 +1304,7 @@ def _handle_read_file_v42(
                     sk_cand, sk_cand_saved, sk_cand_count = skeletonize_code_full(
                         raw_body, filename=norm_path, ref=f"#{_sk_ref.lstrip('#')}",
                         line_prefixes=prefixes, line_nos=line_nos,
+                        focus_lines=focus_lines,
                     )
                     if sk_cand_saved > 200 and sk_cand_count > 0:
                         sk_body = sk_cand
@@ -1547,17 +1566,44 @@ def compress_tool_result(
         # never sees it.
         if tool_name == "terminal":
             env = _terminal_envelope(result)
+            inner_text = result
+            envelope = None
+            _code = 0
             if env is not None:
                 inner_text, envelope = env
+                try:
+                    _code = int(envelope.get("exit_code") or 0)
+                except (TypeError, ValueError):
+                    _code = 0
+            elif result.lstrip().startswith("{"):
+                try:
+                    _parsed = _json.loads(result)
+                    if isinstance(_parsed, dict) and isinstance(_parsed.get("output"), str):
+                        inner_text = _parsed["output"]
+                        _code = int(_parsed.get("exit_code") or 0)
+                except Exception:
+                    pass
+
+            try:
+                from .signals import extract_traceback_hotspots, is_important
+                if _code != 0 or any(is_important(ln) for ln in inner_text.splitlines()[:50]):
+                    spots = extract_traceback_hotspots(inner_text)
+                    if spots:
+                        with _SEEN_LOCK:
+                            h_dict = _seen(session_id).setdefault("hotspots", {})
+                            for p, lns in spots.items():
+                                h_dict[p] = lns
+                            while len(h_dict) > 10:
+                                h_dict.pop(next(iter(h_dict)), None)
+            except Exception:
+                pass
+
+            if env is not None and envelope is not None:
                 command = ""
                 if isinstance(args, dict):
                     command = str(args.get("command") or "")
                 try:
                     from .core import compress_terminal
-                    try:
-                        _code = int(envelope.get("exit_code") or 0)
-                    except (TypeError, ValueError):
-                        _code = 0
                     new_inner, inner_stats = compress_terminal(
                         command, inner_text, min_chars=min_chars, deadline=deadline,
                         level=level, pressure=pressure, exit_code=_code,
