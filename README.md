@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://pypi.org/project/trimtok/"><img src="https://img.shields.io/pypi/v/trimtok?style=flat-square" alt="PyPI" /></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10+-blue?style=flat-square" alt="Python" /></a>
-  <a href="#how-it-works"><img src="https://img.shields.io/badge/latency-%3C_2ms_in--process-10b981?style=flat-square" alt="Latency" /></a>
+  <a href="#how-it-works"><img src="https://img.shields.io/badge/latency-sub--ms_hook_%7C_200ms_guard-10b981?style=flat-square" alt="Latency" /></a>
   <a href="#7-ccr-recovery"><img src="https://img.shields.io/badge/storage-SQLite_WAL_+_Zstd-07405E?style=flat-square" alt="Storage" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-slate?style=flat-square" alt="License" /></a>
 </p>
@@ -35,14 +35,18 @@ Autonomous coding agents burn over **60% of their context window budget** on rep
 | **Build & Compiler Logs** | 15,960 toks | **4,869 toks** | **-69.5%** | Adaptive error-rail balanced windowing |
 | **Whole Repo Codebase Map** | 12,000 toks | **480 toks** | **-96.0%** | 2k-budget hierarchical tree map |
 
-Measured across a 32-payload production corpus (1,135,441 characters): **73.2% reduction with zero gate failures**, of which every removed character is verifiable through `trimtok_retrieve`. Retrieval is billed only when the agent asks a question, taking the same corpus from 74.8% to **89.1%** saved.
+Measured across a 32-payload production corpus (1,135,441 characters): **76.07% reduction (863,784 chars) with zero gate failures**, of which every removed character is verifiable through `trimtok_retrieve` — the honesty audit reports 76.07% claimed and 76.07% proven, 0 unproven characters.
+
+On real traffic the picture differs by payload mix, and that is measured too: 12,204 recorded transforms have saved **6,013,550 characters** (~1.5M tokens). 42.7% of live calls are smaller than the compression threshold and 26.1% are deliberately verbatim (secrets, edit payloads, already-compressed sentinels), so the reduction across *all* traffic is 9.8% while calls that actually compress average 17.6%.
 
 ---
+
+Rows in the table are single-payload spot checks over the shapes stored in `eval/corpus/`; they are not the headline figure. The audited number is the corpus line above, which `eval/audit_honesty.py` recomputes from the recovery store.
 
 <a id="how-it-works"></a>
 ## 🏗️ How It Works
 
-**trimtok** operates 100% locally and in-process using the Python standard library, RapidFuzz C++ alignment, tree-sitter AST parsing, and Zstandard compression. No external daemons, no Docker containers, and zero open network ports.
+**trimtok** operates 100% locally and in-process using the Python standard library, RapidFuzz C++ alignment, optional tree-sitter AST parsing (`pip install "trimtok[multilang]"`), and Zstandard compression. No external daemons, no Docker containers, and zero open network ports. The default install parses Python with the stdlib `ast`; the other grammar packs are opt-in.
 
 ```text
   ┌────────────────────────────────────────────────────────┐
@@ -55,13 +59,13 @@ Tool / Terminal Output
          │
          ▼
   ┌────────────────────────────────────────────────────────┐
-  │ Tier 1: In-Process Hot-Path (< 2 ms, fail-open ≤ 200ms)│
+  │ Tier 1: In-Process Hot-Path (sub-ms typ., guard 200ms) │
   │ ├── 0. Content Policy Gate (secrets / edits verbatim)  │
   │ ├── 1. Cross-Turn Delta Engine (pytest, cargo test)    │
   │ ├── 2. Command-Specific Filters (git, npm, pip, etc.)  │
   │ ├── 3. Structured Traceback Pruning (locks crash-site) │
   │ ├── 4. Lossless & Merged TOON v2 (JSON arrays)         │
-  │ ├── 5. Multi-Language AST Skeletonizer (7 languages)   │
+  │ ├── 5. Multi-Language AST Skeletonizer (opt-in grammar)│
   │ └── 6. Tiered Web & Doc Link De-bloating               │
   └──────────────────────────┬─────────────────────────────┘
                              │  level: light │ normal │ aggressive
@@ -78,7 +82,7 @@ Tool / Terminal Output
 
 | 🏛️ Architecture & Verification | ⚡ Core Engineering Pillars | 🛠️ Setup & Operations |
 | :--- | :--- | :--- |
-| • [⚡ At a Glance: Before vs After](#at-a-glance)<br>• [🏗️ How It Works](#how-it-works)<br>• [🥊 Architecture & Benchmark Matrix](#market-comparison)<br>• [🔬 Empirical Quality & Fidelity](#empirical-verification) | • **[Pillar 1: Terminal Compression](#pillar-1-terminal)**<br>&nbsp;&nbsp;▫ [Cross-Turn Delta Engine](#1-cross-turn-delta)<br>&nbsp;&nbsp;▫ [Command-Specific Filters](#2-command-filters)<br>&nbsp;&nbsp;▫ [Structured Traceback Pruning](#3-traceback-pruning)<br>• **[Pillar 2: Intake Shield](#pillar-2-intake)**<br>&nbsp;&nbsp;▫ [Tiered Web & File Intake](#4-tiered-web-intake)<br>&nbsp;&nbsp;▫ [AST Code Skeletonizer](#5-ast-skeletonizer)<br>&nbsp;&nbsp;▫ [Lossless TOON v2 (JSON)](#6-toon-v2)<br>• **[Pillar 3: Zero Data Loss](#pillar-3-zero-data-loss)**<br>&nbsp;&nbsp;▫ [CCR Recovery (`#ref`)](#7-ccr-recovery)<br>&nbsp;&nbsp;▫ [Telemetry & Diagnostics](#8-telemetry-diagnostics)<br>&nbsp;&nbsp;▫ [Fail-Open Budget Guards](#9-fail-open-guards)<br>• **[Pillar 4: Policy & Verification](#pillar-4-policy)**<br>&nbsp;&nbsp;▫ [Content Policy Gate](#10-content-policy)<br>&nbsp;&nbsp;▫ [Adaptive Compression Level](#11-adaptive-level)<br>&nbsp;&nbsp;▫ [Model-Aware Output Format](#12-model-aware)<br>&nbsp;&nbsp;▫ [Fix-Accuracy Verification](#14-fix-accuracy) | • **[First-Time Setup (5 Mins)](#first-time-setup)**<br>&nbsp;&nbsp;▫ [Step 1: Install trimtok](#step-1-install)<br>&nbsp;&nbsp;▫ [Step 2: Setup Wizard](#step-2-wizard)<br>&nbsp;&nbsp;▫ [Step 3: Health Verification](#step-3-health)<br>• **[Hermes Plugin Setup](#hermes-configuration)**<br>&nbsp;&nbsp;▫ [Configuration Options](#hermes-config-options)<br>• **[Slash Commands & CLI](#slash-commands-cli)**<br>&nbsp;&nbsp;▫ [In-Chat Slash Commands](#hermes-slash-commands)<br>&nbsp;&nbsp;▫ [KV-Cache Stabilizer (`kv-lock`)](#kvlock-cli)<br>&nbsp;&nbsp;▫ [Codebase Map (`map`)](#codemap-cli)<br>&nbsp;&nbsp;▫ [Bounded MCP Proxy (`mcp-proxy`)](#mcp-proxy-cli)<br>&nbsp;&nbsp;▫ [Standalone Wrapper (`wrap`)](#standalone-cli-wrapper)<br>&nbsp;&nbsp;▫ [Command Rewriting (`rewrite`)](#rewrite-cli)<br>• **[Global Agent Trinity](#global-agent-trinity)**<br>• **[Verification & Tests](#verification)**<br>• **[License (MIT)](#license)** |
+| • [⚡ At a Glance: Before vs After](#at-a-glance)<br>• [🏗️ How It Works](#how-it-works)<br>• [🥊 Architecture & Benchmark Matrix](#market-comparison)<br>• [🔬 Empirical Quality & Fidelity](#empirical-verification) | • **[Pillar 1: Terminal Compression](#pillar-1-terminal)**<br>&nbsp;&nbsp;▫ [Cross-Turn Delta Engine](#1-cross-turn-delta)<br>&nbsp;&nbsp;▫ [Command-Specific Filters](#2-command-filters)<br>&nbsp;&nbsp;▫ [Structured Traceback Pruning](#3-traceback-pruning)<br>&nbsp;&nbsp;▫ [Fault-Signature Folding](#3b-fault-folding)<br>• **[Pillar 2: Intake Shield](#pillar-2-intake)**<br>&nbsp;&nbsp;▫ [Tiered Web & File Intake](#4-tiered-web-intake)<br>&nbsp;&nbsp;▫ [AST Code Skeletonizer](#5-ast-skeletonizer)<br>&nbsp;&nbsp;▫ [Lossless TOON v2 (JSON)](#6-toon-v2)<br>• **[Pillar 3: Zero Data Loss](#pillar-3-zero-data-loss)**<br>&nbsp;&nbsp;▫ [CCR Recovery (`#ref`)](#7-ccr-recovery)<br>&nbsp;&nbsp;▫ [Pointer Tier (`pointer_large`)](#7b-pointer-large)<br>&nbsp;&nbsp;▫ [Telemetry & Diagnostics](#8-telemetry-diagnostics)<br>&nbsp;&nbsp;▫ [Fail-Open Budget Guards](#9-fail-open-guards)<br>• **[Pillar 4: Policy & Verification](#pillar-4-policy)**<br>&nbsp;&nbsp;▫ [Content Policy Gate](#10-content-policy)<br>&nbsp;&nbsp;▫ [Adaptive Compression Level](#11-adaptive-level)<br>&nbsp;&nbsp;▫ [Model-Aware Output Format](#12-model-aware)<br>&nbsp;&nbsp;▫ [Fix-Accuracy Verification](#14-fix-accuracy) | • **[First-Time Setup (5 Mins)](#first-time-setup)**<br>&nbsp;&nbsp;▫ [Step 1: Install trimtok](#step-1-install)<br>&nbsp;&nbsp;▫ [Step 2: Setup Wizard](#step-2-wizard)<br>&nbsp;&nbsp;▫ [Step 3: Health Verification](#step-3-health)<br>• **[Hermes Plugin Setup](#hermes-configuration)**<br>&nbsp;&nbsp;▫ [Configuration Options](#hermes-config-options)<br>• **[Slash Commands & CLI](#slash-commands-cli)**<br>&nbsp;&nbsp;▫ [In-Chat Slash Commands](#hermes-slash-commands)<br>&nbsp;&nbsp;▫ [KV-Cache Stabilizer (`kv-lock`)](#kvlock-cli)<br>&nbsp;&nbsp;▫ [Codebase Map (`map`)](#codemap-cli)<br>&nbsp;&nbsp;▫ [Bounded MCP Proxy (`mcp-proxy`)](#mcp-proxy-cli)<br>&nbsp;&nbsp;▫ [Standalone Wrapper (`wrap`)](#standalone-cli-wrapper)<br>&nbsp;&nbsp;▫ [Command Rewriting (`rewrite`)](#rewrite-cli)<br>• **[Global Agent Trinity](#global-agent-trinity)**<br>• **[Verification & Tests](#verification)**<br>• **[License (MIT)](#license)** |
 
 ---
 
@@ -90,8 +94,8 @@ Direct architectural comparison across context compression paradigms:
 | Architectural Dimension | **trimtok** 🌟 | **Subprocess CLI** (e.g. RTK) | **Local HTTP Proxy** (e.g. Distil / Headroom) |
 | :--- | :---: | :---: | :---: |
 | **Execution Layer** | **In-process hook + CLI** | External subprocess fork | Local HTTP daemon / reverse proxy |
-| **Runtime Overhead** | **< 2 ms** (microsecond hook) | 10 – 50 ms (process fork) | ~9,000 ms (proxy queue & network) |
-| **Data Loss Model** | **Lossless CCR (SQLite WAL + Zstd)** | ❌ Irreversible truncation | ⚠️ Disk cache / ephemeral handles |
+| **Runtime Overhead** | **sub-ms hook** (microsecond in-process call) | 10 – 50 ms (process fork) | proxy queue + network hop |
+| **Lossless CCR (SQLite WAL + Zstd)** | ❌ Irreversible truncation | ⚠️ Disk cache / ephemeral handles |
 | **Ref Intelligence** | ✅ **`trimtok_exec` (compute on `#ref`)** | ❌ None | ⚠️ Whole-block retrieve only |
 | **Cross-Turn State** | ✅ **`[tt:delta]` (>95% on reruns)** | ❌ None (stateless per command) | ❌ None (stateless stream) |
 | **Structured JSON** | ✅ **Lossless TOON v2 (55% – 65%)** | ⚠️ Lossy head sample (99.6% lossy) | ⚠️ Reversible / dictionary encoder |
@@ -186,6 +190,16 @@ Traceback (most recent call last):
 ZeroDivisionError: division by zero
 ```
 
+<a id="3b-fault-folding"></a>
+#### 3b. Fault-Signature Folding (repeated error loops)
+A log that is one traceback looped 200 times is mostly copies, and the template fold used to skip them because every error line is *important*. Repeated faults that are byte-identical after timestamp/session-id normalisation now fold to their **first and last occurrence plus a `[template ×N]` count**, so the run's start and end stay inline and the middle is one line:
+```text
+2026-11-08 01:02:11,004 ERROR relay: upstream 503 after 3 retries
+[template ×198]
+2026-11-08 01:04:59,881 ERROR relay: upstream 503 after 3 retries
+```
+Digits stay in the signature on purpose: stripping them merged `attempt 2/3` with `attempt 3/3` and collapsed distinct traceback frames, which is exactly what a person reads the log for. Folding runs **after** the line window — before it, the markers consumed window budget and a 163KB log grew from 49K to 58K.
+
 ---
 
 <a id="pillar-2-intake"></a>
@@ -199,8 +213,8 @@ ZeroDivisionError: division by zero
 
 <a id="5-ast-skeletonizer"></a>
 #### 5. Multi-Language AST Code Skeletonizer
-For code files ≥ 2KB, trimtok parses the structural AST using tree-sitter:
-- **Supported Languages:** Python, JavaScript/TypeScript, Go, Rust, Java, C, C++.
+For code files ≥ 2KB, trimtok parses the structural AST. Python uses the stdlib `ast` out of the box; JavaScript/TypeScript, Go, Rust, Java, C, C++, C#, Bash, YAML, TOML and JSON need the opt-in grammars (`pip install "trimtok[multilang]"`). Without them the file is handled by the prose/structural fold instead of an AST fold, never by a guess:
+- **Supported Languages:** Python, JavaScript/TypeScript, Go, Rust, Java, C, C++ (C#, Bash, YAML, TOML and JSON structural lanes additionally available).
 - **Zero Loss of Structure:** Retains all class definitions, function signatures, interfaces, imports, and docstrings.
 - **Folds Oversized Bodies:** Function implementations ≥ 8 lines fold into clean CCR-referenced stubs, preserving line structure for patch safety.
 
@@ -252,6 +266,16 @@ ccr.unpin("#c1")  # Restores default TTL lifecycle
 ```
 
 `--intent` ranks lines by stemmed token overlap with the question and boosts definition and heading lines, so a signature arrives with its body. On a 21,999-token source file, *"which functions does this file define"* returns **1,458 tokens (93.4% saved)** and *"how is json minified"* returns **571 tokens (97.4% saved)**, each containing the answer line rather than a truncated guess.
+
+<a id="7b-pointer-large"></a>
+#### 7b. Pointer Tier for Giant Single-Line Payloads (`pointer_large`)
+Some payloads cannot be compressed at all — they have nothing to fold and, being a single line, nothing to head/tail sample: `gh api .../contents/...` base64 JSON, `cat` of a binary, `python -c` dumps. Measured over 4 days of real telemetry, 36 of 87 otherwise-reverted transforms (504,815 chars) were exactly this shape, and all of them shipped raw.
+
+A payload with **≤ 4 lines, one line ≥ 2,000 chars, and ≥ 8,192 chars total** now ships as a ~680-char stub — first and last 300 characters for shape, plus a `#ref` that restores every byte:
+```text
+[tt:pointer_large #c1mF 54,897 chars on 1 line(s) -> trimtok_retrieve #c1mF]
+```
+A real 54,897-char GitHub contents response becomes **680 chars (98.8%)**, and `trimtok_retrieve` returns the original byte-identically. Multi-line content is excluded by the line-shape test, so skills, READMEs and test output keep their inline text — the corpus reduction is unchanged (76.07%) and the entire gain lands on real traffic: **472,415 characters recovered** across those 36 transforms (~0.95M tokens/month at the observed rate).
 
 <a id="8-telemetry-diagnostics"></a>
 #### 8. Autonomous Telemetry & Diagnostics (`gain` & `discover`)
@@ -325,7 +349,7 @@ Token counts say nothing about whether an agent can still do the job. `eval/fix_
 - **`LOCATE`** *(default, no model required)* — verifies the buggy line, its enclosing signature, its line number and neighbour context are either visible in the compressed view or reachable through `#ref`. A payload that hides the bug without a reference fails, because the agent would have to re-read the file.
 - **`FIX`** *(`--llm`)* — sends the compressed view to a model, takes back the corrected line, patches the real module, imports it and runs a behavioural predicate. A pass means the repaired code works, not that the text looks plausible.
 
-Current result: **8/8 locate accuracy** across Python, TOON codec, dedup and sentinel modules, at **53.8% token reduction**. The suite includes a negative control (`test_wrong_patch_fails`) so a benchmark that cannot fail is itself caught.
+Current result: **8/8 locate accuracy** across Python, TOON codec, dedup, sentinel and policy modules, at **54.0% token reduction** (52,243 → 24,046 tokens). The suite includes a negative control (`test_wrong_patch_fails`) so a benchmark that cannot fail is itself caught.
 
 ---
 
@@ -535,10 +559,12 @@ python eval/steps.py            # raw -> hook -> intent retrieval, per payload
 python eval/fix_accuracy.py     # Can an agent still fix the bug? (LOCATE, no model needed)
 python eval/decision_eval.py    # Decision-equivalence: action still visible after compression
 python eval/probe_ceiling.py    # Are folded lines announced and ref-reachable?
-pytest tests/                   # 168 tests (pip install -e ".[dev]" first)
+pytest tests/                   # 198 tests (pip install -e ".[dev]" first)
 ```
 
-The honesty audit is the load-bearing check: it recomputes the claimed reduction from the recovery store and reports any character that was removed without a resolvable reference. Run `eval_real.py` immediately before `audit_honesty.py` against a fresh store — pointing both at the same empty `TRIMTOK_DATA_DIR` — so the audit scores exactly the corpus the first script produced. Current state — **73.19% claimed, 73.19% proven, 0 unproven characters**, 0 gate failures, 0 silent line loss, 0 unannounced faults, 168/168 tests passing.
+The honesty audit is the load-bearing check: it recomputes the claimed reduction from the recovery store and reports any character that was removed without a resolvable reference. Run `eval_real.py` immediately before `audit_honesty.py` against a fresh store — pointing both at the same empty `TRIMTOK_DATA_DIR` — so the audit scores exactly the corpus the first script produced. Current state — **76.07% claimed, 76.07% proven, 0 unproven characters**, 0 gate failures, 0 silent line loss, 0 unannounced faults, **198/198 tests passing** (2 skipped).
+
+> **Version note:** the repository is at **5.8.4**; PyPI may lag behind. For the behaviours described above (`[tt:pointer_large]`, fault-signature folding, the timestamp-prefix fix) install from the repo: `pip install -e ".[fast]"`.
 
 > **Storage note:** the FTS5 index keeps a plaintext copy of each payload so `snippet()` can highlight matches, so on-disk usage is roughly `compressed payloads + plaintext index`. Both are counted by `trimtok status` (`bytes`, `payload_bytes`, `fts_bytes`) and both are included in the `ccr_max_bytes` ceiling, so the cap is enforced against the real footprint rather than the compressed half of it.
 

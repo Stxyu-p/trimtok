@@ -17,6 +17,15 @@ All notable changes to trimtok are documented here.
   output, READMEs) is excluded by the line-shape test, so corpus reduction is
   unchanged at 76.07% -- the gain is real traffic only (~0.95M tokens/month).
 
+### Docs
+- README corrected against measurements instead of memory: corpus headline
+  73.2% -> **76.07%**, honesty row 73.19% -> 76.07%, test count 168 -> 198,
+  fix-accuracy 53.8% -> 54.0%. Removed the unfalsifiable "~9,000 ms proxy"
+  number. Documents the two new lanes (3b fault-signature folding,
+  7b `pointer_large`), announces tree-sitter as opt-in (`trimtok[multilang]`,
+  now declared in pyproject) instead of implying it ships by default, and warns
+  that PyPI can lag the repository.
+
 ## [5.8.3] - 2026-11-08
 
 ### Fixed
