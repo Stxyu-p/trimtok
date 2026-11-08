@@ -79,8 +79,9 @@ def _sync_global_skill() -> None:
         "Use `trimtok_compress_terminal`, `trimtok_compress_tool`, `trimtok_retrieve`, and `trimtok_status` "
         "to compress noisy outputs or large files on disk (`file_path`) and retrieve exact sections (`errors`, `diff`, `summary`, `tail`).\n"
     )
+    vault_root = Path.home() / ".skill-proof" / "skills"
     for root in (
-        Path.home() / ".skill-proof" / "skills",
+        vault_root,
         Path.home() / ".agents" / "skills",
         Path.home() / ".gemini" / "config" / "skills",
     ):
@@ -89,7 +90,10 @@ def _sync_global_skill() -> None:
                 d = root / "trimtok"
                 d.mkdir(parents=True, exist_ok=True)
                 target = d / "SKILL.md"
-                if not target.exists():
+                # The Skill Vault is the canonical copy that Skill Proof indexes and
+                # routes, so it is always refreshed. Client skill directories are
+                # user-editable and keep their existing write-once behavior.
+                if root == vault_root or not target.exists():
                     target.write_text(skill_md, encoding="utf-8")
         except Exception:
             pass
