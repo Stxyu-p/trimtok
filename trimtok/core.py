@@ -16,7 +16,7 @@ except Exception:
     _Levenshtein = None
     _FUZZY_AVAILABLE = False
 
-VERSION = "5.8.3"
+VERSION = "5.8.4"
 
 try:
     from . import delta_engine
@@ -270,6 +270,31 @@ def _fold_repeats(
             out.extend((flagged[k][0], False) for k in range(i, j))
         i = j
     return out, hidden
+
+
+def _blob_stub(output: str) -> tuple[str, str] | None:
+    """Pointer stub for one giant line (base64/JSON blob), else None.
+
+    A 50KB single-line payload has nothing to fold and no lines to head/tail
+    sample, so the old paths shipped it raw. The stub keeps the first and last
+    slice for shape plus a #ref that restores the whole thing.
+    """
+    lines = output.splitlines() or [output]
+    if len(lines) > 4 or max(len(ln) for ln in lines) < 2000:
+        return None
+    try:
+        ref = _ccr_put(output)
+    except Exception:
+        return None
+    if not ref:
+        return None
+    stub = (
+        f"{output[:300].rstrip()}\n"
+        f"[tt:pointer_large {ref} {len(output):,} chars on {len(lines)} line(s) "
+        f"-> trimtok_retrieve {ref}]\n"
+        f"{output[-300:].lstrip()}"
+    )
+    return stub, ref
 
 
 def _window(
@@ -584,6 +609,23 @@ def compress_terminal(
                         "hidden_lines": 0, "dropped_lines": 0,
                         "ms": (time.perf_counter() - t0) * 1000,
                     }
+                # Nothing foldable: a giant single-line blob still ships as a
+                # pointer instead of raw (the #ref restores all of it).
+                if len(output) >= 8192:
+                    stubbed = _blob_stub(output)
+                    if stubbed:
+                        stub, ref = stubbed
+                        stub_tok = estimate_tokens(stub)
+                        if len(stub) + 40 <= len(output) and stub_tok < tokens_before:
+                            return stub, {
+                                "gate": "ok", "kind": "pointer_large", "digest": ref,
+                                "reason": "blob_pointer",
+                                "before_chars": len(output), "after_chars": len(stub),
+                                "saved_chars": len(output) - len(stub),
+                                "est_tokens_before": tokens_before, "est_tokens_after": stub_tok,
+                                "hidden_lines": 0, "dropped_lines": 0,
+                                "ms": (time.perf_counter() - t0) * 1000,
+                            }
                 return output, {
                     "gate": "reverted_gate", "kind": kind,
                     "before_chars": len(output), "after_chars": len(output),

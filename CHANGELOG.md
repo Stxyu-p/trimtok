@@ -2,6 +2,21 @@
 
 All notable changes to trimtok are documented here.
 
+## [5.8.4] - 2026-11-08
+
+### Added
+- **`pointer_large` tier (`trimtok/core.py: _blob_stub`).** 36 of 87 real
+  `reverted_gate` events (504,815 chars in 4 days of telemetry) were giant
+  single-line payloads -- `gh api .../contents/...` base64 blobs, `cat` of a
+  binary, `python -c` dumps. Nine of ten have no newline at all, so nothing
+  folds, head/tail line sampling has no lines to sample, and the payload shipped
+  raw. A payload with <=4 lines, a line of >=2,000 chars and >=8,192 chars total
+  now ships as a ~680-char stub (first/last 300 chars + `#ref`) that
+  `trimtok_retrieve` restores byte-identically. Real payload: 54,897 -> 680
+  chars (98.8%), retrieve verified identical. Multi-line content (skills, test
+  output, READMEs) is excluded by the line-shape test, so corpus reduction is
+  unchanged at 76.07% -- the gain is real traffic only (~0.95M tokens/month).
+
 ## [5.8.3] - 2026-11-08
 
 ### Fixed
