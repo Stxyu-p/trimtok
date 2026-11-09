@@ -68,6 +68,29 @@ except ImportError:
 
 _WEB_TOOLS = frozenset({"web_extract", "web_search", "browser_exec"})
 
+
+def _compress_envelope_inner(text: str) -> str:
+    """Compress the payload inside a JSON wrapper with the terminal pipeline.
+
+    Imported lazily: ``core`` imports this module at load time, so the cycle is
+    only safe at call time. Any failure returns the input unchanged, which makes
+    the envelope fold a no-op instead of a data-loss path.
+    """
+    try:
+        from .core import compress_terminal
+    except Exception:
+        try:
+            from core import compress_terminal
+        except Exception:
+            return text
+    try:
+        folded, _stats = compress_terminal("envelope-inner", text,
+                                           session_id="envelope", max_lines=60)
+        return folded if isinstance(folded, str) else text
+    except Exception:
+        return text
+
+
 _MIN_SPAN_LINES = 5
 _MIN_SPAN_CHARS = 200
 _MIN_LINE_CHARS = 40  # single repeated lines at/above this fold individually
@@ -1334,6 +1357,14 @@ def _handle_read_file_v42(
                     pass
             if _jcand is None:
                 try:
+                    from .json_envelope import fold_envelope_array as _fold_env
+                    _e = _fold_env(_jbody)
+                    if _e is not None and len(_e[0]) < len(_jbody):
+                        _jcand, _jkind = _e[0], "file_envelope"
+                except Exception:
+                    pass
+            if _jcand is None:
+                try:
                     _m, _msaved = minify_json(_jbody)
                     if _msaved >= 40 and len(_m) < len(_jbody):
                         _jcand, _jkind = _m, "file_json_min"
@@ -1363,8 +1394,8 @@ def _handle_read_file_v42(
                             "saved_chars": len(result) - len(_jcand_full),
                             "est_tokens_before": _tb,
                             "est_tokens_after": _ta,
-                            "toon_saved": len(result) - len(_jcand_full) if _jkind == "file_toon" else 0,
-                            "toon_used": _jkind == "file_toon",
+                            "toon_saved": len(result) - len(_jcand_full) if _jkind in ("file_toon", "file_envelope") else 0,
+                            "toon_used": _jkind in ("file_toon", "file_envelope"),
                             "toon_kind": _jkind,
                             "minify_saved": len(result) - len(_jcand_full) if _jkind == "file_json_min" else 0,
                             "ms": (time.perf_counter() - t0) * 1000,
@@ -1728,6 +1759,23 @@ def compress_tool_result(
                             folded = _cand
                             toon_used = True
                             toon_kind = "json_toon"
+                except Exception:
+                    pass
+            if not toon_used:
+                # Wrapper objects: {"output": <terminal text>} and
+                # {"items": [{...}]} that a flat TOON table cannot reach.
+                try:
+                    from .json_envelope import fold_envelope_array, fold_envelope_text
+                    _env = fold_envelope_text(folded, _compress_envelope_inner)
+                    if _env is None:
+                        _env = fold_envelope_array(folded)
+                    if _env is not None:
+                        _cand, _env_meta = _env
+                        if len(_cand) < len(folded) and estimate_bpe_gain(folded, _cand) >= 4:
+                            t_saved = len(folded) - len(_cand)
+                            folded = _cand
+                            toon_used = True
+                            toon_kind = "json_envelope"
                 except Exception:
                     pass
         if len(folded) >= len(result):

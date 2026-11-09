@@ -4,6 +4,24 @@ All notable changes to trimtok are documented here.
 
 ## [Unreleased]
 
+### Added
+- **JSON envelope folding (`trimtok/json_envelope.py`).** Tool results usually
+  arrive wrapped -- `{"output": "<30k of terminal text>"}`,
+  `{"items": [{...}]}` -- and `minify_json` could only strip whitespace, so
+  those payloads sat at 4.5% savings while the inner shape is one trimtok
+  already folds well. The wrapper is now unwrapped, the payload compressed with
+  the matching pipeline, and the envelope re-emitted with its sibling keys
+  unchanged (`json_envelope` / `file_envelope` kinds). Replaying the 306
+  object-root payloads in the live CCR store: 1,449,575 -> 1,017,512 chars
+  (29.8% saved) against a 5.8% baseline, 347,897 chars (~87k tokens) recovered
+  on that sample. Round-trip is verified before the candidate is accepted, and
+  every failure mode returns the original text.
+- **`reverted_gate` now records why.** The terminal revert path returned no
+  `reason`, so 89 of 105 real reverts were unexplained. It now reports
+  `no_fold` (nothing was removable) vs `header_cost` (the head ate the gain),
+  plus `omitted_lines`, `gross_saved`, and the CCR `digest` of the discarded
+  payload so it can be replayed instead of only counted.
+
 ### Tests
 - `test_dedup_checks_pass` / `test_core_checks_pass` could fail intermittently:
   both assert a module-level `check.failed` counter that any later import or

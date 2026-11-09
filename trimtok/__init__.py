@@ -200,7 +200,7 @@ def _terminal_shape(stats: dict) -> str:
     kind = str(stats.get("kind") or stats.get("toon_kind") or "")
     if kind == "cmd_filter":
         return "cmd-filter"
-    if kind in ("json", "json_toon", "json_toon_buckets", "json_toon_merged"):
+    if kind in ("json", "json_toon", "json_toon_buckets", "json_toon_merged", "json_envelope"):
         return "json"
     if stats.get("partial") or stats.get("omitted_errors"):
         return "err-dense"
@@ -215,7 +215,9 @@ def _tool_shape(stats: dict) -> str:
     kind = str(stats.get("kind") or stats.get("toon_kind") or "")
     if kind == "lockfile":
         return "lockfile"
-    if kind in ("json_toon", "json_toon_buckets", "json_toon_merged"):
+    if kind in ("json_toon", "json_toon_buckets", "json_toon_merged", "json_envelope"):
+        return "json"
+    if kind == "file_envelope":
         return "json"
     if kind == "file_structure":
         return "doc-structure"

@@ -382,6 +382,11 @@ def _budget_for(command: str, kind: str, default: int) -> int:
     return default
 
 
+def _revert_reason(omitted_total: int) -> str:
+    """Why a transform was thrown away: nothing folded, or the header ate the gain."""
+    return "header_cost" if omitted_total else "no_fold"
+
+
 def compress_terminal(
     command: str,
     output: str,
@@ -626,8 +631,13 @@ def compress_terminal(
                                 "hidden_lines": 0, "dropped_lines": 0,
                                 "ms": (time.perf_counter() - t0) * 1000,
                             }
+                # Nothing won: record why, and the digest so the payload can
+                # be replayed from CCR instead of only counted.
                 return output, {
                     "gate": "reverted_gate", "kind": kind,
+                    "reason": _revert_reason(omitted_total),
+                    "digest": digest,
+                    "omitted_lines": omitted_total, "gross_saved": gross_saved,
                     "before_chars": len(output), "after_chars": len(output),
                     "saved_chars": 0, "ms": (time.perf_counter() - t0) * 1000,
                 }
