@@ -11,8 +11,10 @@ from pathlib import Path
 from typing import Any
 
 from .core import VERSION, compress_terminal
+from .context_engine import ContextEngine, TrimtokContextEngine
 
 __version__ = VERSION
+
 from .ccr import (
     default_dir,
     get as ccr_get,
@@ -1389,3 +1391,7 @@ def register(ctx: Any) -> None:
             description="View trimtok token savings, status, or retrieve cached originals",
             handler=_handle_ts_command,
         )
+    if hasattr(ctx, "register_context_engine"):
+        from trimtok.context_engine import TrimtokContextEngine
+        ctx.register_context_engine(TrimtokContextEngine())
+

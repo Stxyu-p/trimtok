@@ -33,3 +33,6 @@ sys.modules[__name__] = _mod
 # loader does getattr(module, "register")); swapping sys.modules above does not
 # update that reference, so re-export the canonical entry point here.
 register = _mod.register
+TrimtokContextEngine = getattr(_mod, "TrimtokContextEngine", None)
+ContextEngine = getattr(_mod, "ContextEngine", None)
+
