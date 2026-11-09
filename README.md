@@ -428,6 +428,22 @@ plugins:
         excluded_tools: []          # Tool names to leave 100% untouched
 ```
 
+<a id="native-context-engine"></a>
+### Native Hermes Context Engine (Optional)
+In addition to per-turn lifecycle hooks, `trimtok` implements the `agent.context_engine.ContextEngine` contract and can replace Hermes's default `ContextCompressor` as the primary context engine:
+
+```yaml
+# ~/.hermes/config.yaml
+context:
+  engine: "trimtok"
+```
+
+When activated, full semantic compaction is replaced by **Zero-Loss Content-Addressed Stashing**:
+- **Pinned Head & Protected Tail**: Initial user goals (`protect_first_n: 3`) and recent conversational context (`protect_last_n: 20`) remain 100% verbatim.
+- **CCR Tool Stashing**: Oversized middle tool results are moved directly into SQLite WAL + Zstandard (`trimtok_ccr_v2.sqlite3`), leaving minimal 1-line pointers (`[tt:stashed ... · trimtok_retrieve '#c...']`).
+- **Zero Loss of Reasoning & Decisions**: Unlike lossy LLM summarizers, user messages and assistant code reasoning are never paraphrased or dropped. Historical tool outputs can be restored on demand via `trimtok_retrieve`.
+
+
 ---
 
 <a id="slash-commands-cli"></a>

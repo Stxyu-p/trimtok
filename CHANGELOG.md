@@ -4,7 +4,19 @@ All notable changes to trimtok are documented here.
 
 ## [Unreleased]
 
+## [5.9.1] - 2026-11-09
+
+### Added
+- **Native Hermes Context Engine (`trimtok/context_engine.py`).** Implements the
+  `agent.context_engine.ContextEngine` contract for Hermes Agent. Replaces lossy
+  semantic LLM summarization with zero-loss content-addressed stashing into
+  SQLite WAL + Zstandard CCR. Head goals (`protect_first_n: 3`) and recent tail
+  turns (`protect_last_n: 20`) remain verbatim; oversized middle tool results are
+  compacted into 1-line `#ref` pointers retrievable on demand via `trimtok_retrieve`.
+  Registered automatically via `ctx.register_context_engine()`.
+
 ## [5.9.0] - 2026-11-09
+
 
 ### Added
 - **JSON envelope folding (`trimtok/json_envelope.py`).** Tool results usually
