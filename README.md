@@ -564,7 +564,7 @@ pytest tests/                   # 198 tests (pip install -e ".[dev]" first)
 
 The honesty audit is the load-bearing check: it recomputes the claimed reduction from the recovery store and reports any character that was removed without a resolvable reference. Run `eval_real.py` immediately before `audit_honesty.py` against a fresh store — pointing both at the same empty `TRIMTOK_DATA_DIR` — so the audit scores exactly the corpus the first script produced. Current state — **76.07% claimed, 76.07% proven, 0 unproven characters**, 0 gate failures, 0 silent line loss, 0 unannounced faults, **198/198 tests passing** (2 skipped).
 
-> **Version note:** the repository is at **5.8.4**; PyPI may lag behind. For the behaviours described above (`[tt:pointer_large]`, fault-signature folding, the timestamp-prefix fix) install from the repo: `pip install -e ".[fast]"`.
+> **Version note:** the repository is at **5.9.0**; PyPI may lag behind. For the behaviours described above (`[tt:pointer_large]`, fault-signature folding, the timestamp-prefix fix) install from the repo: `pip install -e ".[fast]"`.
 
 > **Storage note:** the FTS5 index keeps a plaintext copy of each payload so `snippet()` can highlight matches, so on-disk usage is roughly `compressed payloads + plaintext index`. Both are counted by `trimtok status` (`bytes`, `payload_bytes`, `fts_bytes`) and both are included in the `ccr_max_bytes` ceiling, so the cap is enforced against the real footprint rather than the compressed half of it.
 

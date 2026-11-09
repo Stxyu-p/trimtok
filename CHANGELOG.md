@@ -4,6 +4,8 @@ All notable changes to trimtok are documented here.
 
 ## [Unreleased]
 
+## [5.9.0] - 2026-11-09
+
 ### Added
 - **JSON envelope folding (`trimtok/json_envelope.py`).** Tool results usually
   arrive wrapped -- `{"output": "<30k of terminal text>"}`,
