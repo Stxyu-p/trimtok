@@ -585,13 +585,50 @@ def compress_terminal(
             if fault_counts.get(_ln):
                 fault_counts[_ln] -= 1
         n_missing_faults = sum(fault_counts.values())
-        omitted_total = hidden + dropped
+
+        # Critical-line recovery backstop: re-append omitted fault lines up to cap
+        recovered_lines: list[str] = []
+        if n_missing_faults > 0:
+            rec_cap = 20
+            missing_lines: list[str] = []
+            for _ln, _cnt in fault_counts.items():
+                if _cnt > 0:
+                    missing_lines.extend([_ln] * _cnt)
+            recovered_lines = missing_lines[:rec_cap]
+
+        unrecovered_faults = n_missing_faults - len(recovered_lines)
+        omitted_total = max(0, hidden + dropped - len(recovered_lines))
         gross_saved = len(output) - sum(len(x) + 1 for x in windowed)
         tokens_before = estimate_tokens(output)
         head = adaptive_terminal_head(kind, omitted_total, digest, len(output), gross_saved, LEGEND,
-                                      errors_hidden=n_missing_faults)
-        new_output = "\n".join(head + windowed) if head else "\n".join(windowed)
-        tokens_after = estimate_tokens(new_output)
+                                      errors_hidden=unrecovered_faults)
+
+        if recovered_lines:
+            cand_body = list(windowed)
+            rec_note = f"[tt: {len(recovered_lines)} error line(s) recovered]"
+            if unrecovered_faults > 0:
+                rec_note += f" ({unrecovered_faults} more in #{digest})"
+            cand_body.append(rec_note)
+            cand_body.extend(recovered_lines)
+            cand_output = "\n".join(head + cand_body) if head else "\n".join(cand_body)
+            cand_tok = estimate_tokens(cand_output)
+            if len(cand_output) < len(output) and cand_tok < tokens_before:
+                body_lines = cand_body
+                new_output = cand_output
+                tokens_after = cand_tok
+            else:
+                recovered_lines = []
+                unrecovered_faults = n_missing_faults
+                omitted_total = hidden + dropped
+                head = adaptive_terminal_head(kind, omitted_total, digest, len(output), gross_saved, LEGEND,
+                                              errors_hidden=unrecovered_faults)
+                body_lines = list(windowed)
+                new_output = "\n".join(head + body_lines) if head else "\n".join(body_lines)
+                tokens_after = estimate_tokens(new_output)
+        else:
+            body_lines = list(windowed)
+            new_output = "\n".join(head + body_lines) if head else "\n".join(body_lines)
+            tokens_after = estimate_tokens(new_output)
         if len(new_output) >= len(output) or tokens_after >= tokens_before:
             # Rescue: nano header, then lossless strip, before giving up.
             if omitted_total > 0:
@@ -641,13 +678,13 @@ def compress_terminal(
                     "before_chars": len(output), "after_chars": len(output),
                     "saved_chars": 0, "ms": (time.perf_counter() - t0) * 1000,
                 }
-        if n_missing_faults:
+        if unrecovered_faults:
             # Partial output keeps the saving; the #ref restores the rest.
             if not new_output:
                 return output, {
                     "gate": "reverted_quality", "kind": kind,
                     "before_chars": len(output), "after_chars": len(output),
-                    "saved_chars": 0, "missing_errors": n_missing_faults,
+                    "saved_chars": 0, "missing_errors": unrecovered_faults,
                     "ms": (time.perf_counter() - t0) * 1000,
                 }
             return new_output, {
@@ -657,7 +694,8 @@ def compress_terminal(
                 "est_tokens_before": tokens_before,
                 "est_tokens_after": tokens_after,
                 "hidden_lines": hidden, "dropped_lines": dropped,
-                "partial": True, "omitted_errors": n_missing_faults,
+                "partial": True, "omitted_errors": unrecovered_faults,
+                "recovered_errors": len(recovered_lines),
                 "ms": (time.perf_counter() - t0) * 1000,
             }
         saved_chars = len(output) - len(new_output)
@@ -674,7 +712,7 @@ def compress_terminal(
                     "before_chars": len(output), "after_chars": len(output),
                     "saved_chars": 0, "anchor_score": anchor_score, "ms": (time.perf_counter() - t0) * 1000,
                 }
-        return new_output, {
+        ret_st = {
             "gate": "ok", "kind": kind, "digest": digest,
             "before_chars": len(output), "after_chars": len(new_output),
             "saved_chars": saved_chars,
@@ -683,6 +721,9 @@ def compress_terminal(
             "hidden_lines": hidden, "dropped_lines": dropped,
             "ms": (time.perf_counter() - t0) * 1000,
         }
+        if recovered_lines:
+            ret_st["recovered_errors"] = len(recovered_lines)
+        return new_output, ret_st
     except TimeoutError:
         # Budget died mid-fold: stash in CCR, ship head+tail.
         try:
