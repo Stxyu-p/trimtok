@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import re
+import threading
 import time
+from collections import OrderedDict
 from functools import lru_cache
 from typing import Any
 
@@ -17,6 +19,27 @@ except Exception:
     _FUZZY_AVAILABLE = False
 
 VERSION = "5.9.1"
+
+# Dead-Range incompressibility cache (billion-context dead-ranges pattern)
+_DEAD_RANGES: OrderedDict[str, dict] = OrderedDict()
+_MAX_DEAD_RANGES = 256
+_dead_lock = threading.Lock()
+
+
+def _record_dead_range(key: str, stats: dict) -> None:
+    with _dead_lock:
+        if len(_DEAD_RANGES) >= _MAX_DEAD_RANGES:
+            _DEAD_RANGES.popitem(last=False)
+        _DEAD_RANGES[key] = dict(stats)
+
+
+def _get_dead_range(key: str) -> dict | None:
+    with _dead_lock:
+        res = _DEAD_RANGES.get(key)
+        if res is not None:
+            _DEAD_RANGES.move_to_end(key)
+            return dict(res)
+        return None
 
 try:
     from . import delta_engine
@@ -414,6 +437,17 @@ def compress_terminal(
     try:
         if not isinstance(output, str):
             return output, {"gate": "passthrough_non_str", "ms": 0.0}
+
+        # Dead-Range incompressibility cache (bili dead-ranges pattern)
+        cache_key = ""
+        if len(output) >= min_chars and not has_marker_head(output):
+            fast_hash = hashlib.sha256(output.encode("utf-8", "replace")).hexdigest()[:16]
+            cache_key = f"{fast_hash}:{max_lines}:{exit_code}:{level}"
+            cached_st = _get_dead_range(cache_key)
+            if cached_st is not None:
+                cached_st["ms"] = (time.perf_counter() - t0) * 1000
+                cached_st["cached_dead_range"] = True
+                return output, cached_st
         # Secrets stay verbatim; the budget follows context pressure.
         if policy_enabled:
             try:
@@ -670,7 +704,7 @@ def compress_terminal(
                             }
                 # Nothing won: record why, and the digest so the payload can
                 # be replayed from CCR instead of only counted.
-                return output, {
+                rev_st = {
                     "gate": "reverted_gate", "kind": kind,
                     "reason": _revert_reason(omitted_total),
                     "digest": digest,
@@ -678,15 +712,21 @@ def compress_terminal(
                     "before_chars": len(output), "after_chars": len(output),
                     "saved_chars": 0, "ms": (time.perf_counter() - t0) * 1000,
                 }
+                if cache_key:
+                    _record_dead_range(cache_key, rev_st)
+                return output, rev_st
         if unrecovered_faults:
             # Partial output keeps the saving; the #ref restores the rest.
             if not new_output:
-                return output, {
+                rev_st = {
                     "gate": "reverted_quality", "kind": kind,
                     "before_chars": len(output), "after_chars": len(output),
                     "saved_chars": 0, "missing_errors": unrecovered_faults,
                     "ms": (time.perf_counter() - t0) * 1000,
                 }
+                if cache_key:
+                    _record_dead_range(cache_key, rev_st)
+                return output, rev_st
             return new_output, {
                 "gate": "ok", "kind": kind, "digest": digest,
                 "before_chars": len(output), "after_chars": len(new_output),
@@ -707,11 +747,14 @@ def compress_terminal(
             # Below 50KB only: above it the revert never fires.
             anchor_score = score_anchor_preservation(output, new_output)
             if anchor_score < 0.70:
-                return output, {
+                rev_st = {
                     "gate": "reverted_gate", "kind": kind, "reason": "low_anchor_preservation",
                     "before_chars": len(output), "after_chars": len(output),
                     "saved_chars": 0, "anchor_score": anchor_score, "ms": (time.perf_counter() - t0) * 1000,
                 }
+                if cache_key:
+                    _record_dead_range(cache_key, rev_st)
+                return output, rev_st
         ret_st = {
             "gate": "ok", "kind": kind, "digest": digest,
             "before_chars": len(output), "after_chars": len(new_output),
