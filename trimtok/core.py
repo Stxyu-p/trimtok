@@ -20,7 +20,7 @@ except Exception:
 
 VERSION = "5.9.1"
 
-# Dead-Range incompressibility cache (billion-context dead-ranges pattern)
+# Dead-Range incompressibility cache: skip heavy transforms on repeated reverts
 _DEAD_RANGES: OrderedDict[str, dict] = OrderedDict()
 _MAX_DEAD_RANGES = 256
 _dead_lock = threading.Lock()
@@ -438,7 +438,7 @@ def compress_terminal(
         if not isinstance(output, str):
             return output, {"gate": "passthrough_non_str", "ms": 0.0}
 
-        # Dead-Range incompressibility cache (bili dead-ranges pattern)
+        # Dead-Range incompressibility cache: skip heavy transforms on repeated reverts
         cache_key = ""
         if len(output) >= min_chars and not has_marker_head(output):
             fast_hash = hashlib.sha256(output.encode("utf-8", "replace")).hexdigest()[:16]
