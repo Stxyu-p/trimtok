@@ -65,6 +65,24 @@ class TestOptimizationsGroup1And2(unittest.TestCase):
         self.assertEqual(stats2.get("kind"), "skill_cache_hit")
         self.assertTrue(out2.startswith("[tt:skill_cached"))
 
+    def test_skill_view_cold_shave_json_wrapper(self):
+        import json
+        long_doc = "---\nname: my-skill\ndescription: test\n---\n# My Skill\n" + ("Here is a long paragraph explaining the deep background details of this skill.\n\n" * 40)
+        wrapper = json.dumps({"success": True, "name": "my-skill", "content": long_doc})
+        out, stats = compress_tool_result(
+            "skill_view",
+            wrapper,
+            args={"name": "my-skill"},
+            session_id="test_sess_cold_shave",
+            min_chars=500,
+        )
+        self.assertEqual(stats.get("gate"), "ok")
+        self.assertEqual(stats.get("kind"), "skill_shaved")
+        self.assertTrue(stats.get("saved_chars", 0) > 500)
+        parsed = json.loads(out)
+        self.assertIn("[tt:prose", parsed["content"])
+        self.assertIn("my-skill", parsed["name"])
+
     def test_timeout_bounded_on_large_payload(self):
         from trimtok.signals import Deadline
         import time

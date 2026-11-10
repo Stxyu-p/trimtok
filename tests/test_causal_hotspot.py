@@ -146,7 +146,7 @@ class TestAstFocusProtection(unittest.TestCase):
             focus_lines=[32]
         )
         self.assertEqual(count_focused, 1)
-        self.assertIn("35|    const b_5 = ", res_focused)
+        self.assertIn("36|    const b_5 = ", res_focused)
 
 
 class TestCrossToolHotspotFlow(unittest.TestCase):

@@ -1650,6 +1650,38 @@ def compress_tool_result(
                         }
                     ref = _ccr_put(result)
                     s_cache[skill_name] = {"digest": _rh, "ref": ref or _rh}
+                # Cold skill_view shaving: strip deep prose while preserving frontmatter & directives
+                if len(result) >= min_chars:
+                    cand_res = None
+                    saved_c = 0
+                    if result.strip().startswith("{") and '"content"' in result:
+                        try:
+                            parsed = _json.loads(result)
+                            if isinstance(parsed, dict) and isinstance(parsed.get("content"), str) and len(parsed["content"]) >= 2000:
+                                c_shaved, c_stats = shave_tiered(parsed["content"], {"domain": "spec-doc", "lang": "markdown"})
+                                if c_stats.get("saved_chars", 0) > 200:
+                                    parsed["content"] = c_shaved
+                                    cand_res = _json.dumps(parsed, ensure_ascii=False)
+                                    saved_c = len(result) - len(cand_res)
+                        except Exception:
+                            pass
+                    elif result.strip().startswith(("#", "---")):
+                        try:
+                            cand_res, c_stats = shave_tiered(result, {"domain": "spec-doc", "lang": "markdown"})
+                            saved_c = c_stats.get("saved_chars", 0)
+                        except Exception:
+                            pass
+                    if cand_res is not None and saved_c > 200 and len(cand_res) < len(result):
+                        tb, ta = _tok_pair(result, cand_res)
+                        if ta < tb:
+                            return cand_res, {
+                                "gate": "ok", "kind": "skill_shaved", "digest": _rh,
+                                "before_chars": len(result), "after_chars": len(cand_res),
+                                "saved_chars": saved_c,
+                                "est_tokens_before": tb, "est_tokens_after": ta,
+                                "fold_saved": saved_c,
+                                "ms": (time.perf_counter() - t0) * 1000,
+                            }
         if len(result) < min_chars:
             if len(result) >= _MICRO_MIN_CHARS:
                 return micro_minify_tool(result, session_id, t0)
