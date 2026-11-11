@@ -35,9 +35,9 @@ Autonomous coding agents burn over **60% of their context window budget** on rep
 | **Build & Compiler Logs** | 15,960 toks | **4,869 toks** | **-69.5%** | Adaptive error-rail balanced windowing |
 | **Whole Repo Codebase Map** | 12,000 toks | **480 toks** | **-96.0%** | 2k-budget hierarchical tree map |
 
-Measured across a 32-payload production corpus (1,135,441 characters): **76.07% reduction (863,784 chars) with zero gate failures**, of which every removed character is verifiable through `trimtok_retrieve` — the honesty audit reports 76.07% claimed and 76.07% proven, 0 unproven characters.
+The 32-payload corpus evaluation is a reproducible fixture run (1,135,441 characters): **76.07% character reduction (863,784 chars)** with zero gate failures. Every removed character is verifiable through `trimtok_retrieve`; `eval/audit_honesty.py` reports 76.07% claimed and proven, with 0 unproven characters. This corpus result is not a production-traffic estimate.
 
-On real traffic the picture differs by payload mix, and that is measured too: 12,204 recorded transforms have saved **6,013,550 characters** (~1.5M tokens). 42.7% of live calls are smaller than the compression threshold and 26.1% are deliberately verbatim (secrets, edit payloads, already-compressed sentinels), so the reduction across *all* traffic is 9.8% while calls that actually compress average 17.6%.
+Production telemetry reports **characters**, not measured model tokens. `usage.jsonl` records transform attempts across gates, while `audit.jsonl` records successful compression events; they are different populations and are rotated independently. Do not combine their totals into one live-traffic percentage or convert characters to tokens without a model-specific tokenizer. Use `trimtok gain` (optionally with a time window) for the retained usage-log view; older retained logs cannot reproduce historical all-time claims.
 
 ---
 

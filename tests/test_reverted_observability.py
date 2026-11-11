@@ -16,10 +16,16 @@ def _huge_header(*_a, **_kw):
     return ["h" * 4000]
 
 
+
+
+
 class TestRevertedGateObservability(unittest.TestCase):
     def test_revert_records_reason_and_replayable_digest(self) -> None:
         # A header bigger than the payload guarantees the gain check fails.
-        with mock.patch("trimtok.core.adaptive_terminal_head", side_effect=_huge_header):
+        with mock.patch("trimtok.core.adaptive_terminal_head", side_effect=_huge_header), \
+             mock.patch("trimtok.core.is_important", return_value=False), \
+             mock.patch("trimtok.core.is_exempt", return_value=False), \
+             mock.patch("trimtok.core.estimate_tokens", return_value=1):
             out, stats = compress_terminal("make build", REPEATED)
 
         self.assertEqual(stats["gate"], "reverted_gate")

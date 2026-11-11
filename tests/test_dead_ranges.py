@@ -17,7 +17,11 @@ class TestDeadRanges(unittest.TestCase):
         raw = "\n".join(f"arbitrary item line {i:03d} with uncompressed data" for i in range(120))
 
         # First run: header cost forces revert
-        with mock.patch("trimtok.core.adaptive_terminal_head", side_effect=_huge_header):
+        with mock.patch("trimtok.core.adaptive_terminal_head", side_effect=_huge_header), \
+             mock.patch("trimtok.core.is_important", return_value=False), \
+             mock.patch("trimtok.core.is_exempt", return_value=False), \
+             mock.patch("trimtok.core._FUZZY_AVAILABLE", False), \
+             mock.patch("trimtok.core.estimate_tokens", return_value=1):
             out1, st1 = compress_terminal("build", raw)
 
         self.assertEqual(st1["gate"], "reverted_gate")

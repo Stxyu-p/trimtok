@@ -180,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("mcp", help="Run the stdio MCP server (JSON-RPC 2.0)")
     sub.add_parser("status", help="Show compression savings and CCR cache status")
     sub.add_parser("usage", help="Show detailed hook/tool usage breakdown")
-    sub.add_parser("gain", help="Show detailed token savings gain report").add_argument("--days", type=int, default=0)
+    sub.add_parser("gain", help="Show detailed character savings gain report").add_argument("--days", type=int, default=0)
     sub.add_parser("discover", help="Scan telemetry for low-savings shapes and suggest filters")
     sub.add_parser("recall", help="Retrieve cached original by hash").add_argument("hash", nargs="?", default="")
     p_purge = sub.add_parser("purge", help="Purge cached CCR originals (all, or entries older than --older-than)")

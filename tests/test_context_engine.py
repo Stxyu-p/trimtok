@@ -1,8 +1,5 @@
 """Tests for TrimtokContextEngine: Native Hermes Context Engine."""
 
-import pytest
-
-
 def test_context_engine_contract():
     """TrimtokContextEngine must satisfy the Hermes ContextEngine ABC contract."""
     from trimtok.context_engine import TrimtokContextEngine

@@ -24,15 +24,17 @@ except Exception:
     pass
 
 try:
-    from . import ccr
+    from . import (
+        RETRIEVE_SCHEMA, _audit, _handle_retrieve, _handle_ts_command,
+        _storage_failure_stats, _usage, ccr,
+    )
     from .core import VERSION, compress_terminal
     from .dedup import compress_tool_result
-    from .__init__ import RETRIEVE_SCHEMA, _audit, _handle_retrieve, _handle_ts_command, _usage
 except ImportError:
     import ccr
     from core import VERSION, compress_terminal
     from dedup import compress_tool_result
-    from __init__ import RETRIEVE_SCHEMA, _audit, _handle_retrieve, _handle_ts_command, _usage
+    from __init__ import RETRIEVE_SCHEMA, _audit, _handle_retrieve, _handle_ts_command, _storage_failure_stats, _usage
 
 SERVER_INFO = {"name": "trimtok", "version": VERSION}
 FALLBACK_PROTOCOL = "2024-11-05"
@@ -160,15 +162,19 @@ def _usage_row(hook: str, name: str, stats: dict[str, Any]) -> dict[str, Any]:
     from the stats dict made every MCP event invisible to `usage`/`gain`.
     """
     key = "cmd" if hook == "terminal" else "tool"
+    before = int(stats.get("before_chars") or 0)
+    after_value = stats.get("after_chars")
+    after = int(after_value) if stats.get("gate") == "ok" and after_value is not None else before
     return {
         "hook": hook,
         "surface": "mcp",
         key: name,
         "shape": stats.get("kind") or ("mixed" if hook == "terminal" else "tool"),
         "gate": stats.get("gate"),
-        "before": stats.get("before_chars", 0),
-        "after": stats.get("after_chars", 0),
-        "saved": stats.get("saved_chars", 0),
+        "before": before,
+        "after": after,
+        "saved": before - after,
+        "intra_template_saved": int(stats.get("intra_template_saved") or 0),
         "ms": round(float(stats.get("ms", 0.0)), 2),
     }
 
@@ -244,12 +250,17 @@ def _tool_compress_tool(args: dict[str, Any]) -> dict[str, Any]:
     )
     ref = ""
     if stats.get("gate") == "ok":
-        ref = ccr.put(result)
+        try:
+            ref = ccr.put(result)
+        except Exception:
+            ref = ""
         if ref and stats.get("digest"):
             compressed = compressed.replace(f"#{stats['digest']}", ref)
         elif not ref and not stats.get("lossless_tier0"):
             compressed = result
-        _audit({"hook": "mcp_tool", "tool": tool_name[:120], **stats})
+            stats = _storage_failure_stats(stats, result)
+        else:
+            _audit({"hook": "mcp_tool", "tool": tool_name[:120], **stats})
     _usage(_usage_row("tool", tool_name[:120], stats))
     resp: dict[str, Any] = {
         "compressed": compressed,

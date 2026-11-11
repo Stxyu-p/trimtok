@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import threading
@@ -14,6 +15,7 @@ from .core import VERSION, compress_terminal
 from .context_engine import ContextEngine, TrimtokContextEngine
 
 __version__ = VERSION
+_LOGGER = logging.getLogger("trimtok")
 
 from .ccr import (
     default_dir,
@@ -164,6 +166,8 @@ def _usage(entry: dict, ctx: Any = None) -> None:
     if ctx is not None and not _bool_cfg(ctx, "usage_enabled", True):
         return
     try:
+        entry.setdefault("ts", int(time.time()))
+        entry.setdefault("version", VERSION)
         if "trace_id" not in entry:
             tid = os.environ.get("TRINITY_TRACE_ID") or (_str_cfg(ctx, "trace_id", "") if ctx else "")
             if tid:
@@ -183,8 +187,8 @@ def _usage(entry: dict, ctx: Any = None) -> None:
                 os.replace(path, backup)
             with path.open("a", encoding="utf-8") as f:
                 f.write(line)
-    except Exception:
-        pass
+    except Exception as exc:
+        _LOGGER.warning("trimtok usage telemetry write failed: %s", exc)
 
 
 def _after_chars(stats: dict, before: int) -> int:
@@ -196,6 +200,13 @@ def _after_chars(stats: dict, before: int) -> int:
     """
     after = int(stats.get("after_chars") or 0)
     return after if after else max(before - int(stats.get("saved_chars") or 0), 0)
+
+
+def _reported_sizes(stats: dict, before: int) -> tuple[int, int]:
+    if stats.get("gate") != "ok":
+        return before, 0
+    after = _after_chars(stats, before)
+    return after, before - after
 
 
 def _terminal_shape(stats: dict) -> str:
@@ -249,6 +260,7 @@ def _tool_shape(stats: dict) -> str:
 def _usage_terminal(command: Any, output: Any, stats: dict, ctx: Any) -> None:
     try:
         out = output if isinstance(output, str) else ""
+        after, saved = _reported_sizes(stats, len(out))
         _usage({
             "ts": int(time.time()),
             "hook": "terminal",
@@ -256,8 +268,8 @@ def _usage_terminal(command: Any, output: Any, stats: dict, ctx: Any) -> None:
             "kind": stats.get("kind"),
             "gate": stats.get("gate"),
             "before": len(out),
-            "after": _after_chars(stats, len(out)),
-            "saved": int(stats.get("saved_chars") or 0),
+            "after": after,
+            "saved": saved,
             "partial": bool(stats.get("partial", False)),
             "omitted": int(stats.get("omitted_errors") or 0),
             "ms": round(float(stats.get("ms", 0.0)), 2),
@@ -268,13 +280,14 @@ def _usage_terminal(command: Any, output: Any, stats: dict, ctx: Any) -> None:
             "toon_kind": stats.get("toon_kind"),
             "toon_used": bool(stats.get("toon_used", False)),
         }, ctx=ctx)
-    except Exception:
-        pass
+    except Exception as exc:
+        _LOGGER.warning("trimtok terminal telemetry entry failed: %s", exc)
 
 
 def _usage_tool(tool_name: Any, result: Any, stats: dict, ctx: Any) -> None:
     try:
         res = result if isinstance(result, str) else ""
+        after, saved = _reported_sizes(stats, len(res))
         _usage({
             "ts": int(time.time()),
             "hook": "tool",
@@ -282,22 +295,23 @@ def _usage_tool(tool_name: Any, result: Any, stats: dict, ctx: Any) -> None:
             "kind": stats.get("kind"),
             "gate": stats.get("gate"),
             "before": len(res),
-            "after": _after_chars(stats, len(res)),
-            "saved": int(stats.get("saved_chars") or 0),
+            "after": after,
+            "saved": saved,
             "ms": round(float(stats.get("ms", 0.0)), 2),
             "hash": str(stats.get("digest") or ""),
             "shape": _tool_shape(stats),
             "minify": int(stats.get("minify_saved") or 0),
             "fold": int(stats.get("fold_saved") or 0),
             "intra": int(stats.get("intra_saved") or 0),
+            "intra_template_saved": int(stats.get("intra_template_saved") or 0),
             "skeleton": int(stats.get("skeleton_saved") or 0),
             "toon_saved": int(stats.get("toon_saved") or 0),
             "toon_kind": stats.get("toon_kind"),
             "toon_used": bool(stats.get("toon_used", False)),
             "reason": stats.get("reason"),
         }, ctx=ctx)
-    except Exception:
-        pass
+    except Exception as exc:
+        _LOGGER.warning("trimtok tool telemetry entry failed: %s", exc)
 
 
 def _usage_retrieve(args: dict, *, hit: bool, ctx: Any = None, **extra: Any) -> None:
@@ -310,14 +324,16 @@ def _usage_retrieve(args: dict, *, hit: bool, ctx: Any = None, **extra: Any) -> 
         }
         entry.update({k: v for k, v in extra.items() if v is not None})
         _usage(entry, ctx=ctx)
-    except Exception:
-        pass
+    except Exception as exc:
+        _LOGGER.warning("trimtok retrieve telemetry entry failed: %s", exc)
 
 
 def _audit(entry: dict, ctx: Any = None) -> None:
     if ctx is not None and not _bool_cfg(ctx, "audit_enabled", True):
         return
     try:
+        entry.setdefault("ts", int(time.time()))
+        entry.setdefault("version", VERSION)
         path = _audit_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         line = json.dumps(entry, ensure_ascii=False) + "\n"
@@ -333,8 +349,8 @@ def _audit(entry: dict, ctx: Any = None) -> None:
                 os.replace(path, backup)
             with path.open("a", encoding="utf-8") as f:
                 f.write(line)
-    except Exception:
-        pass
+    except Exception as exc:
+        _LOGGER.warning("trimtok audit telemetry write failed: %s", exc)
 
 
 def _config_value(ctx: Any, key: str, default: Any) -> Any:
@@ -602,6 +618,20 @@ def _finalize(
     return new_text
 
 
+def _storage_failure_stats(stats: dict, original: str) -> dict:
+    if stats.get("gate") != "ok":
+        return stats
+    failed = dict(stats)
+    failed.update(
+        gate="passthrough_storage_failure",
+        before_chars=len(original),
+        after_chars=len(original),
+        saved_chars=0,
+        reason="ccr_store_failed",
+    )
+    return failed
+
+
 def _on_transform(
     command: Any = None,
     output: Any = None,
@@ -628,12 +658,15 @@ def _on_transform(
         pressure=_context_pressure(ctx, kw),
         exit_code=_safe_int(returncode, 0),
     )
-    _usage_terminal(command, output, stats, ctx)
-    return _finalize(output, new_output, stats, ctx, {
+    out = _finalize(output, new_output, stats, ctx, {
         "tool": "terminal",
         "command": str(command or "")[:120],
         "kind": stats.get("kind"),
     })
+    if stats.get("gate") == "ok" and out is None:
+        stats = _storage_failure_stats(stats, output)
+    _usage_terminal(command, output, stats, ctx)
+    return out
 
 
 def _toon_allowed(ctx: Any) -> bool:
@@ -720,11 +753,13 @@ def _on_tool_result(
         deadline=Deadline(_float_cfg(ctx, "guard_ms", 200.0, 1.0, 1000.0)),
         pressure=_context_pressure(ctx, kw),
     )
-    _usage_tool(tool_name, result, stats, ctx)
     out = _finalize(result, new_result, stats, ctx, {
         "tool": str(tool_name or "tool"),
         "kind": "tool_result",
     })
+    if stats.get("gate") == "ok" and out is None:
+        stats = _storage_failure_stats(stats, result)
+    _usage_tool(tool_name, result, stats, ctx)
     if out is not None or stats.get("gate") == "passthrough_reference":
         # note_turn even for a verbatim read: expire_old_turns ages the file
         # cache by turn, and a read that is never noted never expires.
@@ -1014,11 +1049,12 @@ def _iter_usage_rows():
                             if line.startswith("{"):
                                 try:
                                     yield json.loads(line)
-                                except Exception:
-                                    pass
-                except Exception:
-                    pass
-    except Exception:
+                                except Exception as exc:
+                                    _LOGGER.warning("trimtok usage row parse failed in %s: %s", f, exc)
+                except Exception as exc:
+                    _LOGGER.warning("trimtok usage file read failed for %s: %s", f, exc)
+    except Exception as exc:
+        _LOGGER.warning("trimtok usage discovery failed: %s", exc)
         return
 
 

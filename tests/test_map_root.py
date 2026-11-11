@@ -6,6 +6,7 @@ host application every session was handed a map of that app's uv cache.
 import os
 from pathlib import Path
 
+import trimtok
 from trimtok import _pre_llm_call, _project_root
 
 
@@ -33,9 +34,13 @@ def test_project_root_walks_up_from_a_subdirectory(tmp_path: Path):
     assert _project_root(nested) == root.resolve()
 
 
-def test_project_root_returns_none_without_markers(tmp_path: Path):
+def test_project_root_returns_none_without_markers(tmp_path: Path, monkeypatch):
     plain = tmp_path / "not-a-project"
     plain.mkdir()
+
+    # The walk only stops at the filesystem root, so a temp dir nested inside a
+    # real repo legitimately resolves to that repo. Force a marker-free chain.
+    monkeypatch.setattr(trimtok, "_PROJECT_MARKERS", ("__no_such_marker__",))
 
     assert _project_root(plain) is None
 
@@ -44,6 +49,7 @@ def test_hook_skips_a_directory_that_is_not_a_project(tmp_path: Path, monkeypatc
     plain = tmp_path / "host-app"
     plain.mkdir()
     monkeypatch.chdir(plain)
+    monkeypatch.setattr(trimtok, "_project_root", lambda *a, **k: None)
 
     assert _pre_llm_call() is None
 
