@@ -250,27 +250,28 @@ with tempfile.TemporaryDirectory() as td:
     from pathlib import Path
     from unittest.mock import patch
     audit_path = Path(td) / "audit.jsonl"
+    # 400B fits three ~131B entries (audit entries now carry ts+version), so the
+    # cap still forces rotation while leaving real rows for `status` to count.
     with patch.object(plugin, "_audit_path", return_value=audit_path), \
-         patch.object(plugin, "_MAX_AUDIT_BYTES", 120, create=True), \
+         patch.object(plugin, "_MAX_AUDIT_BYTES", 400, create=True), \
          patch.object(ccr, "default_dir", return_value=Path(td)):
         for saved in range(1, 11):
             plugin._audit({"saved_chars": saved, "detail": "x" * 60})
         backup = audit_path.with_name(audit_path.name + ".1")
         status = plugin._handle_ts_command("status")
         bounded_files = audit_path.exists() and backup.exists()
-        bounded_sizes = bounded_files and audit_path.stat().st_size <= 120 and backup.stat().st_size <= 120
+        bounded_sizes = bounded_files and audit_path.stat().st_size <= 400 and backup.stat().st_size <= 400
         check("audit-log-rotates-with-cap", bounded_sizes)
-        status = plugin._handle_ts_command("status")
-        check("audit-status-includes-rotated-log", "transforms logged" in status and "chars saved" in status)
+        check("audit-status-includes-rotated-log", "4 transforms logged" in status and "~34 chars saved" in status)
         oversized_path = Path(td) / "oversized.jsonl"
         with patch.object(plugin, "_audit_path", return_value=oversized_path):
             plugin._audit({"detail": "x" * 1000})
-        check("audit-single-entry-respects-cap", oversized_path.stat().st_size <= 120)
+        check("audit-single-entry-respects-cap", oversized_path.stat().st_size <= 400)
         legacy_path = Path(td) / "legacy.jsonl"
         legacy_path.write_text("x" * 500, encoding="utf-8")
         with patch.object(plugin, "_audit_path", return_value=legacy_path):
             plugin._audit({"saved_chars": 3})
-        check("audit-trims-oversized-existing-log", legacy_path.stat().st_size <= 120)
+        check("audit-trims-oversized-existing-log", legacy_path.stat().st_size <= 400)
         ccr_v2.close(dir=Path(td))
 
 # Usage log: every gate incl. non-ok, both hook shapes, retrieve hits, rotation.
