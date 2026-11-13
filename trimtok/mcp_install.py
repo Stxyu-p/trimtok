@@ -283,7 +283,9 @@ def _edit_codex(client: Client, spec: ServerSpec, remove: bool, dry_run: bool) -
     if remove:
         if not found:
             return "absent"
-        new_text, status = stripped, "removed"
+        # Leave the file as we found it: dropping the appended block must not
+        # leave the blank separator line behind, or add/remove stops round-tripping.
+        new_text, status = stripped.rstrip("\n") + "\n", "removed"
     else:
         block = [f"[{table}]", f"command = {_toml_str(spec.command)}",
                  "args = [" + ", ".join(_toml_str(a) for a in spec.args) + "]"]
