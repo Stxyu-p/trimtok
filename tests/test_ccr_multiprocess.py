@@ -21,6 +21,32 @@ class MultiProcessCCRTests(unittest.TestCase):
                 parent_store.close()
                 subagent_store.close()
 
+    def test_write_lock_contention_fails_open_instead_of_stalling_the_hook(self):
+        import tempfile, pathlib, time
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            holder = FastCCRStore(db_dir=tmp_path)
+            writer = FastCCRStore(db_dir=tmp_path)
+            try:
+                # Another process mid-commit holds the write lock.
+                assert holder._conn is not None
+                holder._conn.execute("BEGIN IMMEDIATE")
+                started = time.perf_counter()
+                ref = writer.put("payload blocked behind a writer " * 100)
+                elapsed = time.perf_counter() - started
+                self.assertEqual(ref, "", "must fail open, never emit a dangling alias")
+                # The old 10s busy_timeout plus a 3-step retry ladder held the hook
+                # for 33s; a stall here blocks a whole agent turn.
+                self.assertLess(elapsed, 3.0, f"put() stalled {elapsed:.2f}s behind a write lock")
+            finally:
+                try:
+                    assert holder._conn is not None
+                    holder._conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                holder.close()
+                writer.close()
+
     def test_failed_sqlite_write_never_emits_dangling_in_memory_alias(self):
         import tempfile, pathlib, unittest.mock as mock
         with tempfile.TemporaryDirectory() as tmp:

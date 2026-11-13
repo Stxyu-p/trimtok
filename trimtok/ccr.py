@@ -29,6 +29,9 @@ import zlib
 
 _BASE62 = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _MAX_MEM_ITEMS = 512
+# Steady-state write budget. put() on a 1MB payload costs ~26ms, so 250ms is ~10x
+# headroom; the 10s used during schema setup is for one-time DDL, not the hot path.
+_WRITE_BUSY_TIMEOUT_S = 0.25
 _HEX12_RE = re.compile(r"^[0-9a-f]{12,64}$")
 _LOCK = threading.Lock()
 _GLOBAL_STORE: FastCCRStore | None = None
@@ -205,6 +208,12 @@ class FastCCRStore:
             self._alias_seq = int(row[0]) if row and str(row[0]).isdigit() else 0
             if self._fts_ok:
                 self._backfill_fts(cur)
+            # Steady state: a contended writer must never stall the hook. put() on a
+            # 1MB payload costs ~26ms, so 250ms is ~10x headroom; the 10s above is for
+            # schema work only. Without this, one tool call blocked for 33s while
+            # another process held the write lock (telemetry: gate=passthrough_timeout,
+            # ms=5042 on a 2490-char payload that compressed to nothing).
+            cur.execute(f"PRAGMA busy_timeout={int(_WRITE_BUSY_TIMEOUT_S * 1000)};")
             self._writable = True
         except Exception:
             self._conn = None
@@ -278,6 +287,7 @@ class FastCCRStore:
                 # resolved after a process restart (in-memory-only alias).
                 return ""
 
+            t_start = time.monotonic()
             for attempt in range(3):
                 try:
                     cur = self._conn.cursor()
@@ -337,11 +347,18 @@ class FastCCRStore:
                     cur.execute("COMMIT")
                     self._set_mem(sha, alias, content)
                     return alias
-                except sqlite3.OperationalError:
+                except sqlite3.OperationalError as exc:
                     try:
                         self._conn.execute("ROLLBACK")
                     except Exception:
                         pass
+                    # A lock error that already burned the busy_timeout is not
+                    # transient: retrying only multiplies the stall (3 attempts x
+                    # 250ms held one tool call for 1.1s; telemetry saw 5042ms).
+                    # Retry only failures that came back immediately.
+                    is_lock = "locked" in str(exc) or "busy" in str(exc)
+                    if is_lock and (time.monotonic() - t_start) >= _WRITE_BUSY_TIMEOUT_S:
+                        return ""
                     if attempt < 2:
                         time.sleep(0.015 * (attempt + 1))
                         continue
