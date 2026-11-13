@@ -4,6 +4,61 @@ All notable changes to trimtok are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- **A secret in the tail of a large payload skipped the verbatim gate.**
+  `policy.looks_secret()` only inspected `text[:4096]`, so a credential at the end
+  of an env dump, a long config or a stack trace never set `verbatim`, and the
+  payload was compressed and written into the CCR vault -- the exact false
+  negative the module comment warns about. The scan now covers head and tail
+  (<=8192 chars, one extra regex pass over a bounded window). Verified on the real
+  API: a 13,138-char payload with a token at the end returns
+  `gate=passthrough_policy reason=secret_value` unchanged, while the same payload
+  without the token still compresses 13,090 -> 340 chars.
+- **A contended CCR write could stall the hook for 33 seconds.**
+  `put()` waited the full 10s `busy_timeout` and then retried the whole
+  transaction twice more. Production telemetry (481 transforms) showed p50 0.39ms
+  but two passthrough events at 5042ms and 931ms on ~2.5KB payloads that
+  compressed to nothing, because the cooperative 200ms `Deadline` cannot
+  interrupt a blocking `sqlite3` call. Schema setup keeps the 10s budget; steady
+  state drops to 250ms (~10x the 26ms a 1MB put costs), and a lock error that
+  already burned the budget returns `""` instead of retrying. A fast `BUSY` still
+  retries, so `test_ccr_retries_transient_sqlite_lock_and_succeeds` keeps its
+  behaviour. Measured: contended put 33,121ms -> 353ms, uncontended 1.9ms, 1MB
+  26ms. A 6-process x 40-call soak peaks at 167ms with 0 calls over the guard; the
+  same soak with another process holding the write lock for 3s drops calls over 1s
+  from 6 to 1 (max 1413ms -> 1003ms). A residual ~350ms per contended store
+  attempt remains by design: SQLite's busy handler rounds 250ms up to ~353ms, and
+  one compression can store more than once.
+- **Usage telemetry reported savings that were never delivered.**
+  `_on_tool_result` logged before `_finalize`, so a failed CCR store recorded
+  `gate=ok` with `saved_chars` while the caller got the original text back. Rows
+  now report delivered sizes: non-ok gates report `saved=0`, and a store failure
+  is reported as `passthrough_storage_failure` instead of a phantom saving. Write
+  failures are logged rather than swallowed.
+- **`trimtok install --remove` did not restore a Codex config.**
+  Dropping the `[mcp_servers.<name>]` block left the blank separator line behind,
+  so add/remove was not a round trip.
+
+### Tests
+- `mcp_install`, which rewrites real editor configs (`~/.claude.json`,
+  `~/.codex/config.toml`, `opencode.json`), had no tests: 11 now pin "refuse to
+  edit a file we cannot parse" and "never drop a key we do not own".
+- `compress_agent_payload`, the documented dict-shaped entry point, has no callers
+  inside the package; 6 tests now cover the str, dict, non-str and exception
+  paths.
+- `test_core`'s rotated-audit-log check asserted `"transforms logged"` and
+  `"chars saved"` -- substrings that pass even when the numbers are wrong. Audit
+  entries grew by `ts`+`version` (~131B), overflowing the test's artificial 120B
+  cap so every row became an `audit_entry_oversize` stub. The cap is now 400B and
+  the assertion is pinned to `4 transforms logged, ~34 chars saved`.
+
+### Docs
+- README: the 4/5 -> 5/5 fidelity delta is marked `n=5, indicative only` instead
+  of "+20.0% accuracy gain".
+- `toon_codec` docstring said `<=24 fields` while `MAX_FIELDS` is 128, and the
+  `MAX_FIELDS` comment cited a `_try_merged_toon`/`all_keys` cap that no longer
+  exists.
+
 ## [5.9.1] - 2026-11-09
 
 ### Added
