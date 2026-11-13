@@ -70,10 +70,17 @@ class Policy:
 
 
 def looks_secret(text: str, head_chars: int = 4096) -> str:
-    """Return the matching shape name, or '' when nothing looks like a secret."""
-    head = text[:head_chars]
+    """Return the matching shape name, or '' when nothing looks like a secret.
+
+    Scans both ends. Credentials land at the *tail* of env dumps, long configs
+    and stack traces -- which are exactly the payloads big enough to skip the
+    head scan, and the ones that reach the CCR vault.
+    """
+    window = text[:head_chars]
+    if len(text) > head_chars:
+        window += "\n" + text[-head_chars:]
     for rx in _SECRET_VALUE_RES:
-        if rx.search(head):
+        if rx.search(window):
             return rx.pattern[:24]
     return ""
 

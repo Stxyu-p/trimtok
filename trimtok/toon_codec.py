@@ -12,7 +12,7 @@ schema transcode to a compact columnar table:
 Zero loss of intelligence is the hard rail: every value survives, and the
 encoder refuses (returns the input untouched) unless:
 
-  * the shape is supported (>=3 uniform dict rows, <=24 fields),
+  * the shape is supported (>=3 uniform dict rows, <=128 fields),
   * a full decode() round-trip reproduces the parsed document EXACTLY
     (type-strict, key-order-insensitive in-memory compare),
   * the table is smaller than the input, and
@@ -36,7 +36,6 @@ except ImportError:
 MIN_ROWS = 3
 # Wide but uniform tables are safe to columnarize: the sparse/heterogeneous
 # case is already refused by the exact schema-equality check, not by this cap.
-# 64 matches the merged-schema lane's all_keys cap (_try_merged_toon).
 MAX_FIELDS = 128
 MIN_BPE_GAIN = 4
 _MIN_DOC_CHARS = 64

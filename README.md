@@ -121,10 +121,12 @@ Evaluated across diverse tool-use tasks (Python tracebacks, function return anno
 | Metric | Raw Baseline | trimtok Compressed | Impact / Advantage |
 | :--- | :---: | :---: | :---: |
 | **Total Prompt Tokens** | 22,092 tokens | **10,326 tokens** | **-53.3% tokens saved** |
-| **Task Accuracy** | 80.0% (4/5) | **100.0% (5/5)** | **+20.0% accuracy gain** 🚀 |
+| **Task Accuracy** | 80.0% (4/5) | **100.0% (5/5)** | +20.0% (`n=5`, indicative only) |
 | **Information Fidelity** | 100.0% | **100.0%** | Zero hallucinations / zero loss |
 
 > **Why Compressed Input Yielded Higher Accuracy:** On oversized raw payloads, models frequently suffer from *Lost-in-the-Middle* degradation (e.g. failing to locate function signatures buried inside 4,000+ token raw code files). trimtok's selective skeletonization eliminates noise, enabling the model to achieve higher answer precision on compressed inputs than on uncompressed raw text.
+>
+> This run is `n=5` on hand-built tasks. It shows the mechanism is plausible and that compression did not cost accuracy here; it is not a statistically established accuracy gain. Read the 4/5 → 5/5 delta as indicative, not as a headline number.
 
 ### 2. Needle-In-A-Haystack (NIAH) Retention Benchmark
 Concealed critical operational signals (security overrides, replica split-brain fault codes, diagnostic signatures) at depths of 25%, 50% (exact center), and 75% within dense 1,200-line server log streams:

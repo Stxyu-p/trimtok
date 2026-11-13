@@ -48,6 +48,16 @@ class TestContentPolicy(unittest.TestCase):
             self.assertTrue(pol.verbatim, blob)
             self.assertEqual(pol.reason, "secret_value")
 
+    def test_secret_at_the_tail_of_a_large_payload_stays_verbatim(self):
+        # Credentials sit at the end of env dumps and long configs. A head-only
+        # scan missed them, so the payload was compressed and written to CCR.
+        body = "INFO boot ok\n" * 1000  # ~13k chars, far past the 4096 head window
+        pol = classify(body + "GITHUB_TOKEN=ghp_" + "a" * 30)
+        self.assertTrue(pol.verbatim)
+        self.assertEqual(pol.reason, "secret_value")
+        # ...and the same payload without the credential still compresses.
+        self.assertTrue(classify(body).compress)
+
     def test_secret_and_security_paths_stay_verbatim(self):
         for path in (".env", "config/secrets.yaml", ".npmrc", "keys/id_rsa"):
             self.assertEqual(classify("x" * 100, path=path).reason, "secret_path", path)
