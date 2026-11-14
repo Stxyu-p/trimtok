@@ -18,7 +18,7 @@ except Exception:
     _Levenshtein = None
     _FUZZY_AVAILABLE = False
 
-VERSION = "5.9.1"
+VERSION = "5.9.2"
 
 # Dead-Range incompressibility cache: skip heavy transforms on repeated reverts
 _DEAD_RANGES: OrderedDict[str, dict] = OrderedDict()

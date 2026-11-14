@@ -4,6 +4,8 @@ All notable changes to trimtok are documented here.
 
 ## [Unreleased]
 
+## [5.9.2] - 2026-11-14
+
 ### Fixed
 - **A secret in the tail of a large payload skipped the verbatim gate.**
   `policy.looks_secret()` only inspected `text[:4096]`, so a credential at the end
