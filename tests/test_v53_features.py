@@ -157,6 +157,17 @@ Requirement already satisfied: idna in /site-packages (3.4)
         ])
         self.assertIsNone(try_command_filter("ls -la", mixed_ls))
 
+    def test_heredoc_and_quoted_env_guards(self):
+        ls_out = "\n".join([
+            "total 12",
+            "-rw-r--r-- 1 u g 100 Nov 14 10:00 a.txt",
+            "-rw-r--r-- 1 u g 100 Nov 14 10:00 b.txt",
+            "-rw-r--r-- 1 u g 100 Nov 14 10:00 c.txt",
+            "drwxr-xr-x 2 u g 0 Nov 14 10:00 sub",
+        ])
+        self.assertIsNotNone(try_command_filter('FOO="a b" ls -la', ls_out))
+        self.assertIsNone(try_command_filter("ls -la <<EOF\nhi\nEOF", ls_out))
+
 
 class TestMultiLangAST(unittest.TestCase):
     def test_language_detection(self):

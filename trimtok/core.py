@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import pathlib
 import re
 import threading
 import time
@@ -18,7 +19,25 @@ except Exception:
     _Levenshtein = None
     _FUZZY_AVAILABLE = False
 
-VERSION = "5.9.2"
+
+def _resolve_version() -> str:
+    pyproject = pathlib.Path(__file__).resolve().parent.parent / "pyproject.toml"
+    if pyproject.is_file():
+        m = re.search(
+            r'^version\s*=\s*["\']([^"\']+)["\']',
+            pyproject.read_text(encoding="utf-8", errors="ignore"),
+            re.M,
+        )
+        if m:
+            return m.group(1).strip()
+    try:
+        from importlib.metadata import version as _pkg_version
+        return _pkg_version("trimtok")
+    except Exception:
+        return "0.0.0"
+
+
+VERSION = _resolve_version()
 
 # Dead-Range incompressibility cache: skip heavy transforms on repeated reverts
 _DEAD_RANGES: OrderedDict[str, dict] = OrderedDict()

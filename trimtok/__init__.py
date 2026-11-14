@@ -284,11 +284,11 @@ def _usage_terminal(command: Any, output: Any, stats: dict, ctx: Any) -> None:
         _LOGGER.warning("trimtok terminal telemetry entry failed: %s", exc)
 
 
-def _usage_tool(tool_name: Any, result: Any, stats: dict, ctx: Any) -> None:
+def _usage_tool(tool_name: Any, result: Any, stats: dict, ctx: Any, args: Any = None) -> None:
     try:
         res = result if isinstance(result, str) else ""
         after, saved = _reported_sizes(stats, len(res))
-        _usage({
+        entry = {
             "ts": int(time.time()),
             "hook": "tool",
             "tool": str(tool_name or "tool"),
@@ -309,7 +309,12 @@ def _usage_tool(tool_name: Any, result: Any, stats: dict, ctx: Any) -> None:
             "toon_kind": stats.get("toon_kind"),
             "toon_used": bool(stats.get("toon_used", False)),
             "reason": stats.get("reason"),
-        }, ctx=ctx)
+        }
+        if str(tool_name or "") == "terminal" and isinstance(args, dict):
+            cmd = args.get("command") or args.get("cmd")
+            if cmd:
+                entry["cmd"] = str(cmd)[:120]
+        _usage(entry, ctx=ctx)
     except Exception as exc:
         _LOGGER.warning("trimtok tool telemetry entry failed: %s", exc)
 
@@ -759,7 +764,7 @@ def _on_tool_result(
     })
     if stats.get("gate") == "ok" and out is None:
         stats = _storage_failure_stats(stats, result)
-    _usage_tool(tool_name, result, stats, ctx)
+    _usage_tool(tool_name, result, stats, ctx, args=effective_args)
     if out is not None or stats.get("gate") == "passthrough_reference":
         # note_turn even for a verbatim read: expire_old_turns ages the file
         # cache by turn, and a read that is never noted never expires.
@@ -1063,7 +1068,7 @@ def _discover_summary() -> str:
     try:
         terminal_rows = [r for r in _iter_usage_rows() if r.get("hook") in ("terminal", "tool")]
         if not terminal_rows:
-            return f"trimtok v{VERSION}: no terminal/tool events logged yet."
+            return "trimtok: no terminal/tool events logged yet."
 
         # By shape
         by_shape: dict = {}
@@ -1085,7 +1090,7 @@ def _discover_summary() -> str:
             by_cmd[c]["before"] += int(r.get("before") or 0)
             by_cmd[c]["saved"] += int(r.get("saved") or 0)
 
-        out = [f"trimtok v{VERSION} discover: {len(terminal_rows)} events analyzed"]
+        out = [f"trimtok discover: {len(terminal_rows)} events analyzed"]
         out.append("")
 
         # Low-savings shapes
@@ -1125,7 +1130,7 @@ def _discover_summary() -> str:
         out.append("    4. Run 'trimtok gain' for detailed breakdown")
         return "\n".join(out)
     except Exception as e:
-        return f"trimtok v{VERSION}: discover unavailable ({e})."
+        return f"trimtok: discover unavailable ({e})."
 def _gain_summary(days: int = 0) -> str:
     """Detailed gain report: savings by shape, tool, and bottleneck analysis."""
     try:
@@ -1136,7 +1141,7 @@ def _gain_summary(days: int = 0) -> str:
                 continue
             rows.append(r)
         if not rows:
-            return f"trimtok v{VERSION} gain: no usage logged yet."
+            return "trimtok gain: no usage logged yet."
 
         # Overall stats
         terminal_rows = [r for r in rows if r.get("hook") in ("terminal", "tool")]
@@ -1176,7 +1181,7 @@ def _gain_summary(days: int = 0) -> str:
             by_cmd[c]["ms"] += float(r.get("ms") or 0)
 
         out = []
-        out.append(f"trimtok v{VERSION} gain report ({len(rows)} events, {n_folds} folds)")
+        out.append(f"trimtok gain report ({len(rows)} events, {n_folds} folds)")
         if days > 0:
             out.append(f"  period: last {days} days")
         out.append(f"  total: {total_before:,} -> {total_after:,} chars ({overall_pct:.1f}% saved, {total_saved:,} chars)")
@@ -1223,12 +1228,12 @@ def _gain_summary(days: int = 0) -> str:
 
         return "\n".join(out)
     except Exception as e:
-        return f"trimtok v{VERSION}: gain unavailable ({e})."
+        return f"trimtok: gain unavailable ({e})."
 def _usage_summary() -> str:
     try:
         rows = list(_iter_usage_rows())
         if not rows:
-            return f"trimtok v{VERSION}: no usage logged yet."
+            return "trimtok: no usage logged yet."
         n_ok = sum(1 for r in rows if r.get("gate") == "ok")
         saved = sum(int(r.get("saved") or 0) for r in rows if r.get("hook") in ("terminal", "tool"))
         gates: dict = {}
@@ -1247,14 +1252,14 @@ def _usage_summary() -> str:
         top_g = sorted(gates.items(), key=lambda kv: -kv[1])[:5]
         top_s = sorted(shapes.items(), key=lambda kv: -kv[1])[:5]
         top_c = sorted(cmds.items(), key=lambda kv: -kv[1][1])[:5]
-        out = [f"trimtok v{VERSION} usage: {len(rows)} events, {n_ok} folds, ~{saved:,} chars saved."]
+        out = [f"trimtok usage: {len(rows)} events, {n_ok} folds, ~{saved:,} chars saved."]
         out.append("gates: " + ", ".join(f"{k}={v}" for k, v in top_g))
         out.append("shapes: " + ", ".join(f"{k}={v}" for k, v in top_s))
         out.append("top-saved: " + "; ".join(f"{k} (~{v[1]:,}c)" for k, v in top_c))
         out.append(f"retrieve: {hits}/{len(retr)} hits" if retr else "retrieve: none yet")
         return "\n".join(out)
     except Exception:
-        return f"trimtok v{VERSION}: usage unavailable."
+        return "trimtok: usage unavailable."
 
 
 def _handle_ts_command(raw_args: str) -> str:
@@ -1271,11 +1276,11 @@ def _handle_ts_command(raw_args: str) -> str:
             saved = sum((json.loads(ln).get("saved_chars") or 0) for ln in lines if ln.strip().startswith("{"))
             c_stat = ccr_stats()
             return (
-                f"trimtok v{VERSION}: {len(lines)} transforms logged (recent window), ~{saved:,} chars saved.\n"
+                f"trimtok: {len(lines)} transforms logged (recent window), ~{saved:,} chars saved.\n"
                 f"CCR Cache: {c_stat.get('entries', 0)} entries (~{c_stat.get('bytes', 0) // 1024} KB)."
             )
         except Exception:
-            return f"trimtok v{VERSION}: status unavailable."
+            return "trimtok: status unavailable."
     if arg == "stats":
         return _handle_ts_command("status")
     if arg == "usage":
@@ -1299,7 +1304,7 @@ def _handle_ts_command(raw_args: str) -> str:
         return _handle_retrieve({"hash": parts[0] if parts else ""})
     if arg == "purge":
         purged = ccr_purge()
-        return f"trimtok v{VERSION}: purged {purged} cached original files."
+        return f"trimtok: purged {purged} cached original files."
     if arg.startswith("retrieve"):
         h = arg.partition(" ")[2].strip()
         parts = h.split()

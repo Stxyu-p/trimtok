@@ -19,7 +19,7 @@ class TestVersionUniformity(unittest.TestCase):
                     self.assertEqual(trimtok.__version__, proj_ver)
                     break
 
-        # Verify plugin.yaml matches the single source
+        # plugin.yaml version is optional in Hermes; if present, it must match pyproject.
         plugin_yaml = pathlib.Path(__file__).parents[1] / "plugin.yaml"
         if plugin_yaml.exists():
             for line in plugin_yaml.read_text(encoding="utf-8").splitlines():
@@ -27,6 +27,9 @@ class TestVersionUniformity(unittest.TestCase):
                     yaml_ver = line.split(":")[1].strip().strip('"\'')
                     self.assertEqual(trimtok.__version__, yaml_ver)
                     break
+
+        from trimtok import mcp_server
+        self.assertEqual(mcp_server.SERVER_INFO["version"], VERSION)
 
 if __name__ == "__main__":
     unittest.main()

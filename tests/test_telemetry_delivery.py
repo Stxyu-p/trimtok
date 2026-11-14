@@ -92,6 +92,18 @@ class TestTelemetryDelivery(unittest.TestCase):
         self.assertEqual(row["version"], trimtok.VERSION)
         self.assertIsInstance(row["ts"], int)
 
+    def test_usage_tool_terminal_captures_cmd_for_trace_mining(self):
+        with patch.object(trimtok, "_usage_path", return_value=self.usage_path):
+            trimtok._usage_tool(
+                "terminal",
+                "ok",
+                {"gate": "ok", "before_chars": 2, "after_chars": 2, "saved_chars": 0},
+                _Context(),
+                args={"command": "python -m unittest discover -s tests"},
+            )
+        row = self._rows(self.usage_path)[0]
+        self.assertEqual(row["cmd"], "python -m unittest discover -s tests")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -155,8 +155,10 @@ def _docker_ps_filter(output: str) -> str | None:
     return f"[tt:docker_ps] {len(rows)} containers ({', '.join(uniq_images)}{name_snippet})"
 
 
-_RE_COMPOUND = re.compile(r"(?:&&|\|\||[;|\n`]|[$][(])")
-_RE_LEADING_ENV = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+|env\s+)*")
+_RE_COMPOUND = re.compile(r"(?:&&|\|\||<<|[;|\n`]|[$][(]|\s&\s)")
+_RE_LEADING_ENV = re.compile(
+    r"^(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|\S+)\s+|env\s+)*"
+)
 
 _FILTERS = [
     (re.compile(r"^(?:\S*/)?git\s+log\b", re.I), _git_log_filter),
