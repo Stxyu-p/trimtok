@@ -39,14 +39,17 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("TRIMTOK_DATA_DIR", tempfile.mkdtemp(prefix="tt-fixacc-"))
 
-import tiktoken  # noqa: E402
+try:
+    import tiktoken  # noqa: E402
+    ENC = tiktoken.get_encoding("cl100k_base")
+except Exception:
+    ENC = None
 from trimtok import _handle_retrieve  # noqa: E402
 from trimtok.ccr import get as ccr_get  # noqa: E402
 from trimtok.ccr import put as ccr_put  # noqa: E402
 from trimtok.dedup import compress_tool_result  # noqa: E402
-from trimtok.signals import Deadline  # noqa: E402
+from trimtok.signals import Deadline, estimate_tokens  # noqa: E402
 
-ENC = tiktoken.get_encoding("cl100k_base")
 API = "http://localhost:20128/v1/chat/completions"
 KEY = os.environ.get("HERMES_CUSTOM_LOCALHOST_20128_API_KEY", "")
 
@@ -157,9 +160,11 @@ TASKS = [
 
 def tok(s: str) -> int:
     try:
-        return len(ENC.encode(s or ""))
+        if ENC is not None:
+            return len(ENC.encode(s or ""))
     except Exception:
-        return len(s or "") // 4
+        pass
+    return estimate_tokens(s or "")
 
 
 def apply_mutation(task: dict, src: str) -> str:

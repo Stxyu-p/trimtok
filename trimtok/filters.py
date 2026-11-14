@@ -62,15 +62,25 @@ def _git_status_filter(output: str) -> str | None:
     return f"[tt:git_status] {', '.join(parts)}"
 
 
+_RE_LS_LINE = re.compile(r"^[d\-lcbps][rwx\-sStT]{9}[+@.]?\s+")
+
+
 def _ls_filter(output: str) -> str | None:
     """ls -la → file/dir counts and total size."""
-    lines = output.strip().splitlines()
+    lines = [ln for ln in output.strip().splitlines() if ln.strip()]
     if len(lines) < 5:
         return None
-    dirs = sum(1 for ln in lines if ln.startswith("d"))
-    files = sum(1 for ln in lines if ln.startswith("-"))
+    entry_lines = [ln for ln in lines if _RE_LS_LINE.match(ln)]
+    if len(entry_lines) < 3:
+        return None
+    # Guard against mixed output: most non-header lines must be ls entries.
+    body_count = len(lines) - (1 if lines[0].lstrip().startswith("total ") else 0)
+    if body_count <= 0 or len(entry_lines) * 10 < body_count * 6:
+        return None
+    dirs = sum(1 for ln in entry_lines if ln.startswith("d"))
+    files = sum(1 for ln in entry_lines if ln.startswith("-"))
     total_size = 0
-    for ln in lines:
+    for ln in entry_lines:
         parts = ln.split()
         if len(parts) >= 5 and parts[4].isdigit():
             total_size += int(parts[4])
@@ -145,14 +155,17 @@ def _docker_ps_filter(output: str) -> str | None:
     return f"[tt:docker_ps] {len(rows)} containers ({', '.join(uniq_images)}{name_snippet})"
 
 
+_RE_COMPOUND = re.compile(r"(?:&&|\|\||[;|\n`]|[$][(])")
+_RE_LEADING_ENV = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+|env\s+)*")
+
 _FILTERS = [
-    (re.compile(r"\bgit\s+log\b", re.I), _git_log_filter),
-    (re.compile(r"\bgit\s+status\b", re.I), _git_status_filter),
-    (re.compile(r"\bls\s+-", re.I), _ls_filter),
-    (re.compile(r"\bnpm\b", re.I), _npm_filter),
-    (re.compile(r"\bpip\b", re.I), _pip_filter),
-    (re.compile(r"\bfind\b", re.I), _find_filter),
-    (re.compile(r"\bdocker\s+(?:container\s+)?(?:ps|ls)\b", re.I), _docker_ps_filter),
+    (re.compile(r"^(?:\S*/)?git\s+log\b", re.I), _git_log_filter),
+    (re.compile(r"^(?:\S*/)?git\s+status\b", re.I), _git_status_filter),
+    (re.compile(r"^(?:\S*/)?ls\s+-", re.I), _ls_filter),
+    (re.compile(r"^(?:\S*/)?npm\b", re.I), _npm_filter),
+    (re.compile(r"^(?:\S*/)?pip(?:3)?\b", re.I), _pip_filter),
+    (re.compile(r"^(?:\S*/)?find\b", re.I), _find_filter),
+    (re.compile(r"^(?:\S*/)?docker\s+(?:container\s+)?(?:ps|ls)\b", re.I), _docker_ps_filter),
 ]
 
 
@@ -160,9 +173,13 @@ def try_command_filter(command: str, output: str) -> str | None:
     """Try all registered filters. Returns summary or None. Never raises."""
     if not command or not output or not isinstance(output, str) or len(output) < 32:
         return None
+    # Compound/chained/piped/scripted commands must not have their combined stdout swallowed.
+    if _RE_COMPOUND.search(command):
+        return None
+    head = _RE_LEADING_ENV.sub("", command.strip(), count=1)
     for pattern, fn in _FILTERS:
         try:
-            if pattern.search(command):
+            if pattern.match(head):
                 res = fn(output)
                 if res is not None:
                     return res

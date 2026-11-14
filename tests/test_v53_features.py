@@ -120,6 +120,43 @@ Requirement already satisfied: idna in /site-packages (3.4)
         self.assertIsNone(try_command_filter("cat foo.txt", "line1\nline2\nline3"))
         self.assertIsNone(try_command_filter("git log", "tiny"))
 
+    def test_compound_command_does_not_swallow_earlier_output(self):
+        mixed = (
+            "=== trimtok ===\n## main...origin/main\nabc1234 fix bug\n"
+            "=== memcore ===\n## main...origin/main\ndef5678 feat\n"
+            "total 16\n"
+            "-rw-r--r-- 1 u g 100 Nov 14 10:00 a.txt\n"
+            "-rw-r--r-- 1 u g 200 Nov 14 10:00 b.txt\n"
+            "drwxr-xr-x 2 u g 0 Nov 14 10:00 dir1\n"
+        )
+        self.assertIsNone(try_command_filter("for r in trimtok memcore; do git status; done; ls -lh", mixed))
+        self.assertIsNone(try_command_filter("git status && ls -la", mixed))
+
+    def test_inline_script_containing_filter_word_does_not_match(self):
+        py_out = "\n".join([
+            "plugins:",
+            "C:/env/site-packages/pkg.0",
+            "C:/env/site-packages/pkg.1",
+            "C:/env/site-packages/a.py",
+            "C:/env/site-packages/b.json",
+            "C:/env/site-packages/c.txt",
+        ])
+        self.assertIsNone(try_command_filter('python -c "cfg.find(\'plugins:\')"', py_out))
+        self.assertIsNone(try_command_filter('node -e "console.log(\'ls -la\')"', py_out))
+
+    def test_ls_filter_rejects_mixed_non_listing_output(self):
+        mixed_ls = "\n".join([
+            "HEADER line 1",
+            "HEADER line 2",
+            "HEADER line 3",
+            "HEADER line 4",
+            "HEADER line 5",
+            "-rw-r--r-- 1 u g 100 Nov 14 10:00 f1.txt",
+            "-rw-r--r-- 1 u g 100 Nov 14 10:00 f2.txt",
+            "drwxr-xr-x 2 u g 0 Nov 14 10:00 d1",
+        ])
+        self.assertIsNone(try_command_filter("ls -la", mixed_ls))
+
 
 class TestMultiLangAST(unittest.TestCase):
     def test_language_detection(self):
