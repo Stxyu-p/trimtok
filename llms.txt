@@ -1,0 +1,66 @@
+# trimtok
+
+> Deterministic, lossless-retrievable context compression for AI coding agents and
+> MCP clients. It shrinks tool results, terminal output, file reads and web pages
+> before they enter the context window, and keeps every original byte retrievable
+> from a local SQLite store by `#ref`.
+
+trimtok runs in-process through agent hooks and a stdio MCP server. There is no
+model in the hot path: the same payload always compresses to the same bytes, and a
+failed transform passes the original through untouched.
+
+## Key facts
+
+- Compresses tool results, terminal output, `read_file` payloads, web intake, JSON
+  arrays (TOON v2 tables), source code (AST skeletonization), tracebacks, diffs,
+  test-runner output and build logs.
+- Every transform writes the original to a durable SQLite WAL + Zstd store and
+  ships a `#ref` marker. `trimtok_retrieve` returns the exact original, across
+  turns, processes and restarts. Nothing is lost, so folding is safe to attempt.
+- Deterministic: no LLM, no network, no API key, no data leaves the machine.
+- Fail-open by design: the pipeline never raises and never blocks the original
+  output. A 200 ms guard bounds the hot path and ships verbatim on expiry.
+- Reports characters, not model tokens, and separates attempted from delivered
+  savings. `eval/audit_honesty.py` recomputes claimed vs proven savings and reports
+  the gap; telemetry is reported per release so a fixed bucket cannot hide inside
+  an all-versions average.
+- Measured on a fixed 32-payload corpus (1,135,441 chars): 74.79% character
+  reduction with 0 unproven characters. Production telemetry for the 5.9.4 release
+  cohort: 40.6% of chars delivered on 117 events. These two populations are never
+  combined.
+- Integrates with Claude Code, Cursor, Codex, Gemini, Antigravity and Hermes
+  through hooks and MCP.
+- Python 3.10+, MIT licence, published on PyPI as `trimtok`.
+
+## Not what it is
+
+- Not a learned/lossy prompt compressor: it does not drop semantic content it
+  cannot prove is redundant, so tools such as LLMLingua will beat it on dense
+  natural-language prose.
+- Not a prompt-cache system-prompt rewriter and not an output-brevity prompt.
+- Not a hosted proxy: it runs on your machine, in-process.
+
+## Docs
+
+- [README](https://github.com/Stxyu-p/trimtok/blob/main/README.md): what it does,
+  install, configuration, per-lane mechanisms.
+- [How trimtok compares](https://github.com/Stxyu-p/trimtok/blob/main/docs/COMPARISON.md):
+  head-to-head table against LLMLingua, claw-compactor, leanctx, squeez,
+  token-crunch, glyphdown and cctx, plus why their percentages are not comparable,
+  and where trimtok is weaker.
+- [Changelog](https://github.com/Stxyu-p/trimtok/blob/main/CHANGELOG.md): every
+  release with the measurement that justified it.
+- [Token-saver research notes](https://github.com/Stxyu-p/trimtok/blob/main/docs/research-token-saver.md)
+
+## Install
+
+```bash
+pip install trimtok
+trimtok install            # register hooks / MCP for the detected hosts
+trimtok gain               # what it actually saved, from your own telemetry
+```
+
+## Optional
+
+- [PyPI](https://pypi.org/project/trimtok/)
+- [Issues](https://github.com/Stxyu-p/trimtok/issues)

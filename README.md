@@ -82,7 +82,7 @@ Tool / Terminal Output
 
 | 🏛️ Architecture & Verification | ⚡ Core Engineering Pillars | 🛠️ Setup & Operations |
 | :--- | :--- | :--- |
-| • [⚡ At a Glance: Before vs After](#at-a-glance)<br>• [🏗️ How It Works](#how-it-works)<br>• [🥊 Architecture & Benchmark Matrix](#market-comparison)<br>• [🔬 Empirical Quality & Fidelity](#empirical-verification) | • **[Pillar 1: Terminal Compression](#pillar-1-terminal)**<br>&nbsp;&nbsp;▫ [Cross-Turn Delta Engine](#1-cross-turn-delta)<br>&nbsp;&nbsp;▫ [Command-Specific Filters](#2-command-filters)<br>&nbsp;&nbsp;▫ [Structured Traceback Pruning](#3-traceback-pruning)<br>&nbsp;&nbsp;▫ [Fault-Signature Folding](#3b-fault-folding)<br>• **[Pillar 2: Intake Shield](#pillar-2-intake)**<br>&nbsp;&nbsp;▫ [Tiered Web & File Intake](#4-tiered-web-intake)<br>&nbsp;&nbsp;▫ [AST Code Skeletonizer](#5-ast-skeletonizer)<br>&nbsp;&nbsp;▫ [Lossless TOON v2 (JSON)](#6-toon-v2)<br>&nbsp;&nbsp;▫ [Tool-Result Folding](#6b-tool-result-folding)<br>• **[Pillar 3: Zero Data Loss](#pillar-3-zero-data-loss)**<br>&nbsp;&nbsp;▫ [CCR Recovery (`#ref`)](#7-ccr-recovery)<br>&nbsp;&nbsp;▫ [Pointer Tier (`pointer_large`)](#7b-pointer-large)<br>&nbsp;&nbsp;▫ [Telemetry & Diagnostics](#8-telemetry-diagnostics)<br>&nbsp;&nbsp;▫ [Fail-Open Budget Guards](#9-fail-open-guards)<br>• **[Pillar 4: Policy & Verification](#pillar-4-policy)**<br>&nbsp;&nbsp;▫ [Content Policy Gate](#10-content-policy)<br>&nbsp;&nbsp;▫ [Adaptive Compression Level](#11-adaptive-level)<br>&nbsp;&nbsp;▫ [Model-Aware Output Format](#12-model-aware)<br>&nbsp;&nbsp;▫ [Fix-Accuracy Verification](#14-fix-accuracy) | • **[First-Time Setup (5 Mins)](#first-time-setup)**<br>&nbsp;&nbsp;▫ [Step 1: Install trimtok](#step-1-install)<br>&nbsp;&nbsp;▫ [Step 2: Setup Wizard](#step-2-wizard)<br>&nbsp;&nbsp;▫ [Step 3: Health Verification](#step-3-health)<br>• **[Hermes Plugin Setup](#hermes-configuration)**<br>&nbsp;&nbsp;▫ [Configuration Options](#hermes-config-options)<br>• **[Slash Commands & CLI](#slash-commands-cli)**<br>&nbsp;&nbsp;▫ [In-Chat Slash Commands](#hermes-slash-commands)<br>&nbsp;&nbsp;▫ [KV-Cache Stabilizer (`kv-lock`)](#kvlock-cli)<br>&nbsp;&nbsp;▫ [Codebase Map (`map`)](#codemap-cli)<br>&nbsp;&nbsp;▫ [Bounded MCP Proxy (`mcp-proxy`)](#mcp-proxy-cli)<br>&nbsp;&nbsp;▫ [Standalone Wrapper (`wrap`)](#standalone-cli-wrapper)<br>&nbsp;&nbsp;▫ [Command Rewriting (`rewrite`)](#rewrite-cli)<br>• **[Autonomous Agent Ecosystem](#autonomous-agent-ecosystem)**<br>• **[Verification & Tests](#verification)**<br>• **[License (MIT)](#license)** |
+| • [⚡ At a Glance: Before vs After](#at-a-glance)<br>• [🏗️ How It Works](#how-it-works)<br>• [🥊 Architecture & Benchmark Matrix](#market-comparison)<br>• [🔬 Empirical Quality & Fidelity](#empirical-verification) | • **[Pillar 1: Terminal Compression](#pillar-1-terminal)**<br>&nbsp;&nbsp;▫ [Cross-Turn Delta Engine](#1-cross-turn-delta)<br>&nbsp;&nbsp;▫ [Command-Specific Filters](#2-command-filters)<br>&nbsp;&nbsp;▫ [Structured Traceback Pruning](#3-traceback-pruning)<br>&nbsp;&nbsp;▫ [Fault-Signature Folding](#3b-fault-folding)<br>• **[Pillar 2: Intake Shield](#pillar-2-intake)**<br>&nbsp;&nbsp;▫ [Tiered Web & File Intake](#4-tiered-web-intake)<br>&nbsp;&nbsp;▫ [AST Code Skeletonizer](#5-ast-skeletonizer)<br>&nbsp;&nbsp;▫ [Lossless TOON v2 (JSON)](#6-toon-v2)<br>&nbsp;&nbsp;▫ [Tool-Result Folding](#6b-tool-result-folding)<br>• **[Pillar 3: Zero Data Loss](#pillar-3-zero-data-loss)**<br>&nbsp;&nbsp;▫ [CCR Recovery (`#ref`)](#7-ccr-recovery)<br>&nbsp;&nbsp;▫ [Pointer Tier (`pointer_large`)](#7b-pointer-large)<br>&nbsp;&nbsp;▫ [Telemetry & Diagnostics](#8-telemetry-diagnostics)<br>&nbsp;&nbsp;▫ [Fail-Open Budget Guards](#9-fail-open-guards)<br>• **[Pillar 4: Policy & Verification](#pillar-4-policy)**<br>&nbsp;&nbsp;▫ [Content Policy Gate](#10-content-policy)<br>&nbsp;&nbsp;▫ [Adaptive Compression Level](#11-adaptive-level)<br>&nbsp;&nbsp;▫ [Model-Aware Output Format](#12-model-aware)<br>&nbsp;&nbsp;▫ [Fix-Accuracy Verification](#14-fix-accuracy) | • **[First-Time Setup (5 Mins)](#first-time-setup)**<br>&nbsp;&nbsp;▫ [Step 1: Install trimtok](#step-1-install)<br>&nbsp;&nbsp;▫ [Step 2: Setup Wizard](#step-2-wizard)<br>&nbsp;&nbsp;▫ [Step 3: Health Verification](#step-3-health)<br>• **[Hermes Plugin Setup](#hermes-configuration)**<br>&nbsp;&nbsp;▫ [Configuration Options](#hermes-config-options)<br>• **[Slash Commands & CLI](#slash-commands-cli)**<br>&nbsp;&nbsp;▫ [In-Chat Slash Commands](#hermes-slash-commands)<br>&nbsp;&nbsp;▫ [KV-Cache Stabilizer (`kv-lock`)](#kvlock-cli)<br>&nbsp;&nbsp;▫ [Codebase Map (`map`)](#codemap-cli)<br>&nbsp;&nbsp;▫ [Bounded MCP Proxy (`mcp-proxy`)](#mcp-proxy-cli)<br>&nbsp;&nbsp;▫ [Standalone Wrapper (`wrap`)](#standalone-cli-wrapper)<br>&nbsp;&nbsp;▫ [Command Rewriting (`rewrite`)](#rewrite-cli)<br>• **[Autonomous Agent Ecosystem](#autonomous-agent-ecosystem)**<br>• **[FAQ](#faq)**<br>• **[Verification & Tests](#verification)**<br>• **[License (MIT)](#license)** |
 
 ---
 
@@ -107,6 +107,15 @@ Direct architectural comparison across context compression paradigms:
 - **Deterministic & Sub-2ms:** Runs directly inside agent runtime hooks with zero daemon processes, zero network ports, and fail-open deadline guards (`guard_ms: 200.0`).
 - **Zero Data Loss Guarantee:** Every omitted byte is backed by SQLite WAL + Zstandard. Agents recall slices via `trimtok_retrieve` or execute Python aggregate queries via `trimtok_exec` without inflating prompt context.
 - **Cross-Turn Stateful Delta:** Repeated test suites (`pytest`, `cargo test`) and git operations track cross-turn state, surfacing only new regressions and active diffs.
+
+### Named competitors, head to head
+
+The matrix above compares architectures. For a tool-by-tool table against
+**LLMLingua, claw-compactor, leanctx, squeez, token-crunch, glyphdown and cctx** —
+with star counts, reversibility, whether a model sits in the hot path, and an
+explanation of why their published percentages cannot be ranked against each
+other — see **[docs/COMPARISON.md](docs/COMPARISON.md)**, which also lists where
+trimtok is weaker.
 
 ---
 
@@ -615,6 +624,53 @@ The honesty audit is the load-bearing check: it recomputes the claimed reduction
 pip install trimtok memcore-omnix skill-proof-router
 trimtok install && memcore install && skill-proof install
 ```
+
+---
+
+<a id="faq"></a>
+## ❓ FAQ
+
+**How do I reduce token usage in Claude Code, Cursor or Codex?**
+Install trimtok (`pip install trimtok && trimtok install`). It registers hooks and
+an MCP server, then compresses tool results, terminal output, file reads and web
+pages before they enter the context window. `trimtok gain` reports what it
+actually saved on your machine.
+
+**Is it lossless? Can I get the original back?**
+Yes. Every transform stores the original in a local SQLite WAL + Zstandard store
+and ships a `#ref` marker; `trimtok_retrieve` returns the exact original, across
+turns, processes and restarts. `trimtok_exec` runs code over a stored original
+without pulling it back into context.
+
+**Does it call a model, or send my code anywhere?**
+No. Compression is deterministic rules — no LLM, no network, no API key, no data
+leaving the machine. The same payload always produces the same bytes.
+
+**How much does it actually save?**
+Two numbers, never combined: 74.79% character reduction on a fixed 32-payload
+corpus (1,135,441 chars, audited so that 0 characters are unproven), and 40.6% of
+characters delivered in real telemetry for the 5.9.4 release cohort. It reports
+characters, not model tokens, because tokens are model-specific.
+
+**How is it different from LLMLingua, squeez or claw-compactor?**
+Different layer and different guarantee. LLMLingua drops tokens with a learned
+classifier (lossy, model in the hot path); squeez is a hook-based compressor for
+CLI hosts; claw-compactor is a reversible multi-stage text pipeline. trimtok runs
+deterministically in-process and makes retrieval, not compression, the product.
+Full table with sources and a "where we are weaker" section:
+[docs/COMPARISON.md](docs/COMPARISON.md).
+
+**Does it break Anthropic's prompt cache?**
+It only rewrites fresh tool-result output, never the cached system-prompt or
+tool-definition prefix, and it is deterministic — so a payload that later becomes
+part of a cached prefix stays stable.
+
+**What happens if compression fails?**
+Nothing. The pipeline is fail-open: it never raises and never blocks the original
+output, and a 200 ms guard ships the payload verbatim if the budget expires.
+
+**What does it cost?**
+MIT licensed and free. It runs locally; there is nothing to subscribe to.
 
 ---
 

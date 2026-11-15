@@ -19,7 +19,11 @@ dependencies = [
     "tiktoken>=0.7.0",
     "zstandard>=0.22.0",
 ]
-keywords = ["mcp", "ai-agents", "context-compression", "token-optimization", "cli", "sqlite"]
+keywords = [
+    "mcp", "ai-agents", "context-compression", "token-optimization", "cli", "sqlite",
+    "claude-code", "cursor", "codex", "gemini", "llm", "prompt-compression",
+    "token-reduction", "context-engineering", "context-window", "ai-coding-agent",
+]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
@@ -56,6 +60,12 @@ multilang = [
     "tree-sitter-toml>=0.7",
     "tree-sitter-json>=0.24",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Stxyu-p/trimtok"
+Repository = "https://github.com/Stxyu-p/trimtok"
+Changelog = "https://github.com/Stxyu-p/trimtok/blob/main/CHANGELOG.md"
+Issues = "https://github.com/Stxyu-p/trimtok/issues"
 
 [project.scripts]
 trimtok = "trimtok.__main__:main"
