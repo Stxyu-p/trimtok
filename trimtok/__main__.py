@@ -155,11 +155,7 @@ def _run_purge(ns: Any) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    args_list = list(sys.argv[1:] if argv is None else argv)
-
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="trimtok",
         description=f"Trimtok v{VERSION} — Deterministic Context Compressor & Universal MCP Server",
@@ -238,9 +234,10 @@ def main(argv: list[str] | None = None) -> int:
 
     p_kv = sub.add_parser("kv-lock", help="Stabilize prompt content for KV-cache alignment")
     p_kv.add_argument("input", nargs="?", default="-", help="File path or '-' for stdin")
+    return parser
 
-    ns = parser.parse_args(args_list)
 
+def _dispatch(ns: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     if ns.cmd in (None, "status"):
         print(_handle_ts_command("status"))
         print(f"Data directory: {ccr.default_dir()}")
@@ -408,6 +405,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     parser.print_help()
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    args_list = list(sys.argv[1:] if argv is None else argv)
+    parser = _build_parser()
+    ns = parser.parse_args(args_list)
+    return _dispatch(ns, parser)
 
 
 if __name__ == "__main__":

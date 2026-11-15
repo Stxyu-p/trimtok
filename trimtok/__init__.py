@@ -859,17 +859,167 @@ def _handle_exec(args: dict, **kw: Any) -> str:
     return _err(f"exec failed (exit {res.get('exit_code')}): {str(res.get('output'))[:600]}")
 
 
+def _retrieve_by_query(args: dict, query: str, ttl_hours: int) -> str:
+    """FTS5 lookup when the caller passes a query instead of a ref."""
+    if not ccr.fts_ready():
+        return _err("FTS5 search is unavailable in this SQLite build; use hash retrieval instead.")
+    limit = max(1, min(50, _safe_int((args or {}).get("limit"), 5)))
+    hits = ccr.search(query, limit=limit, ttl_hours=ttl_hours)
+    return _ok({"hits": hits, "count": len(hits), "query": query})
+
+
+def _retrieve_by_grep(content: str, grep: str, args: dict, ctx: Any) -> str:
+    """Line grep over one stored payload, bounded by the _MAX_GREP_* caps."""
+    try:
+        if len(content) > _MAX_GREP_INPUT_CHARS:
+            return _err(
+                f"Content exceeds the {_MAX_GREP_INPUT_CHARS}-character grep limit; retrieve a smaller slice."
+            )
+        pattern = _compile_grep(grep)
+        lines = content.splitlines()
+        total_lines = len(lines)
+        matched: list[str] = []
+        output_chars = 0
+        matches_count = 0
+        truncated = False
+        for i, line in enumerate(lines):
+            if not pattern.search(line):
+                continue
+            matches_count += 1
+            rendered = f"{i + 1}|{line}"
+            extra = len(rendered) + (1 if matched else 0)
+            if len(matched) >= _MAX_GREP_MATCHES or output_chars + extra > _MAX_GREP_OUTPUT_CHARS:
+                truncated = True
+                continue
+            matched.append(rendered)
+            output_chars += extra
+        _usage_retrieve(args, hit=True, ctx=ctx, mode="grep",
+                        matches=matches_count, truncated=truncated)
+        return _ok({
+            "matches": "\n".join(matched) if matched else "(no matches found)",
+            "matches_count": matches_count,
+            "total_lines": total_lines,
+            "truncated": truncated,
+        })
+    except Exception as e:
+        return _err(f"Invalid grep pattern: {e}")
+
+
+def _retrieve_by_section(
+    content: str, lines: list[str], total_lines: int, args: dict, ctx: Any
+) -> str | None:
+    """section=errors|diff|summary|tail view. None when no section was asked for."""
+    section = str((args or {}).get("section") or "").strip().lower()
+    if not section:
+        return None
+    ctx_lines = max(0, min(20, _safe_int((args or {}).get("context_lines"), 3)))
+    if section == "errors":
+        match_indices = [i for i, line in enumerate(lines) if is_important(line)]
+        if not match_indices:
+            _usage_retrieve(args, hit=True, ctx=ctx, mode="section_errors", matches=0)
+            return _ok({
+                "section": "errors",
+                "error_matches": 0,
+                "total_lines": total_lines,
+                "lines": "(no error lines detected)",
+            })
+        formatted, returned_lines = _render_context_intervals(lines, match_indices, ctx_lines)
+        _usage_retrieve(args, hit=True, ctx=ctx, mode="section_errors",
+                        matches=len(match_indices), returned=returned_lines, total=total_lines)
+        return _ok({
+            "section": "errors",
+            "error_matches": len(match_indices),
+            "returned_lines": returned_lines,
+            "total_lines": total_lines,
+            "lines": formatted,
+        })
+    if section == "diff":
+        diff_indices = []
+        diff_prefixes = ("diff --git ", "--- ", "+++ ", "index ", "similarity index ", "new file mode ", "deleted file mode ")
+        for i, line in enumerate(lines):
+            if line.startswith(diff_prefixes) or line.startswith("@@ "):
+                diff_indices.append(i)
+            elif (line.startswith("+") and not line.startswith("+++")) or (line.startswith("-") and not line.startswith("---")):
+                diff_indices.append(i)
+        if not diff_indices:
+            _usage_retrieve(args, hit=True, ctx=ctx, mode="section_diff", matches=0)
+            return _ok({
+                "section": "diff",
+                "diff_matches": 0,
+                "total_lines": total_lines,
+                "lines": "(no diff hunks or changes detected)",
+            })
+        formatted, returned_lines = _render_context_intervals(lines, diff_indices, ctx_lines)
+        _usage_retrieve(args, hit=True, ctx=ctx, mode="section_diff",
+                        matches=len(diff_indices), returned=returned_lines, total=total_lines)
+        return _ok({
+            "section": "diff",
+            "diff_matches": len(diff_indices),
+            "returned_lines": returned_lines,
+            "total_lines": total_lines,
+            "lines": formatted,
+        })
+    if section == "summary":
+        error_indices = [i for i, line in enumerate(lines) if is_important(line)]
+        head_count = min(15, total_lines)
+        head_lines = [f"{i + 1}|{lines[i]}" for i in range(head_count)]
+        tail_start = max(head_count, total_lines - 25)
+        tail_lines = [f"{i + 1}|{lines[i]}" for i in range(tail_start, total_lines)]
+        top_errors = [f"{i + 1}|{lines[i]}" for i in error_indices[:20]]
+        _usage_retrieve(args, hit=True, ctx=ctx, mode="section_summary",
+                        errors=len(error_indices), total=total_lines)
+        return _ok({
+            "section": "summary",
+            "total_lines": total_lines,
+            "total_chars": len(content),
+            "error_lines_count": len(error_indices),
+            "head_lines": "\n".join(head_lines),
+            "tail_lines": "\n".join(tail_lines),
+            "top_errors": "\n".join(top_errors) if top_errors else "(none)",
+        })
+    if section == "tail":
+        limit = _safe_int((args or {}).get("limit"), 50)
+        cnt = max(1, min(1000, limit))
+        tail_start = max(0, total_lines - cnt)
+        tail_slice = [f"{tail_start + i + 1}|{line}" for i, line in enumerate(lines[tail_start:])]
+        _usage_retrieve(args, hit=True, ctx=ctx, mode="section_tail",
+                        returned=len(tail_slice), total=total_lines)
+        return _ok({
+            "section": "tail",
+            "returned_lines": len(tail_slice),
+            "total_lines": total_lines,
+            "lines": "\n".join(tail_slice),
+        })
+    return _err(f"Invalid section '{section}'. Allowed: 'errors', 'diff', 'summary', 'tail'")
+
+
+def _retrieve_by_slice(lines: list[str], total_lines: int, args: dict, ctx: Any) -> str | None:
+    """offset/limit view. None when neither was passed."""
+    offset = (args or {}).get("offset")
+    limit = (args or {}).get("limit")
+    if offset is None and limit is None:
+        return None
+    start = max(0, _safe_int(offset, 1) - 1)
+    cnt = _safe_int(limit, 1000)
+    end = min(total_lines, start + max(1, cnt))
+    sliced = [f"{i + 1}|{lines[i]}" for i in range(start, end)]
+    _usage_retrieve(args, hit=True, ctx=ctx, mode="slice",
+                    offset=start + 1, returned=len(sliced), total=total_lines)
+    return _ok({
+        "lines": "\n".join(sliced),
+        "offset": start + 1,
+        "total_lines": total_lines,
+        "returned_lines": len(sliced),
+    })
+
+
 def _handle_retrieve(args: dict, **kw: Any) -> str:
     ctx = getattr(_handle_retrieve, "_ctx", None)
     ttl_hours = _int_cfg(ctx, "ccr_ttl_hours", 24, 1, 24 * 30) if ctx is not None else 24
     ref = _parse_ref((args or {}).get("hash"))
     query = str((args or {}).get("query") or "").strip()
     if query and not ref:
-        if not ccr.fts_ready():
-            return _err("FTS5 search is unavailable in this SQLite build; use hash retrieval instead.")
-        limit = max(1, min(50, _safe_int((args or {}).get("limit"), 5)))
-        hits = ccr.search(query, limit=limit, ttl_hours=ttl_hours)
-        return _ok({"hits": hits, "count": len(hits), "query": query})
+        return _retrieve_by_query(args, query, ttl_hours)
     if not ref:
         return _err("hash or query is required (e.g. '#c1' or search query)")
     content = ccr_get(ref, ttl_hours=ttl_hours)
@@ -877,148 +1027,23 @@ def _handle_retrieve(args: dict, **kw: Any) -> str:
         _usage_retrieve(args, hit=False, ctx=ctx)
         return _err("Not found or expired (TTL passed). Re-run the original command instead.")
 
-    grep = str((args or {}).get("grep") or "").strip()
     intent = str((args or {}).get("intent") or "").strip()
     intent_budget = _safe_int((args or {}).get("intent_budget"), 400)
     if intent and intent_budget > 0:
         return _intent_rank(content, intent, intent_budget, args, ctx)
 
+    grep = str((args or {}).get("grep") or "").strip()
     if grep:
-        try:
-            if len(content) > _MAX_GREP_INPUT_CHARS:
-                return _err(
-                    f"Content exceeds the {_MAX_GREP_INPUT_CHARS}-character grep limit; retrieve a smaller slice."
-                )
-            pattern = _compile_grep(grep)
-            lines = content.splitlines()
-            total_lines = len(lines)
-            matched: list[str] = []
-            output_chars = 0
-            matches_count = 0
-            truncated = False
-            for i, line in enumerate(lines):
-                if not pattern.search(line):
-                    continue
-                matches_count += 1
-                rendered = f"{i + 1}|{line}"
-                extra = len(rendered) + (1 if matched else 0)
-                if len(matched) >= _MAX_GREP_MATCHES or output_chars + extra > _MAX_GREP_OUTPUT_CHARS:
-                    truncated = True
-                    continue
-                matched.append(rendered)
-                output_chars += extra
-            _usage_retrieve(args, hit=True, ctx=ctx, mode="grep",
-                            matches=matches_count, truncated=truncated)
-            return _ok({
-                "matches": "\n".join(matched) if matched else "(no matches found)",
-                "matches_count": matches_count,
-                "total_lines": total_lines,
-                "truncated": truncated,
-            })
-        except Exception as e:
-            return _err(f"Invalid grep pattern: {e}")
+        return _retrieve_by_grep(content, grep, args, ctx)
 
     lines = content.splitlines()
     total_lines = len(lines)
-
-    section = str((args or {}).get("section") or "").strip().lower()
-    if section:
-        ctx_lines = max(0, min(20, _safe_int((args or {}).get("context_lines"), 3)))
-        if section == "errors":
-            match_indices = [i for i, line in enumerate(lines) if is_important(line)]
-            if not match_indices:
-                _usage_retrieve(args, hit=True, ctx=ctx, mode="section_errors", matches=0)
-                return _ok({
-                    "section": "errors",
-                    "error_matches": 0,
-                    "total_lines": total_lines,
-                    "lines": "(no error lines detected)",
-                })
-            formatted, returned_lines = _render_context_intervals(lines, match_indices, ctx_lines)
-            _usage_retrieve(args, hit=True, ctx=ctx, mode="section_errors",
-                            matches=len(match_indices), returned=returned_lines, total=total_lines)
-            return _ok({
-                "section": "errors",
-                "error_matches": len(match_indices),
-                "returned_lines": returned_lines,
-                "total_lines": total_lines,
-                "lines": formatted,
-            })
-        if section == "diff":
-            diff_indices = []
-            diff_prefixes = ("diff --git ", "--- ", "+++ ", "index ", "similarity index ", "new file mode ", "deleted file mode ")
-            for i, line in enumerate(lines):
-                if line.startswith(diff_prefixes) or line.startswith("@@ "):
-                    diff_indices.append(i)
-                elif (line.startswith("+") and not line.startswith("+++")) or (line.startswith("-") and not line.startswith("---")):
-                    diff_indices.append(i)
-            if not diff_indices:
-                _usage_retrieve(args, hit=True, ctx=ctx, mode="section_diff", matches=0)
-                return _ok({
-                    "section": "diff",
-                    "diff_matches": 0,
-                    "total_lines": total_lines,
-                    "lines": "(no diff hunks or changes detected)",
-                })
-            formatted, returned_lines = _render_context_intervals(lines, diff_indices, ctx_lines)
-            _usage_retrieve(args, hit=True, ctx=ctx, mode="section_diff",
-                            matches=len(diff_indices), returned=returned_lines, total=total_lines)
-            return _ok({
-                "section": "diff",
-                "diff_matches": len(diff_indices),
-                "returned_lines": returned_lines,
-                "total_lines": total_lines,
-                "lines": formatted,
-            })
-        if section == "summary":
-            error_indices = [i for i, line in enumerate(lines) if is_important(line)]
-            head_count = min(15, total_lines)
-            head_lines = [f"{i + 1}|{lines[i]}" for i in range(head_count)]
-            tail_start = max(head_count, total_lines - 25)
-            tail_lines = [f"{i + 1}|{lines[i]}" for i in range(tail_start, total_lines)]
-            top_errors = [f"{i + 1}|{lines[i]}" for i in error_indices[:20]]
-            _usage_retrieve(args, hit=True, ctx=ctx, mode="section_summary",
-                            errors=len(error_indices), total=total_lines)
-            return _ok({
-                "section": "summary",
-                "total_lines": total_lines,
-                "total_chars": len(content),
-                "error_lines_count": len(error_indices),
-                "head_lines": "\n".join(head_lines),
-                "tail_lines": "\n".join(tail_lines),
-                "top_errors": "\n".join(top_errors) if top_errors else "(none)",
-            })
-        if section == "tail":
-            limit = _safe_int((args or {}).get("limit"), 50)
-            cnt = max(1, min(1000, limit))
-            tail_start = max(0, total_lines - cnt)
-            tail_slice = [f"{tail_start + i + 1}|{line}" for i, line in enumerate(lines[tail_start:])]
-            _usage_retrieve(args, hit=True, ctx=ctx, mode="section_tail",
-                            returned=len(tail_slice), total=total_lines)
-            return _ok({
-                "section": "tail",
-                "returned_lines": len(tail_slice),
-                "total_lines": total_lines,
-                "lines": "\n".join(tail_slice),
-            })
-        return _err(f"Invalid section '{section}'. Allowed: 'errors', 'diff', 'summary', 'tail'")
-
-    offset = (args or {}).get("offset")
-    limit = (args or {}).get("limit")
-    if offset is not None or limit is not None:
-        start = max(0, _safe_int(offset, 1) - 1)
-        cnt = _safe_int(limit, 1000)
-        end = min(total_lines, start + max(1, cnt))
-        sliced = [f"{i + 1}|{lines[i]}" for i in range(start, end)]
-        _usage_retrieve(args, hit=True, ctx=ctx, mode="slice",
-                        offset=start + 1, returned=len(sliced), total=total_lines)
-        return _ok({
-            "lines": "\n".join(sliced),
-            "offset": start + 1,
-            "total_lines": total_lines,
-            "returned_lines": len(sliced),
-        })
-
+    view = _retrieve_by_section(content, lines, total_lines, args, ctx)
+    if view is not None:
+        return view
+    view = _retrieve_by_slice(lines, total_lines, args, ctx)
+    if view is not None:
+        return view
     _usage_retrieve(args, hit=True, ctx=ctx, mode="full", chars=len(content))
     return _ok({"original_content": content, "original_chars": len(content), "total_lines": total_lines})
 
