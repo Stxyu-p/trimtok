@@ -3,6 +3,13 @@
 Each test pins one defect found by the bug hunt, so reverting the fix turns it
 red instead of silently degrading compression quality or losing data.
 """
+import os
+import tempfile
+
+# Isolate the store before any trimtok import: these tests compress real payloads
+# and must not write into the live ~/.trimtok CCR.
+os.environ.setdefault("TRIMTOK_DATA_DIR", tempfile.mkdtemp(prefix="tt-v553-"))
+
 from trimtok.delta_engine import _normalize_command
 from trimtok.kv_lock import stabilize_prompt
 from trimtok.prerewrite import rewrite_argv, rewrite_command
@@ -128,12 +135,18 @@ def test_marker_detection_requires_the_first_line():
 
 # --- 9. web intake must not advertise a ref that was never stored ----------
 def test_web_intake_marker_carries_the_real_digest():
-    import hashlib
+    import re
 
+    from trimtok.ccr import get as ccr_get
     from trimtok.dedup import compress_tool_result
 
     doc = "\n".join(f"{i + 1}|Paragraph {i} " + "lorem ipsum dolor sit amet " * 6 for i in range(40))
     out, _stats = compress_tool_result("web_extract", doc, args={"url": "https://example.com"})
 
     assert "#doc" not in out
-    assert f"#{hashlib.sha256(doc.encode()).hexdigest()[:12]}" in out
+    # The marker must advertise a ref that resolves to the original. A CCR alias
+    # (#c1) is as valid as the 12-char digest (#1a041685dc6c), so assert the
+    # property the test is named for, not the spelling of the ref.
+    match = re.search(r"#([0-9a-zA-Z]{2,40})", out.split("\n", 1)[0])
+    assert match, out[:200]
+    assert ccr_get(f"#{match.group(1)}") == doc
