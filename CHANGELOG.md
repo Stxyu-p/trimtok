@@ -4,6 +4,17 @@ All notable changes to trimtok are documented here.
 
 ## [Unreleased]
 
+## [5.9.5] - 2026-11-15
+
+### Changed
+- **The generic tool lane now names the stage that won.** Its `kind` was empty on
+  all 291 rows of that lane, which carried 2.34M chars — 24.3% of every token the
+  log has ever seen, the largest single bucket in the system — so the busiest lane
+  could only be attributed by summing nine counters by hand. It is now
+  `tool_<stage>` (`tool_fold`, `tool_toon`, `tool_minify`, `tool_headtail`,
+  `tool_hygiene`, ...) derived from those same counters: no behaviour change, and
+  `shape` still falls through to the counters, so no bucket moved.
+
 ## [5.9.4] - 2026-11-15
 
 Found by driving the live hooks with real payloads and reading the telemetry

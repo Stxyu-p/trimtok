@@ -1809,8 +1809,18 @@ def compress_tool_result(
                     "reason": "header_cost",
                     "ms": (time.perf_counter() - t0) * 1000,
                 }
+        _stage_saved = {
+            "skeleton": sk_saved, "search": ss_saved, "fold": f_saved,
+            "template": dt_saved, "toon": t_saved, "intra": i_saved,
+            "headtail": ht_saved, "minify": m_saved, "hygiene": h_saved,
+            "volatile": v_saved,
+        }
+        _top = max(_stage_saved, key=lambda k: _stage_saved[k])
         return new_result, {
             "gate": "ok", "digest": digest,
+            # Name the winning stage: an unnamed kind made this lane (24% of all
+            # tokens) unattributable in telemetry, readable only from 9 counters.
+            "kind": f"tool_{_top}" if _stage_saved[_top] > 0 else "tool_shave",
             "lossless_tier0": bool(is_lossless_only and not head),
             "before_chars": len(result), "after_chars": len(new_result),
             "saved_chars": len(result) - len(new_result),

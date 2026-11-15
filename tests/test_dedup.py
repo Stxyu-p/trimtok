@@ -96,6 +96,7 @@ out2, st2 = compress_tool_result("search_files", code2, session_id=SID)
 check("fold-gate", st2["gate"] == "ok")
 check("fold-pointer", "[@#" in out2)
 check("fold-saved", st2["saved_chars"] > 500)
+check("generic-kind-named", str(st2.get("kind") or "").startswith("tool_"))
 
 # 4. read_file stays verbatim but indexes
 clear_session(SID + "2")
