@@ -44,6 +44,11 @@ failed transform passes the original through untouched.
 
 - [README](https://github.com/Stxyu-p/trimtok/blob/main/README.md): what it does,
   install, configuration, per-lane mechanisms.
+- [Install and wiring](https://github.com/Stxyu-p/trimtok/blob/main/docs/INSTALL.md):
+  every install channel (pip, pipx, uv tool, zero-install uvx, git clone), what
+  `trimtok install` writes, the exact config file and key for each of the 11
+  supported clients, the interpreter-pinning trap, and which hosts get automatic
+  compression versus tools only.
 - [How trimtok compares](https://github.com/Stxyu-p/trimtok/blob/main/docs/COMPARISON.md):
   head-to-head table against LLMLingua, claw-compactor, leanctx, squeez,
   token-crunch, glyphdown and cctx, plus why their percentages are not comparable,

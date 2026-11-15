@@ -404,6 +404,10 @@ trimtok clients
 trimtok status
 ```
 
+**Every install channel, the exact file each client edits, the interpreter trap that
+breaks entries after a venv rebuild, and what still needs editing by hand:
+[docs/INSTALL.md](docs/INSTALL.md).**
+
 ---
 
 <a id="hermes-configuration"></a>
