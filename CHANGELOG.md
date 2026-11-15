@@ -4,6 +4,16 @@ All notable changes to trimtok are documented here.
 
 ## [Unreleased]
 
+## [5.9.7] - 2026-11-15
+
+### Packaging
+- **5.9.6 shipped without its packaging metadata.** The v5.9.6 tag was cut on the
+  code fix before the discovery commit landed, so the wheel PyPI received carried
+  the old keyword list and no `Project-URL` entries — the package page had no link
+  back to the repository. No code changed here: this release exists so the metadata
+  reaches PyPI. 16 keywords, four project URLs (Homepage, Repository, Changelog,
+  Issues).
+
 ## [5.9.6] - 2026-11-15
 
 ### Fixed
