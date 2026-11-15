@@ -2,7 +2,12 @@
 
 All notable changes to trimtok are documented here.
 
-## [Unreleased]
+## [5.9.3] - 2026-11-15
+
+Telemetry attribution note: everything below lands under one version on purpose.
+Rows written before this release say 5.9.2 and describe the old behaviour, so an
+A/B on `usage.jsonl` can compare `version == "5.9.2"` against `"5.9.3"` instead of
+guessing which code path produced a row.
 
 ### Fixed
 - **A green test run was announced as "STILL FAILING".** `signals._ERROR_RE` matched the
