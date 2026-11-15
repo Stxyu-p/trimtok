@@ -29,12 +29,18 @@ class TrimtokContextEngine(ContextEngine):
         threshold_percent: float = 0.50,
         protect_first_n: int = 3,
         protect_last_n: int = 6,
+        min_stash_chars: int = 2048,
+        fault_scan_lines: int = 2000,
     ) -> None:
         self.context_length = int(context_length)
         self.threshold_percent = float(threshold_percent)
         self.protect_first_n = int(protect_first_n)
         self.protect_last_n = int(protect_last_n)
         self.threshold_tokens = int(self.context_length * self.threshold_percent)
+        # A stash costs the agent a retrieval turn, so only results big enough to
+        # repay it move. Below this the stub is longer than the saving.
+        self.min_stash_chars = int(min_stash_chars)
+        self.fault_scan_lines = int(fault_scan_lines)
 
         self.last_prompt_tokens: int = 0
         self.last_completion_tokens: int = 0
@@ -82,19 +88,44 @@ class TrimtokContextEngine(ContextEngine):
         from trimtok import ccr
 
         out: list[dict[str, Any]] = []
+        stashed = 0
         for i, msg in enumerate(messages):
             if head_boundary <= i < tail_boundary and msg.get("role") == "tool":
                 content = msg.get("content", "")
-                if isinstance(content, str) and len(content) > 100 and not content.startswith("[tt:stashed"):
+                if self._should_stash(content):
                     ref = ccr.put(content)
-                    lines = content.count("\n") + 1
-                    stub = f"[tt:stashed tool result ({lines} lines, {len(content):,} chars) · trimtok_retrieve '{ref}']"
-                    out.append({**msg, "content": stub})
-                    continue
+                    if ref:
+                        lines = content.count("\n") + 1
+                        stub = f"[tt:stashed tool result ({lines} lines, {len(content):,} chars) · trimtok_retrieve '{ref}']"
+                        out.append({**msg, "content": stub})
+                        stashed += 1
+                        continue
             out.append(msg.copy())
 
-        self.compression_count += 1
+        if stashed:
+            self.compression_count += 1
         return out
+
+    def _should_stash(self, content: Any) -> bool:
+        """Only a large, already-stashed-free, fault-free tool result is worth a round trip.
+
+        A result the agent is debugging (a traceback it just caused) must stay
+        readable: stashing it hides the one line it needs and costs a retrieval.
+        """
+        if not isinstance(content, str) or len(content) < self.min_stash_chars:
+            return False
+        if content.startswith("[tt:stashed"):
+            return False
+        try:
+            from .signals import is_important
+        except ImportError:
+            from trimtok.signals import is_important
+        for idx, line in enumerate(content.splitlines()):
+            if idx >= self.fault_scan_lines:
+                return True
+            if is_important(line):
+                return False
+        return True
 
     def clone_for_agent(self) -> TrimtokContextEngine:
         """Create an isolated engine instance for an agent/subagent."""
@@ -103,6 +134,8 @@ class TrimtokContextEngine(ContextEngine):
             threshold_percent=self.threshold_percent,
             protect_first_n=self.protect_first_n,
             protect_last_n=self.protect_last_n,
+            min_stash_chars=self.min_stash_chars,
+            fault_scan_lines=self.fault_scan_lines,
         )
         cloned.threshold_tokens = self.threshold_tokens
         cloned.last_prompt_tokens = self.last_prompt_tokens

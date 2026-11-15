@@ -12,6 +12,14 @@ A/B on `usage.jsonl` can compare `version == "5.9.2"` against `"5.9.3"` instead 
 guessing which code path produced a row.
 
 ### Fixed
+- **The context engine could emit an unresolvable pointer, hide a traceback, and stash
+  results too small to repay a retrieval.** `TrimtokContextEngine.compress()` stashed any
+  middle tool result over 100 chars, wrote the stub even when `ccr.put` returned `""`, and
+  never consulted `is_important`. Since `context.engine` selects this engine wholesale
+  (`agent/agent_init._select_context_engine`), all three would have hit every session at
+  once. Now: `min_stash_chars` (default 2,048, matching the rest of the pipeline),
+  fault-bearing results stay verbatim, a failed store write leaves the original in place,
+  and `compression_count` only increments when something was actually stashed.
 - **A green test run was announced as "STILL FAILING".** `signals._ERROR_RE` matched the
   fault word anywhere outside `[A-Za-z0-9_]`, so a *test name* that mentions one
   (`PASS log-keeps-error`, `test_..._allows_honest_failure ... ok`) was classified as a
@@ -74,6 +82,12 @@ guessing which code path produced a row.
   measured yet).
 
 ### Tests
+- `tests/test_context_engine.py`: converted from four bare `def test_*` functions (which
+  `unittest discover` never collected, so the module had no coverage in the gate) to 10
+  `TestCase` cases, and redirected `TRIMTOK_DATA_DIR` before importing trimtok -- the old
+  module would have written stashing fixtures into the real `~/.trimtok` store. New cases
+  pin the small-result floor, fault preservation, the dead-pointer guard, the
+  already-stashed no-op, and that `compression_count` only moves when a stash happens.
 - `tests/test_smart_compression.py`: 11 cases pinning the mid-band helper guard, fenced
   code retention, web intake, envelope path omission, the two session caches, prefix
   folding with mixed Windows/MSYS roots, test-runner folding, pass-verdict polarity, a
