@@ -35,7 +35,7 @@ Autonomous coding agents burn over **60% of their context window budget** on rep
 | **Build & Compiler Logs** | 15,960 toks | **4,869 toks** | **-69.5%** | Adaptive error-rail balanced windowing |
 | **Whole Repo Codebase Map** | 12,000 toks | **480 toks** | **-96.0%** | 2k-budget hierarchical tree map |
 
-The 32-payload corpus evaluation is a reproducible fixture run (1,135,441 characters): **76.07% character reduction (863,784 chars)** with zero gate failures. Every removed character is verifiable through `trimtok_retrieve`; `eval/audit_honesty.py` reports 76.07% claimed and proven, with 0 unproven characters. This corpus result is not a production-traffic estimate.
+The 32-payload corpus evaluation is a reproducible fixture run (1,135,441 characters): **74.79% character reduction (849,230 chars)** with zero gate failures. Every removed character is verifiable through `trimtok_retrieve`; `eval/audit_honesty.py` reports 74.79% claimed and proven, with 0 unproven characters. This corpus result is not a production-traffic estimate.
 
 Production telemetry reports **characters**, not measured model tokens. `usage.jsonl` records transform attempts across gates, while `audit.jsonl` records successful compression events; they are different populations and are rotated independently. Do not combine their totals into one live-traffic percentage or convert characters to tokens without a model-specific tokenizer. Use `trimtok gain` (optionally with a time window) for the retained usage-log view; older retained logs cannot reproduce historical all-time claims.
 
@@ -82,7 +82,7 @@ Tool / Terminal Output
 
 | 🏛️ Architecture & Verification | ⚡ Core Engineering Pillars | 🛠️ Setup & Operations |
 | :--- | :--- | :--- |
-| • [⚡ At a Glance: Before vs After](#at-a-glance)<br>• [🏗️ How It Works](#how-it-works)<br>• [🥊 Architecture & Benchmark Matrix](#market-comparison)<br>• [🔬 Empirical Quality & Fidelity](#empirical-verification) | • **[Pillar 1: Terminal Compression](#pillar-1-terminal)**<br>&nbsp;&nbsp;▫ [Cross-Turn Delta Engine](#1-cross-turn-delta)<br>&nbsp;&nbsp;▫ [Command-Specific Filters](#2-command-filters)<br>&nbsp;&nbsp;▫ [Structured Traceback Pruning](#3-traceback-pruning)<br>&nbsp;&nbsp;▫ [Fault-Signature Folding](#3b-fault-folding)<br>• **[Pillar 2: Intake Shield](#pillar-2-intake)**<br>&nbsp;&nbsp;▫ [Tiered Web & File Intake](#4-tiered-web-intake)<br>&nbsp;&nbsp;▫ [AST Code Skeletonizer](#5-ast-skeletonizer)<br>&nbsp;&nbsp;▫ [Lossless TOON v2 (JSON)](#6-toon-v2)<br>• **[Pillar 3: Zero Data Loss](#pillar-3-zero-data-loss)**<br>&nbsp;&nbsp;▫ [CCR Recovery (`#ref`)](#7-ccr-recovery)<br>&nbsp;&nbsp;▫ [Pointer Tier (`pointer_large`)](#7b-pointer-large)<br>&nbsp;&nbsp;▫ [Telemetry & Diagnostics](#8-telemetry-diagnostics)<br>&nbsp;&nbsp;▫ [Fail-Open Budget Guards](#9-fail-open-guards)<br>• **[Pillar 4: Policy & Verification](#pillar-4-policy)**<br>&nbsp;&nbsp;▫ [Content Policy Gate](#10-content-policy)<br>&nbsp;&nbsp;▫ [Adaptive Compression Level](#11-adaptive-level)<br>&nbsp;&nbsp;▫ [Model-Aware Output Format](#12-model-aware)<br>&nbsp;&nbsp;▫ [Fix-Accuracy Verification](#14-fix-accuracy) | • **[First-Time Setup (5 Mins)](#first-time-setup)**<br>&nbsp;&nbsp;▫ [Step 1: Install trimtok](#step-1-install)<br>&nbsp;&nbsp;▫ [Step 2: Setup Wizard](#step-2-wizard)<br>&nbsp;&nbsp;▫ [Step 3: Health Verification](#step-3-health)<br>• **[Hermes Plugin Setup](#hermes-configuration)**<br>&nbsp;&nbsp;▫ [Configuration Options](#hermes-config-options)<br>• **[Slash Commands & CLI](#slash-commands-cli)**<br>&nbsp;&nbsp;▫ [In-Chat Slash Commands](#hermes-slash-commands)<br>&nbsp;&nbsp;▫ [KV-Cache Stabilizer (`kv-lock`)](#kvlock-cli)<br>&nbsp;&nbsp;▫ [Codebase Map (`map`)](#codemap-cli)<br>&nbsp;&nbsp;▫ [Bounded MCP Proxy (`mcp-proxy`)](#mcp-proxy-cli)<br>&nbsp;&nbsp;▫ [Standalone Wrapper (`wrap`)](#standalone-cli-wrapper)<br>&nbsp;&nbsp;▫ [Command Rewriting (`rewrite`)](#rewrite-cli)<br>• **[Autonomous Agent Ecosystem](#autonomous-agent-ecosystem)**<br>• **[Verification & Tests](#verification)**<br>• **[License (MIT)](#license)** |
+| • [⚡ At a Glance: Before vs After](#at-a-glance)<br>• [🏗️ How It Works](#how-it-works)<br>• [🥊 Architecture & Benchmark Matrix](#market-comparison)<br>• [🔬 Empirical Quality & Fidelity](#empirical-verification) | • **[Pillar 1: Terminal Compression](#pillar-1-terminal)**<br>&nbsp;&nbsp;▫ [Cross-Turn Delta Engine](#1-cross-turn-delta)<br>&nbsp;&nbsp;▫ [Command-Specific Filters](#2-command-filters)<br>&nbsp;&nbsp;▫ [Structured Traceback Pruning](#3-traceback-pruning)<br>&nbsp;&nbsp;▫ [Fault-Signature Folding](#3b-fault-folding)<br>• **[Pillar 2: Intake Shield](#pillar-2-intake)**<br>&nbsp;&nbsp;▫ [Tiered Web & File Intake](#4-tiered-web-intake)<br>&nbsp;&nbsp;▫ [AST Code Skeletonizer](#5-ast-skeletonizer)<br>&nbsp;&nbsp;▫ [Lossless TOON v2 (JSON)](#6-toon-v2)<br>&nbsp;&nbsp;▫ [Tool-Result Folding](#6b-tool-result-folding)<br>• **[Pillar 3: Zero Data Loss](#pillar-3-zero-data-loss)**<br>&nbsp;&nbsp;▫ [CCR Recovery (`#ref`)](#7-ccr-recovery)<br>&nbsp;&nbsp;▫ [Pointer Tier (`pointer_large`)](#7b-pointer-large)<br>&nbsp;&nbsp;▫ [Telemetry & Diagnostics](#8-telemetry-diagnostics)<br>&nbsp;&nbsp;▫ [Fail-Open Budget Guards](#9-fail-open-guards)<br>• **[Pillar 4: Policy & Verification](#pillar-4-policy)**<br>&nbsp;&nbsp;▫ [Content Policy Gate](#10-content-policy)<br>&nbsp;&nbsp;▫ [Adaptive Compression Level](#11-adaptive-level)<br>&nbsp;&nbsp;▫ [Model-Aware Output Format](#12-model-aware)<br>&nbsp;&nbsp;▫ [Fix-Accuracy Verification](#14-fix-accuracy) | • **[First-Time Setup (5 Mins)](#first-time-setup)**<br>&nbsp;&nbsp;▫ [Step 1: Install trimtok](#step-1-install)<br>&nbsp;&nbsp;▫ [Step 2: Setup Wizard](#step-2-wizard)<br>&nbsp;&nbsp;▫ [Step 3: Health Verification](#step-3-health)<br>• **[Hermes Plugin Setup](#hermes-configuration)**<br>&nbsp;&nbsp;▫ [Configuration Options](#hermes-config-options)<br>• **[Slash Commands & CLI](#slash-commands-cli)**<br>&nbsp;&nbsp;▫ [In-Chat Slash Commands](#hermes-slash-commands)<br>&nbsp;&nbsp;▫ [KV-Cache Stabilizer (`kv-lock`)](#kvlock-cli)<br>&nbsp;&nbsp;▫ [Codebase Map (`map`)](#codemap-cli)<br>&nbsp;&nbsp;▫ [Bounded MCP Proxy (`mcp-proxy`)](#mcp-proxy-cli)<br>&nbsp;&nbsp;▫ [Standalone Wrapper (`wrap`)](#standalone-cli-wrapper)<br>&nbsp;&nbsp;▫ [Command Rewriting (`rewrite`)](#rewrite-cli)<br>• **[Autonomous Agent Ecosystem](#autonomous-agent-ecosystem)**<br>• **[Verification & Tests](#verification)**<br>• **[License (MIT)](#license)** |
 
 ---
 
@@ -212,6 +212,7 @@ Digits stay in the signature on purpose: stripping them merged `attempt 2/3` wit
 - **Inline URL De-bloat:** Converts verbose links `[Anchor Text](https://very-long-url/path "Title")` into clean `Anchor Text`, cutting **35% – 45% of markdown link bloat in 2–4 ms**.
 - **Heading + 2-Line Factsheet Digest:** Keeps headings, tables, code blocks, and the first 2 descriptive lines per section, folding excessive narrative into line-anchored CCR `#ref` stubs (**76% – 96% token reduction**).
 - **Patch-Safe License Stripping:** Automatically removes open-source license headers and divider comments on files < 14KB with **Zero Offset Drift**.
+- **JSON Web Envelopes:** `web_extract` and `browser_exec` return a JSON wrapper around each page. Each result body is shaved with the web/markdown lane instead of being handed to the terminal line window, so an article is never cut in half and never carries a terminal header (12,291 → 4,264 chars on a real page). Fenced code blocks inside the page are kept whole.
 
 <a id="5-ast-skeletonizer"></a>
 #### 5. Multi-Language AST Code Skeletonizer
@@ -235,6 +236,14 @@ Converts nested JSON arrays into columnar tables validated by in-memory equality
 1|Item 1|~/1|["qa"]
 2|Item 2|~/2|["pm","ops"]
 ```
+
+<a id="6b-tool-result-folding"></a>
+#### 6b. Tool-Result Folding (verbose and repeated tool output)
+Four tool shapes used to pass through untouched because no two lines were identical:
+- **Test runners:** `unittest -v` and `pytest -v` print one line per passing test. Runs of 8 or more `... ok` / `PASSED` lines collapse to `[tt:tests N passed folded]`, while every `FAIL`, `ERROR`, traceback and summary line stays verbatim (5,221 → 3,322 chars on a real 221-test run). A passing test whose *name* mentions a failure (`PASS log-keeps-error`) is a pass, not a fault — misreading it made the cross-turn delta announce a green run as "STILL FAILING".
+- **Session catalogue repeats:** an identical `skills_list` in the same session returns a one-line pointer to the stored copy (22,786 → 126 chars).
+- **File listings:** a shared directory prefix is emitted once as `"@prefix"` and the entries become relative; mixed `C:/` and `/c/` roots are bucketed so one form cannot void the other (3,624 → 1,757 chars).
+- **Session search results:** long bookends, message bodies and tool-call payloads keep their head and tail around a `[tt:folded N chars #ref]` marker. `session_id`, `title`, `link`, `snippet` and `matched_role` never move (48,653 → 15,509 chars).
 
 ---
 
@@ -277,7 +286,7 @@ A payload with **≤ 4 lines, one line ≥ 2,000 chars, and ≥ 8,192 chars tota
 ```text
 [tt:pointer_large #c1mF 54,897 chars on 1 line(s) -> trimtok_retrieve #c1mF]
 ```
-A real 54,897-char GitHub contents response becomes **680 chars (98.8%)**, and `trimtok_retrieve` returns the original byte-identically. Multi-line content is excluded by the line-shape test, so skills, READMEs and test output keep their inline text — the corpus reduction is unchanged (76.07%) and the entire gain lands on real traffic: **472,415 characters recovered** across those 36 transforms (~0.95M tokens/month at the observed rate).
+A real 54,897-char GitHub contents response becomes **680 chars (98.8%)**, and `trimtok_retrieve` returns the original byte-identically. Multi-line content is excluded by the line-shape test, so skills, READMEs and test output keep their inline text — the corpus reduction is unchanged (74.79%) and the entire gain lands on real traffic: **472,415 characters recovered** across those 36 transforms (~0.95M tokens/month at the observed rate).
 
 <a id="8-telemetry-diagnostics"></a>
 #### 8. Autonomous Telemetry & Diagnostics (`gain` & `discover`)
@@ -579,10 +588,10 @@ python eval/steps.py            # raw -> hook -> intent retrieval, per payload
 python eval/fix_accuracy.py     # Can an agent still fix the bug? (LOCATE, no model needed)
 python eval/decision_eval.py    # Decision-equivalence: action still visible after compression
 python eval/probe_ceiling.py    # Are folded lines announced and ref-reachable?
-pytest tests/                   # 198 tests (pip install -e ".[dev]" first)
+python -m unittest discover -s tests   # 156 cases (2 skipped)
 ```
 
-The honesty audit is the load-bearing check: it recomputes the claimed reduction from the recovery store and reports any character that was removed without a resolvable reference. Run `eval_real.py` immediately before `audit_honesty.py` against a fresh store — pointing both at the same empty `TRIMTOK_DATA_DIR` — so the audit scores exactly the corpus the first script produced. Current state — **76.07% claimed, 76.07% proven, 0 unproven characters**, 0 gate failures, 0 silent line loss, 0 unannounced faults, **217/217 unit tests passing** (2 skipped) + **247/247 real-corpus checks**.
+The honesty audit is the load-bearing check: it recomputes the claimed reduction from the recovery store and reports any character that was removed without a resolvable reference. Run `eval_real.py` immediately before `audit_honesty.py` against a fresh store — pointing both at the same empty `TRIMTOK_DATA_DIR` — so the audit scores exactly the corpus the first script produced. Current state — **74.79% claimed, 74.79% proven, 0 unproven characters**, 0 gate failures, 0 silent line loss, 0 unannounced faults, **156 unittest cases passing** (2 skipped) + **240/240 real-corpus checks**. The corpus figure moved down from 76.07% when cold reads of 4–12KB files stopped folding helpers of 15 lines or fewer: that fold was the cause of 77 of 386 `read_file(offset=…)` re-reads in real telemetry, so the lost 1.28 points are a deliberate trade for fewer round trips, not a regression.
 
 > **Installation note:** The latest repository features (`[tt:pointer_large]`, critical-line recovery backstop, dead-range incompressibility cache, cold skill shaving, fault-signature folding, timestamp-prefix normalization) are continuously maintained on `main`. To install from source: `pip install -e ".[fast]"`.
 
