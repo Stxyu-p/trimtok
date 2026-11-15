@@ -2,6 +2,8 @@
 
 All notable changes to trimtok are documented here.
 
+## [Unreleased]
+
 ## [5.9.3] - 2026-11-15
 
 Telemetry attribution note: everything below lands under one version on purpose.
