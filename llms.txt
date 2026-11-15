@@ -25,11 +25,13 @@ failed transform passes the original through untouched.
   the gap; telemetry is reported per release so a fixed bucket cannot hide inside
   an all-versions average.
 - Measured on a fixed 32-payload corpus (1,135,441 chars): 74.79% character
-  reduction with 0 unproven characters. Production telemetry for the 5.9.4 release
-  cohort: 40.6% of chars delivered on 117 events. These two populations are never
-  combined.
-- Integrates with Claude Code, Cursor, Codex, Gemini, Antigravity and Hermes
-  through hooks and MCP.
+  reduction with 0 unproven characters. Production telemetry for the 5.9.4 cohort:
+  33.2% of chars delivered across 414 events (measured 2026-11-15). These two
+  populations are never combined.
+- Integrates with Hermes (plugin hooks: automatic in-path compression) and with
+  Claude Code, Cursor, Codex, Gemini, Antigravity, Windsurf, VS Code, Cline,
+  OpenCode and Claude Desktop over MCP (tools the model calls). Host-by-host
+  detail: docs/INSTALL.md.
 - Python 3.10+, MIT licence, published on PyPI as `trimtok`.
 
 ## Not what it is

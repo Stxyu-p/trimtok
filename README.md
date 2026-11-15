@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://pypi.org/project/trimtok/"><img src="https://img.shields.io/pypi/v/trimtok?style=flat-square" alt="PyPI" /></a>
+  <a href="https://pypi.org/project/trimtok/"><img src="https://img.shields.io/badge/PyPI-trimtok-blue?style=flat-square" alt="PyPI" /></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10+-blue?style=flat-square" alt="Python" /></a>
   <a href="#how-it-works"><img src="https://img.shields.io/badge/latency-sub--ms_hook_%7C_200ms_guard-10b981?style=flat-square" alt="Latency" /></a>
   <a href="#7-ccr-recovery"><img src="https://img.shields.io/badge/storage-SQLite_WAL_+_Zstd-07405E?style=flat-square" alt="Storage" /></a>
@@ -35,7 +35,7 @@ Autonomous coding agents burn over **60% of their context window budget** on rep
 | **Build & Compiler Logs** | 15,960 toks | **4,869 toks** | **-69.5%** | Adaptive error-rail balanced windowing |
 | **Whole Repo Codebase Map** | 12,000 toks | **480 toks** | **-96.0%** | 2k-budget hierarchical tree map |
 
-The 32-payload corpus evaluation is a reproducible fixture run (1,135,441 characters): **74.79% character reduction (849,230 chars)** with zero gate failures. Every removed character is verifiable through `trimtok_retrieve`; `eval/audit_honesty.py` reports 74.79% claimed and proven, with 0 unproven characters. This corpus result is not a production-traffic estimate.
+The 32-payload corpus evaluation is a reproducible fixture run (1,135,441 characters): **74.79% character reduction (849,224 chars)** with zero gate failures. Every removed character is verifiable through `trimtok_retrieve`; `eval/audit_honesty.py` reports 74.79% claimed and proven, with 0 unproven characters. This corpus result is not a production-traffic estimate.
 
 Production telemetry reports **characters**, not measured model tokens. `usage.jsonl` records transform attempts across gates, while `audit.jsonl` records successful compression events; they are different populations and are rotated independently. Do not combine their totals into one live-traffic percentage or convert characters to tokens without a model-specific tokenizer. Use `trimtok gain` (optionally with a time window) for the retained usage-log view; older retained logs cannot reproduce historical all-time claims.
 
@@ -397,6 +397,11 @@ Auto-detects and registers:
 - **Gemini CLI** (`settings.json`) & **Codex CLI** (`config.toml`)
 - **OpenCode** & **Cline**
 
+`install` registers the MCP server (tools the model can call). Automatic in-path
+compression comes from plugin hooks, which only Hermes exposes today — on every
+other host the agent decides when to compress. Full host matrix:
+[docs/INSTALL.md](docs/INSTALL.md).
+
 <a id="step-3-health"></a>
 ### Step 3: Verify Registration & Storage Health
 ```bash
@@ -601,10 +606,10 @@ python eval/steps.py            # raw -> hook -> intent retrieval, per payload
 python eval/fix_accuracy.py     # Can an agent still fix the bug? (LOCATE, no model needed)
 python eval/decision_eval.py    # Decision-equivalence: action still visible after compression
 python eval/probe_ceiling.py    # Are folded lines announced and ref-reachable?
-python -m unittest discover -s tests   # 156 cases (2 skipped)
+python -m unittest discover -s tests   # 168 cases (2 skipped)
 ```
 
-The honesty audit is the load-bearing check: it recomputes the claimed reduction from the recovery store and reports any character that was removed without a resolvable reference. Run `eval_real.py` immediately before `audit_honesty.py` against a fresh store — pointing both at the same empty `TRIMTOK_DATA_DIR` — so the audit scores exactly the corpus the first script produced. Current state — **74.79% claimed, 74.79% proven, 0 unproven characters**, 0 gate failures, 0 silent line loss, 0 unannounced faults, **156 unittest cases passing** (2 skipped) + **240/240 real-corpus checks**. The corpus figure moved down from 76.07% when cold reads of 4–12KB files stopped folding helpers of 15 lines or fewer. Measured on two real files in that band (`audit_usage.py` 7,478 B and `policy.py` 7,766 B), the previous code hid 4 such helpers behind `read_file(offset=…)` markers — `load`, `source_literals`, `table`, `level_for_pressure` — and the current code hides none. Those markers were the follow-up step for 73 of the 77 `read_file(offset=…)` calls that trailed a fold in real telemetry, so the 1.28 points buy fewer round trips; the production re-read count itself is not measured yet.
+The honesty audit is the load-bearing check: it recomputes the claimed reduction from the recovery store and reports any character that was removed without a resolvable reference. Run `eval_real.py` immediately before `audit_honesty.py` against a fresh store — pointing both at the same empty `TRIMTOK_DATA_DIR` — so the audit scores exactly the corpus the first script produced. Current state — **74.79% claimed, 74.79% proven, 0 unproven characters**, 0 gate failures, 0 silent line loss, 0 unannounced faults, **168 unittest cases passing** (2 skipped, 267 with pytest) + **32/32 corpus payloads checked with 0 gate failures**. The corpus figure moved down from 76.07% when cold reads of 4–12KB files stopped folding helpers of 15 lines or fewer. Measured on two real files in that band (`audit_usage.py` 7,478 B and `policy.py` 7,766 B), the previous code hid 4 such helpers behind `read_file(offset=…)` markers — `load`, `source_literals`, `table`, `level_for_pressure` — and the current code hides none. Those markers were the follow-up step for 73 of the 77 `read_file(offset=…)` calls that trailed a fold in real telemetry, so the 1.28 points buy fewer round trips; the production re-read count itself is not measured yet.
 
 > **Installation note:** The latest repository features (`[tt:pointer_large]`, critical-line recovery backstop, dead-range incompressibility cache, cold skill shaving, fault-signature folding, timestamp-prefix normalization) are continuously maintained on `main`. To install from source: `pip install -e ".[fast]"`.
 
@@ -652,8 +657,9 @@ leaving the machine. The same payload always produces the same bytes.
 
 **How much does it actually save?**
 Two numbers, never combined: 74.79% character reduction on a fixed 32-payload
-corpus (1,135,441 chars, audited so that 0 characters are unproven), and 40.6% of
-characters delivered in real telemetry for the 5.9.4 release cohort. It reports
+corpus (1,135,441 chars, audited so that 0 characters are unproven), and 33.2% of
+characters delivered in real telemetry for the 5.9.4 cohort (414 events, measured
+2026-11-15). It reports
 characters, not model tokens, because tokens are model-specific.
 
 **How is it different from LLMLingua, squeez or claw-compactor?**

@@ -3,13 +3,13 @@
   "label": "run",
   "payloads": 32,
   "before_chars": 1135441,
-  "after_chars": 297963,
-  "saved_chars": 837478,
-  "reduction_pct": 73.76,
+  "after_chars": 286217,
+  "saved_chars": 849224,
+  "reduction_pct": 74.79,
   "gate_fail_payloads": 0,
   "touched": 22,
-  "ms_total": 907.4,
-  "ms_p95": 75.2
+  "ms_total": 805.2,
+  "ms_p95": 84.2
  },
  "rows": [
   {
@@ -25,7 +25,7 @@
    "shape": "",
    "refs": 2,
    "missing": 569,
-   "ms": 75.2,
+   "ms": 44.2,
    "fails": []
   },
   {
@@ -41,7 +41,7 @@
    "shape": "",
    "refs": 2,
    "missing": 437,
-   "ms": 31.0,
+   "ms": 22.9,
    "fails": []
   },
   {
@@ -57,7 +57,7 @@
    "shape": "",
    "refs": 2,
    "missing": 146,
-   "ms": 6.9,
+   "ms": 7.9,
    "fails": []
   },
   {
@@ -73,7 +73,7 @@
    "shape": "",
    "refs": 2,
    "missing": 334,
-   "ms": 31.8,
+   "ms": 20.9,
    "fails": []
   },
   {
@@ -89,7 +89,7 @@
    "shape": "",
    "refs": 2,
    "missing": 896,
-   "ms": 96.1,
+   "ms": 44.3,
    "fails": []
   },
   {
@@ -97,15 +97,15 @@
    "kind": "read_file",
    "tool": "read_file",
    "before": 12673,
-   "after": 6172,
-   "saved": 6501,
-   "pct": 51.3,
+   "after": 6890,
+   "saved": 5783,
+   "pct": 45.63,
    "gate": "ok",
    "reason": "",
    "shape": "",
    "refs": 2,
-   "missing": 130,
-   "ms": 10.1,
+   "missing": 109,
+   "ms": 11.5,
    "fails": []
   },
   {
@@ -121,7 +121,7 @@
    "shape": "",
    "refs": 2,
    "missing": 458,
-   "ms": 26.4,
+   "ms": 19.0,
    "fails": []
   },
   {
@@ -129,15 +129,15 @@
    "kind": "read_file",
    "tool": "read_file",
    "before": 12194,
-   "after": 7398,
-   "saved": 4796,
-   "pct": 39.33,
+   "after": 8490,
+   "saved": 3704,
+   "pct": 30.38,
    "gate": "ok",
    "reason": "",
    "shape": "",
    "refs": 2,
-   "missing": 53,
-   "ms": 4.7,
+   "missing": 28,
+   "ms": 4.8,
    "fails": []
   },
   {
@@ -153,7 +153,7 @@
    "shape": "",
    "refs": 2,
    "missing": 80,
-   "ms": 21.3,
+   "ms": 17.0,
    "fails": []
   },
   {
@@ -169,7 +169,7 @@
    "shape": "",
    "refs": 2,
    "missing": 33,
-   "ms": 7.0,
+   "ms": 5.5,
    "fails": []
   },
   {
@@ -177,15 +177,15 @@
    "kind": "read_file",
    "tool": "read_file",
    "before": 13505,
-   "after": 4554,
-   "saved": 8951,
-   "pct": 66.28,
+   "after": 4827,
+   "saved": 8678,
+   "pct": 64.26,
    "gate": "ok",
    "reason": "",
    "shape": "",
    "refs": 2,
-   "missing": 152,
-   "ms": 7.0,
+   "missing": 147,
+   "ms": 5.0,
    "fails": []
   },
   {
@@ -193,15 +193,15 @@
    "kind": "read_file",
    "tool": "read_file",
    "before": 15550,
-   "after": 7596,
-   "saved": 7954,
-   "pct": 51.15,
+   "after": 7966,
+   "saved": 7584,
+   "pct": 48.77,
    "gate": "ok",
    "reason": "",
    "shape": "",
    "refs": 2,
-   "missing": 194,
-   "ms": 10.2,
+   "missing": 181,
+   "ms": 6.8,
    "fails": []
   },
   {
@@ -217,7 +217,7 @@
    "shape": "",
    "refs": 0,
    "missing": 0,
-   "ms": 5.8,
+   "ms": 3.6,
    "fails": []
   },
   {
@@ -233,7 +233,7 @@
    "shape": "",
    "refs": 2,
    "missing": 298,
-   "ms": 27.6,
+   "ms": 11.4,
    "fails": []
   },
   {
@@ -249,7 +249,7 @@
    "shape": "",
    "refs": 0,
    "missing": 0,
-   "ms": 0.3,
+   "ms": 0.2,
    "fails": []
   },
   {
@@ -265,7 +265,7 @@
    "shape": "",
    "refs": 0,
    "missing": 0,
-   "ms": 0.4,
+   "ms": 0.2,
    "fails": []
   },
   {
@@ -281,7 +281,7 @@
    "shape": "",
    "refs": 0,
    "missing": 0,
-   "ms": 0.2,
+   "ms": 0.1,
    "fails": []
   },
   {
@@ -297,7 +297,7 @@
    "shape": "",
    "refs": 1,
    "missing": 129,
-   "ms": 32.4,
+   "ms": 19.3,
    "fails": []
   },
   {
@@ -305,15 +305,15 @@
    "kind": "terminal",
    "tool": "terminal",
    "before": 436267,
-   "after": 52018,
-   "saved": 384249,
-   "pct": 88.08,
+   "after": 50865,
+   "saved": 385402,
+   "pct": 88.34,
    "gate": "ok",
    "reason": "",
    "shape": "",
    "refs": 1,
-   "missing": 1801,
-   "ms": 312.6,
+   "missing": 1806,
+   "ms": 278.3,
    "fails": []
   },
   {
@@ -321,15 +321,15 @@
    "kind": "terminal",
    "tool": "terminal",
    "before": 163552,
-   "after": 49367,
-   "saved": 114185,
-   "pct": 69.82,
+   "after": 41057,
+   "saved": 122495,
+   "pct": 74.9,
    "gate": "ok",
    "reason": "",
    "shape": "",
    "refs": 1,
-   "missing": 772,
-   "ms": 58.1,
+   "missing": 796,
+   "ms": 84.2,
    "fails": []
   },
   {
@@ -337,15 +337,15 @@
    "kind": "terminal",
    "tool": "terminal",
    "before": 102869,
-   "after": 41962,
-   "saved": 60907,
-   "pct": 59.21,
+   "after": 37226,
+   "saved": 65643,
+   "pct": 63.81,
    "gate": "ok",
    "reason": "",
    "shape": "",
    "refs": 1,
-   "missing": 774,
-   "ms": 55.5,
+   "missing": 775,
+   "ms": 107.1,
    "fails": []
   },
   {
@@ -361,7 +361,7 @@
    "shape": "",
    "refs": 0,
    "missing": 0,
-   "ms": 1.2,
+   "ms": 1.1,
    "fails": []
   },
   {
@@ -393,7 +393,7 @@
    "shape": "",
    "refs": 1,
    "missing": 24,
-   "ms": 7.0,
+   "ms": 8.5,
    "fails": []
   },
   {
@@ -409,7 +409,7 @@
    "shape": "",
    "refs": 0,
    "missing": 0,
-   "ms": 2.0,
+   "ms": 1.9,
    "fails": []
   },
   {
@@ -457,7 +457,7 @@
    "shape": "",
    "refs": 1,
    "missing": 73,
-   "ms": 2.0,
+   "ms": 2.6,
    "fails": []
   },
   {
@@ -469,11 +469,11 @@
    "saved": 0,
    "pct": 0.0,
    "gate": "passthrough_reference",
-   "reason": "below_skeleton_min",
+   "reason": "skeleton_no_gain",
    "shape": "",
    "refs": 0,
    "missing": 0,
-   "ms": 2.2,
+   "ms": 2.0,
    "fails": []
   },
   {
@@ -489,7 +489,7 @@
    "shape": "",
    "refs": 0,
    "missing": 0,
-   "ms": 0.4,
+   "ms": 0.9,
    "fails": []
   },
   {
@@ -505,7 +505,7 @@
    "shape": "",
    "refs": 0,
    "missing": 0,
-   "ms": 11.3,
+   "ms": 11.1,
    "fails": []
   },
   {
@@ -521,7 +521,7 @@
    "shape": "",
    "refs": 2,
    "missing": 389,
-   "ms": 59.7,
+   "ms": 61.9,
    "fails": []
   }
  ]

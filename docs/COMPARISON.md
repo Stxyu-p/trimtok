@@ -95,7 +95,7 @@ Two different populations, never combined:
 | Source | What it is | Number |
 | --- | --- | --- |
 | `eval/` corpus | 32 fixed payloads, 1,135,441 chars, reproducible | 74.79% char reduction, 0 unproven chars |
-| `usage.jsonl` (5.9.4 cohort) | Real hook traffic, chars delivered | 40.6% on 117 events |
+| `usage.jsonl` (5.9.4 cohort, 2026-11-15) | Real hook traffic, chars delivered | 33.2% on 414 events |
 
 Production telemetry records characters, not model tokens, and a lane that
 reports 0% is usually a deliberate passthrough (a targeted line-range read must
