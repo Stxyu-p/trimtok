@@ -65,8 +65,13 @@ guessing which code path produced a row.
 - Cold `read_file` skeletonization keeps helpers up to 15 lines for the 4KB-12KB band
   again: `policy.fold_min_lines(level)` was overwriting the band guard, and
   `skeletonize_code_full` was called without `min_body_lines` (so non-Python files used 8).
-  Corpus reduction moves 75.01% -> 74.79% by design; the folded helpers are what caused
-  the 77/386 `read_file(offset=...)` re-reads seen in real telemetry.
+  Measured on two real files in that band (`audit_usage.py` 7,478 B, `policy.py` 7,766 B):
+  the previous code folded 4 helpers of <=15 lines (`load`, `source_literals`, `table`,
+  `level_for_pressure`), the current code folds none. Corpus reduction moves
+  75.01% -> 74.79% by design. Those `read_file(offset=...)` markers were the follow-up step
+  for 73 of the 77 `read_file(offset=...)` calls that trailed a fold in real telemetry
+  (correlation from the usage log, not a production A/B -- the re-read count itself is not
+  measured yet).
 
 ### Tests
 - `tests/test_smart_compression.py`: 11 cases pinning the mid-band helper guard, fenced
