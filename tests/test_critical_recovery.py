@@ -13,7 +13,7 @@ class TestCriticalLineRecovery(unittest.TestCase):
         out, stats = compress_terminal("git status", raw, max_lines=40)
 
         self.assertEqual(stats["gate"], "ok")
-        self.assertIn("error line(s) recovered", out)
+        self.assertIn("flagged line(s) recovered", out)
         self.assertEqual(stats.get("recovered_errors"), 10)
         self.assertIsNone(stats.get("omitted_errors"))
 
@@ -25,7 +25,7 @@ class TestCriticalLineRecovery(unittest.TestCase):
         out, stats = compress_terminal("git status", raw, max_lines=40)
 
         self.assertEqual(stats["gate"], "ok")
-        self.assertIn("[tt: 20 error line(s) recovered]", out)
+        self.assertIn("[tt: 20 flagged line(s) recovered]", out)
         self.assertIn("more in #", out)
         self.assertEqual(stats.get("recovered_errors"), 20)
         self.assertGreater(stats.get("omitted_errors", 0), 0)

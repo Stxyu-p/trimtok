@@ -1037,6 +1037,7 @@ def _handle_read_file_v42(
     toon_enabled: bool = True,
 ) -> tuple[str, dict]:
     """Stateful read_file handler: numbered `LINE|` prefixes map 1:1 to patch targets."""
+    bail_reason = "below_skeleton_min"
     json_envelope = None
     file_body = result
     if result.lstrip().startswith("{"):
@@ -1240,6 +1241,7 @@ def _handle_read_file_v42(
                 deadline.check()
             except Exception:
                 budget_left = False
+                bail_reason = "skeleton_budget"
         _ext = (norm_path or "").rsplit(".", 1)[-1].lower() if "." in (norm_path or "") else ""
         if _ext in _TEXT_STRUCT_EXTS:
             min_skel = _NON_CODE_MIN_CHARS
@@ -1289,6 +1291,14 @@ def _handle_read_file_v42(
                 min_body_lines=skel_body_lines,
                 focus_lines=focus_lines,
             )
+            if focus_lines and not (sk_saved > 200 and fn_count > 0):
+                # A hotspot range that spans most of the file preserves every body
+                # it touches, so the focused skeleton saves nothing. A plain
+                # skeleton is strictly better than shipping the file verbatim.
+                sk_body, sk_saved, fn_count = smart_skeletonize_code(
+                    raw_body, ref=f"#{_sk_ref.lstrip('#')}", line_prefixes=prefixes,
+                    line_nos=line_nos, min_body_lines=skel_body_lines,
+                )
             sk_kind = "file_skeleton"
             _ext = (norm_path or "").rsplit(".", 1)[-1].lower() if "." in (norm_path or "") else ""
             if not (sk_saved > 200 and fn_count > 0):
@@ -1337,6 +1347,8 @@ def _handle_read_file_v42(
                         "skeleton_saved": len(result) - len(candidate),
                         "ms": (time.perf_counter() - t0) * 1000,
                     }
+            else:
+                bail_reason = "skeleton_no_gain"
 
     # JSON: TOON for arrays, minify for objects, both round-trip verified.
     if _ext in ("json",) or (raw_body.lstrip()[:1] in "{[" and _ext in ("json", "jsonl", "")):
@@ -1418,7 +1430,7 @@ def _handle_read_file_v42(
 
     return result, {
         "gate": "passthrough_reference", "digest": digest,
-        "reason": "below_skeleton_min",
+        "reason": bail_reason,
         "ms": (time.perf_counter() - t0) * 1000,
     }
 

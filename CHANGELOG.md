@@ -4,6 +4,43 @@ All notable changes to trimtok are documented here.
 
 ## [Unreleased]
 
+## [5.9.4] - 2026-11-15
+
+Found by driving the live hooks with real payloads and reading the telemetry
+rows they wrote, not by unit tests. Two defects and one label that hid its own
+cause.
+
+### Fixed
+- **A hotspot range silently disabled the read-file skeleton.** `_handle_read_file_v42`
+  passes the traceback hotspot lines it remembers to `smart_skeletonize_code`,
+  which preserves verbatim every function a focus line touches. A hotspot set
+  spanning the file therefore preserved every body and the skeleton saved
+  nothing: a 76 KB / 1,825-line `read_file` shipped 100% verbatim with
+  `gate=passthrough_reference reason=below_skeleton_min` and `ms=43.6` (one row
+  in the live log, 24% of all tokens ride this lane). The focused skeleton is now
+  retried once without focus when it produces no gain. Measured on that exact
+  payload: 86,715 -> 19,507 chars (77.5%, was 0%) with a file-wide hotspot set;
+  a 10-line hotspot set still keeps its focused functions verbatim (33.2%).
+- **The read lane's bail reason hid which of three causes fired.** A read under
+  the size threshold, a spent guard budget and a skeleton with nothing to fold
+  all reported `below_skeleton_min`, so the 0% above was indistinguishable from
+  a normal small-file passthrough. The reasons are now `below_skeleton_min`,
+  `skeleton_budget` and `skeleton_no_gain`.
+- **Recovered lines were labelled `error line(s)`.** The recovery backstop
+  re-appends lines that `_ERROR_RE` matched, and that pattern counts
+  `warn(?:ing|ings)?` as a fault, so a window that dropped four `WARN cache: miss`
+  lines reported `[tt: 4 error line(s) recovered]` — a false failure signal of
+  exactly the kind 5.9.3's polarity fix removed. Now `flagged line(s) recovered`.
+
+### Measured, not changed
+- **Raising `guard_ms` does not buy savings here.** A 347 KB read (77.3% saved)
+  and a 1.6 MB read (73.0%) both complete under the 200 ms budget because the
+  deadline is checked before the skeleton and never after it, so the budget does
+  not bound read-lane work at all. The cost is latency, not savings: that 1.6 MB
+  read held the hook for 2.4 s. Left as-is deliberately — bounding it needs a
+  policy decision (ship verbatim at the deadline vs. spend the time), not a
+  silent change.
+
 ## [5.9.3] - 2026-11-15
 
 Telemetry attribution note: everything below lands under one version on purpose.

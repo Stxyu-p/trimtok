@@ -683,7 +683,7 @@ def compress_terminal(
 
         if recovered_lines:
             cand_body = list(windowed)
-            rec_note = f"[tt: {len(recovered_lines)} error line(s) recovered]"
+            rec_note = f"[tt: {len(recovered_lines)} flagged line(s) recovered]"
             if unrecovered_faults > 0:
                 rec_note += f" ({unrecovered_faults} more in #{digest})"
             cand_body.append(rec_note)

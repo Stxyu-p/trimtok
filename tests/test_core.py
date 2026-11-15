@@ -321,7 +321,7 @@ with tempfile.TemporaryDirectory() as td:
             "read_file", _rf_src, args={"path": "big.py", "offset": 1, "limit": 2000},
             session_id="usage-reason",
         )
-        check("read-file-verbatim-reason", _rf_stats.get("reason") in ("below_skeleton_min", "targeted_slice", "small"))
+        check("read-file-verbatim-reason", _rf_stats.get("reason") in ("below_skeleton_min", "targeted_slice", "small", "skeleton_no_gain", "skeleton_budget"))
         check("read-file-verbatim-shape", plugin._tool_shape(_rf_stats) == "ref-verbatim")
         # retrieve hit + miss both logged
         import re as _re
