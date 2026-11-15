@@ -435,7 +435,11 @@ _EXEMPT_RE = re.compile(
 
 
 _VALUE_LINE_RE = re.compile(
-    r"(?i)port\s+\d{2,5}|=\s*\d+",
+    # Only a bare assignment (`PORT=8080`) is a config value that must not share a
+    # template key. The old `=\s*\d+` matched anywhere, so every access-log line
+    # (`status=200 user=42 ...`) was vetoed too: measured on 149 real payloads the
+    # lane saved 30,235 chars with it and 64,744 without, same yield as deleting it.
+    r"(?i)port\s+\d{2,5}|^\s*[A-Za-z_][\w.]*\s*=\s*\d+\s*$",
 )
 
 

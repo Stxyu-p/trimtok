@@ -4,6 +4,20 @@ All notable changes to trimtok are documented here.
 
 ## [Unreleased]
 
+## [5.9.6] - 2026-11-15
+
+### Fixed
+- **The Drain template lane never fired on structured logs.** `_VALUE_LINE_RE`
+  vetoed a line when `=\s*\d+` appeared *anywhere*, so every access-log or
+  `key=value` line (`status=200 user=42 dur=12ms`) was excluded from templating.
+  That is why 0 of 2,396 telemetry rows ever recorded `intra_template_saved`, while
+  the lane is fine when fed a line without an `=` value. The veto now covers only a
+  bare assignment (`PORT=8080`) — the config case it was written for — plus the
+  existing `port N` shape. Measured through `compress_tool_result` on 149 real CCR
+  payloads: 27,430 -> 60,789 chars folded (+122%, 14 -> 20 payloads), and a
+  `PORT=8080/9090/7070` set still folds nothing. The terminal path's
+  `_template_key` shares the pattern and gets the same fix.
+
 ## [5.9.5] - 2026-11-15
 
 ### Changed

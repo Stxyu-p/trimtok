@@ -17,7 +17,11 @@ Thumbs.db
 # Test-run scratch stores (tempfile.mkdtemp lands in the repo root when the
 # test harness runs with TMPDIR unset; these are per-run SQLite stores)
 trimtok-ccr-*/
+trimtok-envelope-*/
+trimtok-test-suite-*/
 tt-realcorpus-*/
 tt-hotspot-*/
 tt-*/
+tmp*/
+pytest-of-*/
 data-gym-cache/

@@ -25,3 +25,21 @@ def test_normal_repeated_lines_still_fold():
     out, saved = dedup._fold_intra_templates(text)
     assert saved > 0
     assert len(out) < len(text)
+
+
+def test_structured_log_lines_fold():
+    # `status=200`/`user=42` used to veto the whole line (the old `=\s*\d+` guard),
+    # which is why this lane never fired on real telemetry.
+    line = "2026-11-06 12:00:00 GET /api/v1/items status=200 user=42 dur=12ms"
+    text = "\n".join(line.replace("12ms", f"{i}ms") for i in range(10))
+    out, saved = dedup._fold_intra_templates(text)
+    assert saved > 0
+    assert len(out) < len(text)
+
+
+def test_bare_config_values_never_share_a_key():
+    # The guard the veto exists for: distinct ports must not collapse into one key.
+    text = "\n".join(f"PORT={port}" for port in (8080, 9090, 7070, 6060))
+    out, saved = dedup._fold_intra_templates(text)
+    assert saved == 0
+    assert out == text
