@@ -68,6 +68,14 @@ All notable changes to trimtok are documented here.
   green-run delta reporting `!#0`, and a new failure surfacing in the delta's ADDED section.
 
 ### Refactor
+- **`trimtok/__init__.py` 1,438 -> 1,234 lines.** The four telemetry summaries
+  (`_iter_usage_rows`, `_discover_summary`, `_gain_summary`, `_usage_summary`, 222 lines)
+  moved to `trimtok/report.py` as functions of an explicit `path` + `lock`. The plugin keeps
+  four one-line wrappers that pass `_usage_path()`, which is what preserves the
+  `patch.object(trimtok, "_usage_path", ...)` redirection the telemetry tests rely on -- a
+  module-global lookup inside `report` would have silently ignored those patches. Verified
+  by running `usage`, `discover`, `gain` and `status` against the real `~/.trimtok` snapshot
+  from a HEAD worktree and the refactored tree: 80 lines of output, byte-identical.
 - **`dedup.compress_tool_result` 550 -> 327 lines.** The five JSON lanes (web intake,
   `skill_view` cache, `skills_list` cache, `search_files` prefix, `session_search` fold)
   moved to `trimtok/lanes.py` as pure `-> (text, stats) | None` steps. The orchestrator is
