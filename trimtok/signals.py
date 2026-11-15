@@ -101,6 +101,19 @@ def estimate_bpe_gain(before: str, after: str) -> int:
     return estimate_bpe_tokens(before) - estimate_bpe_tokens(after)
 
 
+def tok_pair(orig: str, cand: str) -> tuple[int, int]:
+    """Token counts for the BPE non-inflation gate.
+
+    A real BPE pass costs ~0.5 ms per KB, which dominates a file read. When the
+    candidate is clearly shorter (<90% of the original) the char ratio already
+    proves the token count dropped, so the expensive pass is only used for the
+    near-equal case where it actually matters.
+    """
+    if len(cand) < len(orig) * 0.9:
+        return len(orig) // 4, len(cand) // 4
+    return estimate_tokens(orig), estimate_tokens(cand)
+
+
 # ---------------------------------------------------------------------------
 # 2. Polarity & Error Detection
 # ---------------------------------------------------------------------------
@@ -169,6 +182,19 @@ def looks_suspicious(low: str) -> bool:
 _CACHEABLE_MAX_CHARS = 240
 _FAULT_CACHE_SIZE = 16384
 
+# A line whose own verdict is "passed" is not a fault, even when the *test name*
+# mentions one ("PASS log-keeps-error", "test_x ... ok"). Without this guard the
+# delta lane printed "STILL FAILING / ACTIVE ERRORS (12)" for a fully green run,
+# so the agent reported failures that never happened and re-ran passing tests.
+# A hard failure token on the same line still wins ("PASS ... FAILED to write").
+_PASS_VERDICT_RE = re.compile(
+    r"^(?:PASS|PASSED|\[OK\]|\[PASS\]|✓|✔)\b"
+    r"|^(?:OK|ok)\s*$"
+    r"|^ok\s+\S+\s+[\d.]+s\s*$"
+    r"|\.\.\.\s+(?:ok|PASSED|skipped|SKIPPED)\s*$"
+)
+_HARD_FAIL_RE = re.compile(r"(?:FAILED|FAIL:|ERROR:|Traceback|panic:|AssertionError)")
+
 # Negated / concept phrases that mention fault words but are NOT faults
 # ("no error", "0 warnings", "error-handling policy"). Stripped before the real
 # check so a benign mention does not lock a line as important, which would
@@ -191,6 +217,9 @@ def _compute_fault(line: str) -> bool:
     if not line:
         return False
     if not looks_suspicious(line.lower()):
+        return False
+    # A reported pass is not a fault, whatever its test name contains.
+    if _PASS_VERDICT_RE.search(line) and not _HARD_FAIL_RE.search(line):
         return False
     # Strip negated/concept phrases first so "no error" / "error-handling"
     # do not falsely lock a benign line as a fault (F1).

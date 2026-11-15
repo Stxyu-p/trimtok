@@ -134,6 +134,21 @@ def fold_envelope_text(raw_text: str, compress_inner) -> tuple[str, dict] | None
     }
 
 
+def _omit_path(node, path):
+    if not path:
+        return node
+    head, rest = path[0], path[1:]
+    if isinstance(node, dict):
+        if not rest:
+            return {k: v for k, v in node.items() if k != head}
+        return {k: (_omit_path(v, rest) if k == head else v) for k, v in node.items()}
+    if isinstance(node, list) and isinstance(head, int):
+        if not rest:
+            return [v for i, v in enumerate(node) if i != head]
+        return [(_omit_path(v, rest) if i == head else v) for i, v in enumerate(node)]
+    return node
+
+
 def fold_envelope_array(raw_text: str) -> tuple[str, dict] | None:
     """Fold an array of records nested inside a JSON object into TOON buckets.
 
@@ -190,7 +205,7 @@ def fold_envelope_array(raw_text: str) -> tuple[str, dict] | None:
     if restored != rows:
         return None
 
-    siblings = {key: value for key, value in data.items() if (key,) != path}
+    siblings = _omit_path(data, path)
     header = f"@envelope:{json.dumps(siblings, ensure_ascii=False, separators=(',', ':'))}"
     label = f"@{_path_label(path)}[{len(rows)}]"
     candidate = "\n".join(

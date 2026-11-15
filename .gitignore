@@ -14,3 +14,10 @@ build/
 .DS_Store
 Thumbs.db
 .aider*
+# Test-run scratch stores (tempfile.mkdtemp lands in the repo root when the
+# test harness runs with TMPDIR unset; these are per-run SQLite stores)
+trimtok-ccr-*/
+tt-realcorpus-*/
+tt-hotspot-*/
+tt-*/
+data-gym-cache/

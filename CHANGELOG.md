@@ -4,6 +4,86 @@ All notable changes to trimtok are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- **A green test run was announced as "STILL FAILING".** `signals._ERROR_RE` matched the
+  fault word anywhere outside `[A-Za-z0-9_]`, so a *test name* that mentions one
+  (`PASS log-keeps-error`, `test_..._allows_honest_failure ... ok`) was classified as a
+  fault. The delta lane then printed `--- STILL FAILING / ACTIVE ERRORS (12) ---` over 12
+  passing lines and the agent reported failures that never happened, re-running green
+  tests. `_compute_fault` now rejects a line whose own verdict is a pass (`^PASS`,
+  `^ok`, `... ok`) unless the same line also carries a hard failure token. Real payload
+  measured: `!#12` -> `!#9`, and the 9 that remain are a genuine traceback.
+- **A repeated identical output never reached the delta lane.** `compress_terminal`
+  consulted the dead-range cache *before* `delta_engine.try_delta`, so a payload that had
+  reverted once shipped in full again on every repeat -- the exact case a delta describes
+  best ("nothing changed"). The lookup is now deferred until after the delta attempt
+  (policy/secrets still run first). Replaying the 21 distinct `reverted_gate` terminal
+  payloads from real telemetry: run 1 stays 4.9%, run 2 goes to **64.8%**, with 20 of 21
+  now emitting a delta.
+
+### Added
+- **Verbose test-runner folding (`pruners.prune_test_runner`).** `unittest -v` /
+  `pytest -v` emit one `... ok` line per test, which `_fold_repeats` and `_fold_templates`
+  cannot touch because every test name differs. Runs of >= 8 passing lines now collapse to
+  `[tt:tests N passed folded]` while every `FAIL`/`ERROR`/traceback/summary line is kept
+  verbatim. Real payload: 5,221 -> 3,322 chars (36.4%) where the previous gate reverted
+  with `no_fold`.
+- **`skills_list` session cache-hit.** An identical `skills_list` in the same session now
+  collapses to a one-line pointer (real payload: 22,786 -> 126 chars, 99.4%); it was
+  previously re-sent up to 10 times per session (~128k est. tokens of repeat traffic).
+- **`search_files` common-prefix folding.** `{"files": [...]}` with a shared directory
+  prefix >= 12 chars is emitted once as `"@prefix"` with relative entries. Paths are
+  bucketed by root signature first, because `os.path.commonpath` returns `""` for a list
+  mixing `C:/...` and `/c/...`. Real payload: 3,624 -> 1,757 chars (51.5%, was ~1.6%).
+- **`session_search` folding.** Long `bookend_start`/`bookend_end`/`messages[].content`
+  (>= 800 chars) keep their head and tail around a `[tt:folded N chars #ref]` marker, and
+  oversized `tool_calls` collapse to their tool names + ref. `session_id`, `title`,
+  `link`, `snippet`, `matched_role` stay verbatim. Real payload: 48,653 -> 15,509 chars
+  (68.1%, was ~1.3%).
+- **Web intake for JSON web tools.** `web_extract`/`browser_exec` JSON payloads now shave
+  each `results[].content` with the web/doc lane instead of falling through to
+  `fold_envelope_text` -> `compress_terminal(..., max_lines=60)`, which cut an article in
+  half and stamped a terminal header on it. Real payload: 12,291 -> 4,264 chars (65.3%)
+  with no fake markers and a resolvable ref.
+
+### Changed
+- `fold_text_structure` tracks fenced code blocks, so a command or snippet inside a
+  fence is never folded as prose; it also takes `allow_read_file_hint` so web payloads
+  do not advertise `read_file(offset=...)` for a URL.
+- `shave_tiered` takes the caller's CCR `ref` instead of hashing the inner slice, so a
+  folded `skill_view`/`web_extract` body no longer emits a ref that resolves to nothing.
+- `json_envelope.fold_envelope_array` omits the target path from `@envelope:{...}` with
+  `_omit_path`; the old `(key,) != path` test only worked for top-level keys and re-emitted
+  the whole nested array (e.g. `data.web`) next to its own TOON table.
+- Cold `read_file` skeletonization keeps helpers up to 15 lines for the 4KB-12KB band
+  again: `policy.fold_min_lines(level)` was overwriting the band guard, and
+  `skeletonize_code_full` was called without `min_body_lines` (so non-Python files used 8).
+  Corpus reduction moves 75.01% -> 74.79% by design; the folded helpers are what caused
+  the 77/386 `read_file(offset=...)` re-reads seen in real telemetry.
+
+### Tests
+- `tests/test_smart_compression.py`: 11 cases pinning the mid-band helper guard, fenced
+  code retention, web intake, envelope path omission, the two session caches, prefix
+  folding with mixed Windows/MSYS roots, test-runner folding, pass-verdict polarity, a
+  green-run delta reporting `!#0`, and a new failure surfacing in the delta's ADDED section.
+
+### Refactor
+- **`dedup.compress_tool_result` 550 -> 327 lines.** The five JSON lanes (web intake,
+  `skill_view` cache, `skills_list` cache, `search_files` prefix, `session_search` fold)
+  moved to `trimtok/lanes.py` as pure `-> (text, stats) | None` steps. The orchestrator is
+  now an ordered list of decisions; each lane is testable on its own and imports nothing
+  from `dedup` at module scope (the two session caches take the seen-state lock lazily, so
+  no import cycle). `tok_pair` moved to `signals.py` (it is a token helper) and `dedup`
+  aliases it, which is what lets `lanes` stay cycle-free.
+- **`core.compress_terminal` 402 -> 306 lines.** `_command_lanes` (success collapse +
+  command filters), `_tier0_small` (512..min_chars tier) and `_fold_pipeline`
+  (prune -> fold -> window -> fault-fold) are now named stages, so the entry point reads
+  as policy -> delta -> cache -> pipeline -> assemble.
+- **`dedup.py` 2,059 -> 1,822 lines** total. No behaviour change: the 32-payload corpus
+  reports the same 849,230 saved chars / 286,211 after chars, payload by payload, and the
+  real-payload replay is unchanged (`web_extract` 65.3%, `search_files` 51.5%,
+  `session_search` 68.1%, `skills_list` repeat 99.4%).
+
 ## [5.9.2] - 2026-11-14
 
 ### Fixed

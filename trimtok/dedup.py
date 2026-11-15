@@ -31,6 +31,7 @@ try:
         seen_lines,
         shingle_head,
         template_head,
+        tok_pair as _tok_pair,
         tool_head,
     )
     from .pruners import fold_text_structure, group_search_hits, skeletonize_code, smart_skeletonize_code
@@ -58,15 +59,16 @@ except ImportError:
         seen_lines,
         shingle_head,
         template_head,
+        tok_pair as _tok_pair,
         tool_head,
     )
     from pruners import fold_text_structure, group_search_hits, skeletonize_code, smart_skeletonize_code
     from toon_codec import fold_json_to_toon
     from ccr import put as _ccr_put
     from strategies.lossless_min import minify_lossless
-    from strategies.tiered_shave import shave_tiered
 
-_WEB_TOOLS = frozenset({"web_extract", "web_search", "browser_exec"})
+from . import lanes
+_WEB_TOOLS = lanes.WEB_TOOLS
 
 
 def _compress_envelope_inner(text: str) -> str:
@@ -1024,19 +1026,6 @@ def _build_read_delta(
     return delta_str, saved
 
 
-def _tok_pair(orig: str, cand: str) -> tuple[int, int]:
-    """Token counts for the BPE non-inflation gate.
-
-    A real BPE pass costs ~0.5 ms per KB, which dominates a file read. When the
-    candidate is clearly shorter (<90% of the original) the char ratio already
-    proves the token count dropped, so the expensive pass is only used for the
-    near-equal case where it actually matters.
-    """
-    if len(cand) < len(orig) * 0.9:
-        return len(orig) // 4, len(cand) // 4
-    return estimate_tokens(orig), estimate_tokens(cand)
-
-
 def _handle_read_file_v42(
     result: str,
     session_id: str,
@@ -1268,10 +1257,16 @@ def _handle_read_file_v42(
                     "ms": (time.perf_counter() - t0) * 1000,
                 }
             # For 4KB-12KB band, protect single-turn comprehension by keeping helpers <=15L
-            skel_body_lines = 15 if len(raw_body) < _COLD_READ_SKELETON_MIN_CHARS else 8
+            _is_mid_band = len(raw_body) < _COLD_READ_SKELETON_MIN_CHARS
+            skel_body_lines = 15 if _is_mid_band else 8
             try:
                 from .policy import fold_min_lines as _fold_min
-                skel_body_lines = _fold_min(level)
+                _policy_min = _fold_min(level)
+                skel_body_lines = (
+                    max(15, _policy_min)
+                    if (_is_mid_band and level != "aggressive")
+                    else _policy_min
+                )
             except Exception:
                 pass
             focus_lines = None
@@ -1302,6 +1297,7 @@ def _handle_read_file_v42(
                     sk_cand, sk_cand_saved, sk_cand_count = skeletonize_code_full(
                         raw_body, filename=norm_path, ref=f"#{_sk_ref.lstrip('#')}",
                         line_prefixes=prefixes, line_nos=line_nos,
+                        min_body_lines=skel_body_lines,
                         focus_lines=focus_lines,
                     )
                     if sk_cand_saved > 200 and sk_cand_count > 0:
@@ -1608,80 +1604,21 @@ def compress_tool_result(
                         _json.dumps({**envelope, "output": new_inner}, ensure_ascii=False),
                         {**inner_stats, "kind": inner_stats.get("kind", "terminal_envelope")},
                     )
-        if tool_name in _WEB_TOOLS:
-            _rh = hashlib.sha256(result.encode("utf-8", "replace")).hexdigest()[:12]
-            w_cand, w_stats = shave_tiered(result, {"domain": "web-doc", "lang": "markdown"})
-            if w_stats.get("saved_chars", 0) >= 40 and len(w_cand) < len(result) and not has_marker_head(result):
-                tb, ta = _tok_pair(result, w_cand)
-                if ta < tb:
-                    _ref = _ccr_put(result)
-                    head = adaptive_tool_head(len(result) - len(w_cand), _rh, len(result), is_lossless_only=False)
-                    final_w = f"{head}\n{w_cand}" if head else w_cand
-                    return final_w, {
-                        "gate": "ok",
-                        "kind": "web_intake",
-                        "digest": _rh,
-                        "before_chars": len(result),
-                        "after_chars": len(final_w),
-                        "saved_chars": len(result) - len(final_w),
-                        "est_tokens_before": tb,
-                        "est_tokens_after": ta,
-                        "ms": (time.perf_counter() - t0) * 1000,
-                    }
-        if tool_name == "skill_view" and isinstance(args, dict):
-            # Repeated skill reads in the same session collapse to a 1-line cache hit pointer
-            skill_name = str(args.get("name") or args.get("skill") or "")
-            if skill_name:
-                _rh = hashlib.sha256(result.encode("utf-8", "replace")).hexdigest()[:12]
-                with _SEEN_LOCK:
-                    s_seen = _seen(session_id or "default")
-                    s_cache = s_seen.setdefault("skills", {})
-                    prev_skill = s_cache.get(skill_name)
-                    if prev_skill and prev_skill.get("digest") == _rh:
-                        prev_ref = prev_skill.get("ref", _rh)
-                        stub = f"[tt:skill_cached name=\"{skill_name}\" #{prev_ref} ({len(result)} chars) — identical to prior skill_view in active context -> trimtok_retrieve]"
-                        tb, ta = _tok_pair(result, stub)
-                        return stub, {
-                            "gate": "ok", "kind": "skill_cache_hit", "digest": _rh,
-                            "before_chars": len(result), "after_chars": len(stub),
-                            "saved_chars": len(result) - len(stub),
-                            "est_tokens_before": tb, "est_tokens_after": ta,
-                            "ms": (time.perf_counter() - t0) * 1000,
-                        }
-                    ref = _ccr_put(result)
-                    s_cache[skill_name] = {"digest": _rh, "ref": ref or _rh}
-                # Cold skill_view shaving: strip deep prose while preserving frontmatter & directives
-                if len(result) >= min_chars:
-                    cand_res = None
-                    saved_c = 0
-                    if result.strip().startswith("{") and '"content"' in result:
-                        try:
-                            parsed = _json.loads(result)
-                            if isinstance(parsed, dict) and isinstance(parsed.get("content"), str) and len(parsed["content"]) >= 2000:
-                                c_shaved, c_stats = shave_tiered(parsed["content"], {"domain": "spec-doc", "lang": "markdown"})
-                                if c_stats.get("saved_chars", 0) > 200:
-                                    parsed["content"] = c_shaved
-                                    cand_res = _json.dumps(parsed, ensure_ascii=False)
-                                    saved_c = len(result) - len(cand_res)
-                        except Exception:
-                            pass
-                    elif result.strip().startswith(("#", "---")):
-                        try:
-                            cand_res, c_stats = shave_tiered(result, {"domain": "spec-doc", "lang": "markdown"})
-                            saved_c = c_stats.get("saved_chars", 0)
-                        except Exception:
-                            pass
-                    if cand_res is not None and saved_c > 200 and len(cand_res) < len(result):
-                        tb, ta = _tok_pair(result, cand_res)
-                        if ta < tb:
-                            return cand_res, {
-                                "gate": "ok", "kind": "skill_shaved", "digest": _rh,
-                                "before_chars": len(result), "after_chars": len(cand_res),
-                                "saved_chars": saved_c,
-                                "est_tokens_before": tb, "est_tokens_after": ta,
-                                "fold_saved": saved_c,
-                                "ms": (time.perf_counter() - t0) * 1000,
-                            }
+        lane = lanes.web_intake(tool_name, result, t0)
+        if lane is not None:
+            return lane
+        lane = lanes.skill_cache(tool_name, args, result, session_id, min_chars, t0)
+        if lane is not None:
+            return lane
+        lane = lanes.skills_list_cache(tool_name, args, result, session_id, t0)
+        if lane is not None:
+            return lane
+        lane = lanes.search_files_prefix(tool_name, result, t0)
+        if lane is not None:
+            return lane
+        lane = lanes.session_search_fold(tool_name, result, min_chars, t0)
+        if lane is not None:
+            return lane
         if len(result) < min_chars:
             if len(result) >= _MICRO_MIN_CHARS:
                 return micro_minify_tool(result, session_id, t0)
@@ -1796,11 +1733,20 @@ def compress_tool_result(
             if not toon_used:
                 # Wrapper objects: {"output": <terminal text>} and
                 # {"items": [{...}]} that a flat TOON table cannot reach.
+                # Search/session wrappers have structured row arrays that should
+                # become TOON tables before single-string terminal fallback runs.
                 try:
                     from .json_envelope import fold_envelope_array, fold_envelope_text
-                    _env = fold_envelope_text(folded, _compress_envelope_inner)
-                    if _env is None:
+                    if tool_name in ("web_search", "session_search"):
                         _env = fold_envelope_array(folded)
+                        if _env is None:
+                            _env = fold_envelope_text(folded, _compress_envelope_inner)
+                    elif tool_name == "web_extract":
+                        _env = fold_envelope_array(folded)
+                    else:
+                        _env = fold_envelope_text(folded, _compress_envelope_inner)
+                        if _env is None:
+                            _env = fold_envelope_array(folded)
                     if _env is not None:
                         _cand, _env_meta = _env
                         if len(_cand) < len(folded) and estimate_bpe_gain(folded, _cand) >= 4:

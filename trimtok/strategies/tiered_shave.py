@@ -69,12 +69,20 @@ def shave_tiered(text: str, meta: dict[str, Any] | None = None) -> tuple[str, di
         if len(interim_text) >= 2000:
             from ..dedup import _unwrap_numbered_lines
             raw_body, prefixes, line_nos, _, _ = _unwrap_numbered_lines(interim_text)
-            # The caller rewrites "#<digest>" into the real CCR alias, so the
-            # marker must carry this payload's digest -- a literal "#doc"
-            # advertised a ref that never resolved.
-            _digest = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]
+            # Use caller-supplied CCR ref when folding inner envelope content so the
+            # emitted #ref always resolves instead of advertising a hash of the inner slice.
+            _ref = str(meta.get("ref") or "").strip()
+            if not _ref:
+                _digest = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]
+                _ref = f"#{_digest}"
+            elif not _ref.startswith("#"):
+                _ref = f"#{_ref}"
             folded_doc, d_saved = fold_text_structure(
-                raw_body, ref=f"#{_digest}", line_prefixes=prefixes, line_nos=line_nos
+                raw_body,
+                ref=_ref,
+                line_prefixes=prefixes,
+                line_nos=line_nos,
+                allow_read_file_hint=not bool(meta.get("no_read_file", False)),
             )
             if d_saved > 200:
                 interim_text = folded_doc

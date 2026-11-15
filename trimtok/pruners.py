@@ -666,10 +666,12 @@ def fold_text_structure(
     *,
     line_prefixes: list[str] | None = None,
     line_nos: list[int] | None = None,
+    allow_read_file_hint: bool = True,
 ) -> tuple[str, int]:
     """Fold long prose in markdown/yaml/rst/jsonl, keeping structural lines.
 
-    Headings, fences, tables and the first record of each key shape survive.
+    Headings, fences (and their code interiors), tables and the first record
+    of each key shape survive.
     """
     try:
         lines = text.split("\n")
@@ -682,7 +684,23 @@ def fold_text_structure(
             and len(line_prefixes) == total
             and len(line_nos) == total
         )
-        struct = [bool(_TEXT_STRUCT_RE.match(ln)) for ln in lines]
+        # Track fenced code blocks so commands/code snippets inside docs are never folded as prose.
+        struct: list[bool] = []
+        fence_char: str | None = None
+        for ln in lines:
+            stripped = ln.lstrip()
+            if fence_char is not None:
+                struct.append(True)
+                if stripped.startswith(fence_char * 3):
+                    fence_char = None
+            elif stripped.startswith("```"):
+                struct.append(True)
+                fence_char = "`"
+            elif stripped.startswith("~~~"):
+                struct.append(True)
+                fence_char = "~"
+            else:
+                struct.append(bool(_TEXT_STRUCT_RE.match(ln)))
         out: list[str] = []
         ref_tag = f" {ref}" if ref else ""
 
@@ -701,9 +719,13 @@ def fold_text_structure(
                     m += 1
                 s = line_nos[k] if use_p else k + 1  # type: ignore[index]
                 e = line_nos[m - 1] if use_p else m  # type: ignore[index]
+                hint = (
+                    f"read_file(offset={s}, limit={e - s + 1}) or trimtok_retrieve"
+                    if allow_read_file_hint
+                    else "trimtok_retrieve"
+                )
                 out.append(
-                    f"{pfx(k)}[tt:prose L{s}-L{e} ({e - s + 1}L){ref_tag} "
-                    f"-> read_file(offset={s}, limit={e - s + 1}) or trimtok_retrieve]"
+                    f"{pfx(k)}[tt:prose L{s}-L{e} ({e - s + 1}L){ref_tag} -> {hint}]"
                 )
                 k = m
 
@@ -788,4 +810,47 @@ def group_directory_siblings(lines: list[str], threshold: int = 5) -> list[str]:
         else:
             result.append(orig)
     return result
+
+
+_PASS_TEST_RE = re.compile(
+    r"^(?:[^\n]+\([^)\n]+\)\s+\.\.\.\s+ok|[^\n]+::[^\s]+\s+PASSED(?:\s+\[\s*\d+%\])?)\s*$"
+)
+_TEST_SUMMARY_RE = re.compile(
+    r"(?:^Ran \d+ tests? in |\b\d+ passed\b|^FAILED\b|^FAIL:|^ERROR:)", re.M
+)
+
+
+def prune_test_runner(text: str) -> tuple[str, int]:
+    """Collapse verbose passing test lines while preserving all failures and summaries."""
+    try:
+        if not text or not _TEST_SUMMARY_RE.search(text):
+            return text, 0
+        lines = text.split("\n")
+        pass_idxs = [
+            i for i, ln in enumerate(lines)
+            if _PASS_TEST_RE.match(ln.rstrip("\r")) and not is_important(ln)
+        ]
+        if len(pass_idxs) < 8:
+            return text, 0
+        pass_set = set(pass_idxs)
+        out: list[str] = []
+        i = 0
+        n = len(lines)
+        while i < n:
+            if i not in pass_set:
+                out.append(lines[i])
+                i += 1
+                continue
+            j = i
+            while j < n and j in pass_set:
+                j += 1
+            out.append(f"[tt:tests {j - i} passed folded]")
+            i = j
+        res = "\n".join(out)
+        if len(res) >= len(text):
+            return text, 0
+        return res, len(pass_idxs)
+    except Exception:
+        return text, 0
+
 

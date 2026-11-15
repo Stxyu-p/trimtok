@@ -78,7 +78,7 @@ try:
         adaptive_terminal_head,
         score_anchor_preservation,
     )
-    from .pruners import prune_traceback, prune_unified_diff, collapse_success_output
+    from .pruners import prune_traceback, prune_unified_diff, collapse_success_output, prune_test_runner
     from .ccr import put as _ccr_put
 except (ImportError, ValueError):
     from trimtok import delta_engine
@@ -98,7 +98,7 @@ except (ImportError, ValueError):
         adaptive_terminal_head,
         score_anchor_preservation,
     )
-    from trimtok.pruners import prune_traceback, prune_unified_diff, collapse_success_output
+    from trimtok.pruners import prune_traceback, prune_unified_diff, collapse_success_output, prune_test_runner
     from trimtok.ccr import put as _ccr_put
 
 try:
@@ -429,6 +429,122 @@ def _revert_reason(omitted_total: int) -> str:
     return "header_cost" if omitted_total else "no_fold"
 
 
+def _command_lanes(command: str, output: str, exit_code: int, t0: float) -> tuple[str, dict] | None:
+    """Package-manager / known-command shortcuts: a 1-line factsheet beats the log."""
+    if not command or len(output) < 256:
+        return None
+    clean_success = collapse_success_output(command, output, exit_code)
+    if clean_success != output:
+        tb = estimate_tokens(output)
+        ta = estimate_tokens(clean_success)
+        return clean_success, {
+            "gate": "ok", "kind": "success_collapse", "digest": "",
+            "before_chars": len(output), "after_chars": len(clean_success),
+            "saved_chars": len(output) - len(clean_success),
+            "est_tokens_before": tb, "est_tokens_after": ta,
+            "hidden_lines": output.count("\n"), "dropped_lines": 0,
+            "ms": (time.perf_counter() - t0) * 1000,
+        }
+    filtered = try_command_filter(command, output)
+    if filtered is None or len(filtered) >= len(output):
+        return None
+    tb = estimate_tokens(output)
+    ta = estimate_tokens(filtered)
+    if ta >= tb:
+        return None
+    _ref = _ccr_put(output)
+    ref_tag = f" #{_ref}" if _ref else ""
+    return f"{filtered}{ref_tag}", {
+        "gate": "ok", "kind": "cmd_filter", "digest": _ref or "",
+        "before_chars": len(output), "after_chars": len(filtered),
+        "saved_chars": len(output) - len(filtered),
+        "est_tokens_before": tb, "est_tokens_after": ta,
+        "hidden_lines": output.count("\n"), "dropped_lines": 0,
+        "ms": (time.perf_counter() - t0) * 1000,
+    }
+
+
+def _tier0_small(output: str, deadline: Any | None, t0: float) -> tuple[str, dict]:
+    """512..min_chars: ship the cleaned text with no header (tier 0)."""
+    if len(output) >= 512 and not has_marker_head(output):
+        try:
+            kind_small = detect_kind(output)
+            clean = strip_ansi(output)
+            if kind_small != "diff":
+                # Diff context lines carry a leading space; hygiene would strip it.
+                try:
+                    from .dedup import hygiene
+                except (ImportError, ValueError):
+                    from trimtok.dedup import hygiene
+                clean, _ = hygiene(clean.rstrip())
+            folded_small, hidden_small = _fold_repeats(_classify(clean.split("\n")), deadline)
+            if hidden_small >= 3:
+                # Repeated lines: fold them and mark the omission.
+                digest_s = hashlib.sha256(output.encode("utf-8", "replace")).hexdigest()[:12]
+                body_s = "\n".join(ln for ln, _ in folded_small)
+                head_s = adaptive_terminal_head(
+                    kind_small, hidden_small, digest_s, len(output),
+                    len(output) - len(body_s), LEGEND, force_tier=1)
+                cand_s = "\n".join(head_s + [body_s]) if head_s else body_s
+                tb, ta = estimate_tokens(output), estimate_tokens(cand_s)
+                if len(cand_s) + 40 <= len(output) and ta < tb:
+                    return cand_s, {
+                        "gate": "ok", "kind": kind_small, "digest": digest_s,
+                        "before_chars": len(output), "after_chars": len(cand_s),
+                        "saved_chars": len(output) - len(cand_s),
+                        "est_tokens_before": tb, "est_tokens_after": ta,
+                        "hidden_lines": hidden_small, "dropped_lines": 0,
+                        "ms": (time.perf_counter() - t0) * 1000,
+                    }
+            if len(clean) < len(output):
+                tb, ta = estimate_tokens(output), estimate_tokens(clean)
+                if ta < tb:
+                    return clean, {
+                        "gate": "ok", "kind": kind_small, "lossless_tier0": True,
+                        "before_chars": len(output), "after_chars": len(clean),
+                        "saved_chars": len(output) - len(clean),
+                        "est_tokens_before": tb, "est_tokens_after": ta,
+                        "hidden_lines": 0, "dropped_lines": 0,
+                        "ms": (time.perf_counter() - t0) * 1000,
+                    }
+        except Exception:
+            pass
+    return output, {"gate": "passthrough_small", "reason": "below_min_chars", "ms": 0.0}
+
+
+def _fold_pipeline(
+    text: str, kind: str, budget: int, deadline: Any | None
+) -> tuple[list[str], int, int, list[tuple[str, bool]], int]:
+    """Prune, fold and window one payload. Returns (windowed, hidden, dropped, flagged, budget)."""
+    if kind == "diff":
+        text = prune_unified_diff(text, budget=0)
+    text = prune_traceback(text)
+    text, test_hidden = prune_test_runner(text)
+    flagged_all = _classify(text.split("\n"))
+    folded, hidden = _fold_repeats(flagged_all, deadline)
+    folded, t_hidden, _t_groups = _fold_templates(folded, deadline)
+    hidden += t_hidden + test_hidden
+    if kind == "diff":
+        # A dropped + or - line is a silently wrong patch: force all of them.
+        folded = [(ln, True) if ln.startswith(("+", "-", "@")) else (ln, imp)
+                  for ln, imp in folded]
+        budget = max(budget, sum(1 for _, imp in folded if imp) + _HEAD_KEEP + _TAIL_KEEP)
+    kept = [
+        (ln, imp) for ln, imp in folded
+        if imp
+        or (kind == "diff" and (ln.startswith(("+", "-", "@", "diff ", "index ", "---", "+++")) or ln.startswith(" ")))
+        or (not _PROGRESS_RE.match(ln) and not _NOISE_LINE_RE.match(ln))
+    ]
+    windowed, dropped = _window(kept, budget)
+    # Fold after the window: before it, markers ate budget slots (49K -> 58K).
+    windowed_f, f_hidden = _fold_fault_sigs(
+        [(ln, is_important(ln)) for ln in windowed], deadline)
+    if f_hidden:
+        windowed = [ln for ln, _ in windowed_f]
+        hidden += f_hidden
+    return windowed, hidden, dropped, flagged_all, budget
+
+
 def compress_terminal(
     command: str,
     output: str,
@@ -457,16 +573,16 @@ def compress_terminal(
         if not isinstance(output, str):
             return output, {"gate": "passthrough_non_str", "ms": 0.0}
 
-        # Dead-Range incompressibility cache: skip heavy transforms on repeated reverts
+        # Dead-Range incompressibility cache: skip heavy transforms on repeated reverts.
+        # The lookup is deferred until after the delta lane: an identical repeat is
+        # exactly what a delta describes best, yet a cached revert used to ship the
+        # whole payload again instead of a two-line "nothing changed".
         cache_key = ""
+        pending_dead: dict | None = None
         if len(output) >= min_chars and not has_marker_head(output):
             fast_hash = hashlib.sha256(output.encode("utf-8", "replace")).hexdigest()[:16]
             cache_key = f"{fast_hash}:{max_lines}:{exit_code}:{level}"
-            cached_st = _get_dead_range(cache_key)
-            if cached_st is not None:
-                cached_st["ms"] = (time.perf_counter() - t0) * 1000
-                cached_st["cached_dead_range"] = True
-                return output, cached_st
+            pending_dead = _get_dead_range(cache_key)
         # Secrets stay verbatim; the budget follows context pressure.
         if policy_enabled:
             try:
@@ -499,82 +615,11 @@ def compress_terminal(
                 invalidate_shell_mutations(command, session_id)
             except Exception:
                 pass
-        if command and len(output) >= 256:
-            # Package manager / clean build outputs collapse to 1-line factsheet
-            clean_success = collapse_success_output(command, output, exit_code)
-            if clean_success != output:
-                tb = estimate_tokens(output)
-                ta = estimate_tokens(clean_success)
-                return clean_success, {
-                    "gate": "ok", "kind": "success_collapse", "digest": "",
-                    "before_chars": len(output), "after_chars": len(clean_success),
-                    "saved_chars": len(output) - len(clean_success),
-                    "est_tokens_before": tb, "est_tokens_after": ta,
-                    "hidden_lines": output.count("\n"), "dropped_lines": 0,
-                    "ms": (time.perf_counter() - t0) * 1000,
-                }
-            # Command-specific filters
-            filtered = try_command_filter(command, output)
-            if filtered is not None and len(filtered) < len(output):
-                tb = estimate_tokens(output)
-                ta = estimate_tokens(filtered)
-                if ta < tb:
-                    _ref = _ccr_put(output)
-                    ref_tag = f" #{_ref}" if _ref else ""
-                    return f"{filtered}{ref_tag}", {
-                        "gate": "ok", "kind": "cmd_filter", "digest": _ref or "",
-                        "before_chars": len(output), "after_chars": len(filtered),
-                        "saved_chars": len(output) - len(filtered),
-                        "est_tokens_before": tb, "est_tokens_after": ta,
-                        "hidden_lines": output.count("\n"), "dropped_lines": 0,
-                        "ms": (time.perf_counter() - t0) * 1000,
-                    }
+        _lane = _command_lanes(command, output, exit_code, t0)
+        if _lane is not None:
+            return _lane
         if len(output) < min_chars:
-            # 512..min_chars: ship the cleaned text with no header (tier 0).
-            if len(output) >= 512 and not has_marker_head(output):
-                try:
-                    kind_small = detect_kind(output)
-                    clean = strip_ansi(output)
-                    if kind_small != "diff":
-                        # Diff context lines carry a leading space; hygiene would strip it.
-                        try:
-                            from .dedup import hygiene
-                        except (ImportError, ValueError):
-                            from trimtok.dedup import hygiene
-                        clean, _ = hygiene(clean.rstrip())
-                    folded_small, hidden_small = _fold_repeats(_classify(clean.split("\n")), deadline)
-                    if hidden_small >= 3:
-                        # Repeated lines: fold them and mark the omission.
-                        digest_s = hashlib.sha256(output.encode("utf-8", "replace")).hexdigest()[:12]
-                        body_s = "\n".join(ln for ln, _ in folded_small)
-                        head_s = adaptive_terminal_head(
-                            kind_small, hidden_small, digest_s, len(output),
-                            len(output) - len(body_s), LEGEND, force_tier=1)
-                        cand_s = "\n".join(head_s + [body_s]) if head_s else body_s
-                        tb, ta = estimate_tokens(output), estimate_tokens(cand_s)
-                        if len(cand_s) + 40 <= len(output) and ta < tb:
-                            return cand_s, {
-                                "gate": "ok", "kind": kind_small, "digest": digest_s,
-                                "before_chars": len(output), "after_chars": len(cand_s),
-                                "saved_chars": len(output) - len(cand_s),
-                                "est_tokens_before": tb, "est_tokens_after": ta,
-                                "hidden_lines": hidden_small, "dropped_lines": 0,
-                                "ms": (time.perf_counter() - t0) * 1000,
-                            }
-                    if len(clean) < len(output):
-                        tb, ta = estimate_tokens(output), estimate_tokens(clean)
-                        if ta < tb:
-                            return clean, {
-                                "gate": "ok", "kind": kind_small, "lossless_tier0": True,
-                                "before_chars": len(output), "after_chars": len(clean),
-                                "saved_chars": len(output) - len(clean),
-                                "est_tokens_before": tb, "est_tokens_after": ta,
-                                "hidden_lines": 0, "dropped_lines": 0,
-                                "ms": (time.perf_counter() - t0) * 1000,
-                            }
-                except Exception:
-                    pass
-            return output, {"gate": "passthrough_small", "reason": "below_min_chars", "ms": 0.0}
+            return _tier0_small(output, deadline, t0)
         if has_marker_head(output):
             return output, {"gate": "passthrough_sentinel", "reason": "sentinel", "ms": 0.0}
         if deadline is not None:
@@ -598,32 +643,12 @@ def compress_terminal(
                     "digest": hashlib.sha256(output.encode("utf-8", "replace")).hexdigest()[:12],
                     "ms": (time.perf_counter() - t0) * 1000,
                 }
-        if kind == "diff":
-            text = prune_unified_diff(text, budget=0)
-        text = prune_traceback(text)
-        lines = text.split("\n")
-        flagged_all = _classify(lines)
-        folded, hidden = _fold_repeats(flagged_all, deadline)
-        folded, t_hidden, _t_groups = _fold_templates(folded, deadline)
-        hidden += t_hidden
-        if kind == "diff":
-            # A dropped + or - line is a silently wrong patch: force all of them.
-            folded = [(ln, True) if ln.startswith(("+", "-", "@")) else (ln, imp)
-                      for ln, imp in folded]
-            budget = max(budget, sum(1 for _, imp in folded if imp) + _HEAD_KEEP + _TAIL_KEEP)
-        kept = [
-            (ln, imp) for ln, imp in folded
-            if imp
-            or (kind == "diff" and (ln.startswith(("+", "-", "@", "diff ", "index ", "---", "+++")) or ln.startswith(" ")))
-            or (not _PROGRESS_RE.match(ln) and not _NOISE_LINE_RE.match(ln))
-        ]
-        windowed, dropped = _window(kept, budget)
-        # Fold after the window: before it, markers ate budget slots (49K -> 58K).
-        windowed_f, f_hidden = _fold_fault_sigs(
-            [(ln, is_important(ln)) for ln in windowed], deadline)
-        if f_hidden:
-            windowed = [ln for ln, _ in windowed_f]
-            hidden += f_hidden
+        if pending_dead is not None:
+            pending_dead["ms"] = (time.perf_counter() - t0) * 1000
+            pending_dead["cached_dead_range"] = True
+            return output, pending_dead
+        windowed, hidden, dropped, flagged_all, budget = _fold_pipeline(
+            text, kind, budget, deadline)
         digest = hashlib.sha256(output.encode("utf-8", "replace")).hexdigest()[:12]
         try:
             _ccr_put(output)
