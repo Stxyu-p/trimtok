@@ -3,6 +3,7 @@ description: "Local, deterministic context compressor for AI coding agents: comp
 entry_point: __init__.py
 author: "P Choke & MIKA"
 provides_hooks:
+  - pre_llm_call
   - transform_terminal_output
   - transform_tool_result
   - post_llm_call

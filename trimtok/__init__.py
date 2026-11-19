@@ -62,19 +62,16 @@ _AUDIT_LOCK = threading.Lock()
 EXEC_SCHEMA = {
     "name": "trimtok_exec",
     "description": (
-        "Compute over a stored original WITHOUT loading it into context. Give it the "
-        "'#ref' from a [tt:...] marker and a short Python snippet; the payload path "
-        "arrives in $TRIMTOK_PAYLOAD (env var) and only stdout comes back. Use this for "
-        "aggregate questions over a large output -- counts, filters, top-N, 'does X "
-        "appear' -- where trimtok_retrieve would cost thousands of tokens to answer one "
-        "word. Runs in a subprocess with a 10s timeout and a 4KB output cap."
+        "Run Python over a stored CCR '#ref' without loading it into context "
+        "(read $TRIMTOK_PAYLOAD; only stdout returns). Use for counts, filters, "
+        "or presence checks over large outputs. 10s default timeout, 4KB stdout cap."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "hash": {"type": "string", "description": "The content ref from the [tt:... #ref] marker (e.g. '#c1'), or a 12-char hex hash."},
-            "code": {"type": "string", "description": "Python code. Read the payload at os.environ['TRIMTOK_PAYLOAD']."},
-            "timeout": {"type": "number", "description": "Seconds before the run is killed (default 10, max 30)."},
+            "hash": {"type": "string", "description": "CCR ref (e.g. '#c1') or 12-hex digest."},
+            "code": {"type": "string", "description": "Python snippet reading os.environ['TRIMTOK_PAYLOAD']."},
+            "timeout": {"type": "number", "description": "Timeout in seconds (default 10, max 30)."},
         },
         "required": ["hash", "code"],
         "additionalProperties": False,
@@ -85,72 +82,26 @@ EXEC_SCHEMA = {
 RETRIEVE_SCHEMA = {
     "name": "trimtok_retrieve",
     "description": (
-        "Retrieve the uncompressed original content of a previously folded or windowed "
-        "tool result by its content reference: the short '#ref' shown in [tt:...] markers, "
-        "or a legacy 12-char hash. Pass 'query' instead of 'hash' to search every stored "
-        "payload by keyword (SQLite FTS5 BM25) and get back matching refs. Supports optional "
-        "line pagination (offset/limit), focused section slicing (errors/diff/summary/tail), "
-        "and grep regex filtering to inspect specific details without flooding context."
+        "Retrieve uncompressed original content by CCR '#ref' (or 12-hex digest), "
+        "or pass 'query' for FTS5 BM25 search across stored payloads. Supports "
+        "section slicing, grep, intent ranking, or offset/limit pagination."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "hash": {
-                "type": "string",
-                "description": "The content ref shown in the [tt:... #ref] marker (e.g. '#c1'), or a legacy hex hash.",
-            },
-            "query": {
-                "type": "string",
-                "description": "Optional search term to discover matching stored payloads across sessions using SQLite FTS5 BM25.",
-            },
+            "hash": {"type": "string", "description": "CCR ref (e.g. '#c1') or 12-hex digest."},
+            "query": {"type": "string", "description": "FTS5 BM25 keyword search across stored payloads."},
             "section": {
                 "type": "string",
                 "enum": ["errors", "diff", "summary", "tail"],
-                "description": (
-                    "Optional focused section to retrieve: 'errors' (error lines ± context), "
-                    "'diff' (git/unified diff hunks ± context), 'summary' (stats + head/tail + top errors), "
-                    "or 'tail' (last N lines)."
-                ),
+                "description": "Focused slice: errors, diff, summary, or tail.",
             },
-            "context_lines": {
-                "type": "integer",
-                "description": (
-                    "Optional context lines around matched lines (0-20, default 3). "
-                    "Used with section='errors' or 'diff'."
-                ),
-            },
-            "offset": {
-                "type": "integer",
-                "description": "Optional 1-indexed line number to start reading from.",
-            },
-            "limit": {
-                "type": "integer",
-                "description": "Optional maximum number of lines to return.",
-            },
-            "grep": {
-                "type": "string",
-                "description": (
-                    "Optional case-insensitive safe regex (no groups or multiple repetitions); "
-                    "limited to 256 pattern characters, 1 MB input, 1000 matches, and 100 KB output."
-                ),
-            },
-            "intent": {
-                "type": "string",
-                "description": (
-                    "Free-text task description, e.g. 'what HTTP errors occurred' or "
-                    "'which functions does this file define'. The store ranks every line by "
-                    "token overlap with the intent and returns the top `limit` most relevant "
-                    "lines (intent_budget default 400 lines / 8KB). Use this instead of grep "
-                    "when you cannot write a regex; data stays in the CCR vault."
-                ),
-            },
-            "intent_budget": {
-                "type": "integer",
-                "description": (
-                    "Max number of intent-ranked lines to return (default 400). Lower it for "
-                    "smaller answers; the ranking is deterministic."
-                ),
-            },
+            "context_lines": {"type": "integer", "description": "Lines around matches for errors/diff (0-20, default 3)."},
+            "offset": {"type": "integer", "description": "1-indexed start line."},
+            "limit": {"type": "integer", "description": "Max lines to return."},
+            "grep": {"type": "string", "description": "Case-insensitive safe regex (no groups; max 256 chars)."},
+            "intent": {"type": "string", "description": "Free-text question; returns top token-overlap lines."},
+            "intent_budget": {"type": "integer", "description": "Max intent-ranked lines (default 400)."},
         },
         "anyOf": [{"required": ["hash"]}, {"required": ["query"]}],
     },
