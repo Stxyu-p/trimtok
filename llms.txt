@@ -11,28 +11,37 @@ failed transform passes the original through untouched.
 
 ## Key facts
 
-- Compresses tool results, terminal output, `read_file` payloads, web intake, JSON
-  arrays (TOON v2 tables), source code (AST skeletonization), tracebacks, diffs,
-  test-runner output and build logs.
-- Every transform writes the original to a durable SQLite WAL + Zstd store and
-  ships a `#ref` marker. `trimtok_retrieve` returns the exact original, across
-  turns, processes and restarts. Nothing is lost, so folding is safe to attempt.
+- Compresses tool results, terminal output, `read_file` payloads, web intake &
+  `web_search` results, JSON arrays (TOON v2 tables), source code (AST
+  skeletonization + 512 KB large-file pointer), `grep`/`rg` search hits, wide
+  lines (`>= 500` chars), tracebacks, diffs, test-runner output and build logs.
+  Cold `skill_view` strips empty boilerplate only so SOP rules stay 100% intact,
+  while repeat reads hit a 1-line session cache stub.
+- Every transform writes the original to a durable SQLite WAL + Zstd store (with
+  a 16 KB-capped FTS5 BM25 index per chunk) and ships a `#ref` marker.
+  `trimtok_retrieve` returns exact slices/sections across turns and restarts, and
+  `trimtok_exec` runs Python over `$TRIMTOK_PAYLOAD` without loading it into
+  context.
 - Deterministic: no LLM, no network, no API key, no data leaves the machine.
 - Fail-open by design: the pipeline never raises and never blocks the original
-  output. A 200 ms guard bounds the hot path and ships verbatim on expiry.
+  output. A monotonic 200 ms guard bounds regex and AST loops and ships verbatim
+  (or bounded head+tail) on expiry.
 - Reports characters, not model tokens, and separates attempted from delivered
   savings. `eval/audit_honesty.py` recomputes claimed vs proven savings and reports
   the gap; telemetry is reported per release so a fixed bucket cannot hide inside
   an all-versions average.
-- Measured on a fixed 32-payload corpus (1,135,441 chars): 74.79% character
-  reduction with 0 unproven characters. Production telemetry for the 5.9.4 cohort:
-  33.2% of chars delivered across 414 events (measured 2026-11-15). These two
-  populations are never combined.
-- Integrates with Hermes (plugin hooks: automatic in-path compression) and with
-  Claude Code, Cursor, Codex, Gemini, Antigravity, Windsurf, VS Code, Cline,
-  OpenCode and Claude Desktop over MCP (tools the model calls). Host-by-host
-  detail: docs/INSTALL.md.
-- Python 3.10+, MIT licence, published on PyPI as `trimtok`.
+- Measured on a fixed 32-payload corpus (1,135,441 chars, v5.9.8): **74.98%**
+  character reduction (851,327 chars) with **0 unproven characters** and 0 gate
+  failures; **8/8 (100%)** fix-locate accuracy at 54.4% token reduction; **9/9
+  (100%)** decision-equivalence tokens retained. Production telemetry for the
+  5.9.4 cohort: 33.2% of chars delivered across 414 events (measured 2026-11-15).
+  These two populations are never combined.
+- Integrates with Hermes (automatic in-path plugin hooks with terminal
+  double-hook dedup + native `context.engine: trimtok` with 80-char stash
+  previews) and with Claude Code, Cursor, Codex, Gemini, Antigravity, Windsurf,
+  VS Code, Cline, OpenCode and Claude Desktop over MCP (plus `trimtok wrap` and
+  `trimtok mcp-proxy`). Host-by-host detail: docs/INSTALL.md.
+- Python 3.10+, MIT licence, published on PyPI as `trimtok` (v5.9.8).
 
 ## Not what it is
 

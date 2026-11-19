@@ -16,7 +16,7 @@ before using them to rank anything.
 
 | Project | Stars | Layer it works on | Reversible | Model in the hot path | Claimed saving (as published) |
 | --- | --: | --- | --- | --- | --- |
-| **trimtok** | 3 | In-process hooks + stdio MCP: tool results, terminal output, file reads, web intake | **Yes** — SQLite WAL + Zstd store, `#ref` retrieval, cross-process | **No** — deterministic rules only | 74.79% chars on a 32-payload corpus (reproducible, audited); see [telemetry](#what-trimtok-actually-measures) |
+| **trimtok** (`v5.9.8`) | 3 | In-process hooks + Hermes ContextEngine + stdio MCP/proxy: terminal, tool results, `read_file`, `grep`, `web_search`/web intake | **Yes** — SQLite WAL + Zstd store (16 KB-capped FTS5), `#ref` retrieval & `trimtok_exec`, cross-process | **No** — deterministic rules only (200 ms guard) | 74.98% chars on a 32-payload corpus (reproducible, audited); see [telemetry](#what-trimtok-actually-measures) |
 | [LLMLingua](https://github.com/microsoft/LLMLingua) | 6,823 | Prompt text, as a library | No (drops tokens; GPT-4 recovery is prompted, not guaranteed) | **Yes** — GPT-2-small / phi-2 classifier | "up to 20x compression" |
 | [claw-compactor](https://github.com/open-compress/claw-compactor) | 2,005 | 14-stage fusion pipeline over general text | Yes (reversible) | No | not stated as a single figure |
 | [leanctx](https://github.com/jia-gao/leanctx) | 322 | Prompt text, drop-in library for production apps | Partial | No | "40-60%" |
@@ -36,7 +36,7 @@ in the first place.
 A percentage only means something together with the population it was measured on
 and the unit it was measured in. In this space they rarely match:
 
-- **Population.** trimtok's 74.79% is a fixed 32-payload corpus of test output,
+- **Population.** trimtok's 74.98% is a fixed 32-payload corpus of test output,
   source files, JSON, logs and web pages. token-crunch's 84.4% is its own
   synthetic scenario list. squeez's 90.7% is per-command. glyphdown's −31.7% is
   52 real session fixtures. Averaging a per-command figure with a corpus figure
@@ -59,20 +59,27 @@ and the unit it was measured in. In this space they rarely match:
 
 ## Where trimtok differs
 
-1. **Retrieval is the product, not a feature.** Every transform writes the
-   original to a durable SQLite WAL + Zstd store and ships a `#ref` marker;
-   `trimtok_retrieve` returns the exact original — across turns, across processes,
-   after a crash. Nothing is lost, so aggressive folding is safe to attempt.
-2. **No model in the hot path.** Compression is deterministic rules: the same
-   payload always produces the same bytes. That keeps the hook in single-digit
-   milliseconds and makes the output reproducible and auditable.
+1. **Retrieval and compute-over-vault are the product, not an afterthought.**
+   Every transform writes the original to a durable SQLite WAL + Zstd store
+   (with a 16 KB-capped FTS5 BM25 index per chunk) and ships a `#ref` marker;
+   `trimtok_retrieve` returns exact slices (`errors`, `diff`, `tail`, `--grep`,
+   `--intent`) and `trimtok_exec` runs Python over `$TRIMTOK_PAYLOAD` without
+   re-inflating the prompt — across turns, across processes, after a crash.
+2. **No model in the hot path, strictly bounded latency.** Compression is
+   deterministic rules: the same payload always produces the same bytes. A
+   monotonic 200 ms guard runs inside regex/AST loops, files over 512 KB jump
+   straight to a bounded head+tail pointer (`file_large_pointer`), and wide
+   lines (`>= 500` chars) / `grep` / `web_search` have dedicated lossless-backed
+   lanes. Cold `skill_view` strips empty boilerplate only so SOP rules stay 100%
+   intact.
 3. **It publishes an honesty audit.** `eval/audit_honesty.py` recomputes what the
    pipeline claims against what it can prove from the stored originals, and
    reports the gap. The project's own telemetry reports *delivered* savings, not
    attempted ones, including the gates that saved nothing.
-4. **Per-version telemetry cohorts.** Savings are reported per release, because an
-   all-versions average hides which fix already shipped and which bucket is still
-   at zero.
+4. **Per-version telemetry cohorts & native Hermes ContextEngine.** Savings are
+   reported per release (including `trimtok_exec` counts in `trimtok gain`), and
+   `context.engine: trimtok` replaces lossy LLM history summarization with
+   deterministic CCR stashing plus an 80-char `Preview:` hint per stashed result.
 
 ## Where trimtok is weaker — say it plainly
 
@@ -94,22 +101,28 @@ Two different populations, never combined:
 
 | Source | What it is | Number |
 | --- | --- | --- |
-| `eval/` corpus | 32 fixed payloads, 1,135,441 chars, reproducible | 74.79% char reduction, 0 unproven chars |
+| `eval/` corpus (`v5.9.8`) | 32 fixed payloads, 1,135,441 chars, reproducible | **74.98%** char reduction (`851,327` chars), **0** unproven chars |
+| `eval/fix_accuracy.py` (`v5.9.8`) | Bug-locate accuracy after folding (no LLM) | **8/8 (100%)** LOCATE, **54.4%** token reduction (`56,933 → 25,956`) |
+| `eval/decision_eval.py` (`v5.9.8`) | Critical action tokens retained | **9/9 (100%)** tokens retained, **91.2%** mean reduction |
 | `usage.jsonl` (5.9.4 cohort, 2026-11-15) | Real hook traffic, chars delivered | 33.2% on 414 events |
 
 Production telemetry records characters, not model tokens, and a lane that
-reports 0% is usually a deliberate passthrough (a targeted line-range read must
-stay verbatim) rather than a failure. Anyone quoting a single number for this tool
-across all versions is quoting an average over six releases.
+reports 0% is usually a deliberate passthrough (a targeted line-range read or
+cold SOP skill view must stay verbatim) rather than a failure. Anyone quoting a
+single number for this tool across all versions is quoting an average over
+multiple releases.
 
 ## Reproduce it
 
 ```bash
 git clone https://github.com/Stxyu-p/trimtok && cd trimtok
 pip install -e ".[dev]"
-python -m unittest discover -s tests          # unit suite
+python -m unittest discover -s tests          # 179 unit & regression cases
+python -m pytest tests/ -q                    # 280 total pytest cases
 python eval/eval_real.py                      # corpus run
 python eval/audit_honesty.py                  # claimed vs proven
+python eval/fix_accuracy.py                   # bug-locate accuracy
+python eval/decision_eval.py                  # decision-equivalence gate
 trimtok gain                                  # your own telemetry, if installed
 ```
 
