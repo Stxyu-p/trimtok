@@ -455,8 +455,8 @@ plugins:
         ccr_ttl_hours: 24           # Retention window for the recovery store
         ccr_max_bytes: 52428800     # Hard ceiling for the recovery store (50 MB)
         ccr_max_entries: 1000       # Maximum cached payloads
-        excluded_commands: []       # Exact command stems to bypass compression
-        excluded_tools: []          # Tool names to leave 100% untouched
+        exclude_commands: []        # Normalized command prefixes to bypass compression
+        exclude_tools: []           # Exact tool names to leave 100% untouched
 ```
 
 <a id="native-context-engine"></a>
