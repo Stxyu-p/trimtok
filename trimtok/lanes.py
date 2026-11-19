@@ -245,67 +245,183 @@ def _session_cache(cache_name: str, key: str, result: str, session_id: str) -> t
         return cache, cache.get(key)
 
 
+_SKILL_EMPTY_LIST_KEYS = frozenset({
+    "related_skills", "tags", "required_environment_variables", "required_commands",
+    "missing_required_environment_variables", "missing_credential_files",
+    "missing_required_commands",
+})
+_SKILL_NULL_KEYS = frozenset({"linked_files", "usage_hint"})
+_SKILL_FALSE_KEYS = frozenset({"setup_needed", "setup_skipped"})
+_SKILL_DUP_FM_KEYS = frozenset({
+    "name", "description", "tags", "related_skills", "metadata",
+    "version", "author", "license", "platforms",
+})
+_SKILL_ASCII_DIV_RE = re.compile(r"^\s*#\s*[-=_*#~]{5,}\s*$")
+
+
+def _strip_duplicate_frontmatter(text: str) -> str:
+    """Drop leading YAML frontmatter only when all top-level keys are redundant metadata."""
+    if not text.startswith("---\n"):
+        return text
+    end_idx = text.find("\n---", 4)
+    if end_idx == -1:
+        return text
+    after_delim = end_idx + 4
+    if after_delim < len(text) and text[after_delim] not in ("\n", "\r"):
+        return text
+    fm_body = text[4:end_idx]
+    top_keys: list[str] = []
+    for ln in fm_body.splitlines():
+        if not ln.strip() or ln.lstrip().startswith("#"):
+            continue
+        if not ln[0].isspace():
+            key = ln.split(":", 1)[0].strip().lower()
+            if key:
+                top_keys.append(key)
+    if not top_keys or any(k not in _SKILL_DUP_FM_KEYS for k in top_keys):
+        return text
+    return text[after_delim:].lstrip("\r\n")
+
+
+def _clean_skill_markdown(text: str, *, strip_frontmatter: bool = False) -> str:
+    """SOP-safe cosmetic cleaner: never folds prose, rules, bullets, tables, or code fences."""
+    body = _strip_duplicate_frontmatter(text) if strip_frontmatter else text
+    out: list[str] = []
+    fence: str | None = None
+    prev_blank = False
+    for raw_ln in body.split("\n"):
+        stripped = raw_ln.lstrip()
+        if fence is not None:
+            out.append(raw_ln)
+            if stripped.startswith(fence * 3):
+                fence = None
+            prev_blank = False
+            continue
+        if stripped.startswith("```"):
+            fence = "`"
+            out.append(raw_ln.rstrip())
+            prev_blank = False
+            continue
+        if stripped.startswith("~~~"):
+            fence = "~"
+            out.append(raw_ln.rstrip())
+            prev_blank = False
+            continue
+        ln = raw_ln.rstrip()
+        if _SKILL_ASCII_DIV_RE.match(ln):
+            continue
+        if not ln.strip():
+            if prev_blank:
+                continue
+            prev_blank = True
+            out.append("")
+            continue
+        prev_blank = False
+        out.append(ln)
+    return "\n".join(out).strip()
+
+
+def _clean_skill_envelope(parsed: dict) -> dict:
+    """Strip empty/default boilerplate keys from skill_view JSON while preserving all SOP/warnings."""
+    cleaned: dict[str, Any] = {}
+    for k, v in parsed.items():
+        if k in _SKILL_EMPTY_LIST_KEYS and isinstance(v, list) and not v:
+            continue
+        if k in _SKILL_NULL_KEYS and v is None:
+            continue
+        if k in _SKILL_FALSE_KEYS and v is False:
+            continue
+        if k == "readiness_status" and v == "available":
+            continue
+        if k == "metadata" and isinstance(v, dict):
+            hermes_meta = v.get("hermes")
+            if (
+                len(v) == 1
+                and isinstance(hermes_meta, dict)
+                and set(hermes_meta.keys()).issubset({"tags", "related_skills"})
+            ):
+                continue
+        cleaned[k] = v
+    content = cleaned.get("content")
+    if isinstance(content, str) and content:
+        has_outer_meta = bool(cleaned.get("name") and cleaned.get("description"))
+        cleaned["content"] = _clean_skill_markdown(content, strip_frontmatter=has_outer_meta)
+    return cleaned
+
+
 def skill_cache(
     tool_name: str, args: Any, result: str, session_id: str, min_chars: int, t0: float
 ) -> tuple[str, dict] | None:
-    """Repeat `skill_view` in one session -> 1-line pointer; cold view -> shaved prose."""
-    from .ccr import put as _ccr_put
-    from .strategies.tiered_shave import shave_tiered
+    """Repeat `skill_view` in one session -> 1-line pointer; cold view -> SOP-safe cleanup only.
 
-    if tool_name != "skill_view" or not isinstance(args, dict):
+    Cold skill_view never folds SOP prose into `[tt:prose ...]` stubs so instructions,
+    invariants, and edge cases stay 100% visible on first load. Never returns None for
+    skill_view payloads above min_chars so dedup.py cannot fall through to head/tail truncation.
+    """
+    from .ccr import put as _ccr_put
+
+    if tool_name != "skill_view":
         return None
-    skill_name = str(args.get("name") or args.get("skill") or "")
-    if not skill_name:
-        return None
+    skill_name = str(args.get("name") or args.get("skill") or "") if isinstance(args, dict) else ""
+    parsed_json: dict | None = None
+    if result.lstrip().startswith("{") and '"content"' in result:
+        try:
+            obj = _json.loads(result)
+            if isinstance(obj, dict) and isinstance(obj.get("content"), str):
+                parsed_json = obj
+                if not skill_name and isinstance(obj.get("name"), str):
+                    skill_name = obj["name"]
+        except Exception:
+            parsed_json = None
+
     rh = digest(result)
-    entry = _session_cache("skills", skill_name, result, session_id)
-    if entry is None:
-        return None
-    cache, prev = entry
-    if prev and prev.get("digest") == rh:
-        prev_ref = str(prev.get("ref") or rh).lstrip("#")
-        stub = (
-            f"[tt:skill_cached name=\"{skill_name}\" #{prev_ref} ({len(result)} chars) "
-            "— identical to prior skill_view in active context -> trimtok_retrieve]"
-        )
-        tb, ta = _tok_pair(result, stub)
-        return stub, _stats(result, stub, tb, ta, "skill_cache_hit", rh, t0)
-    ref = _ccr_put(result)
-    from .dedup import _SEEN_LOCK
-    with _SEEN_LOCK:
-        cache[skill_name] = {"digest": rh, "ref": ref or rh}
-    if len(result) < min_chars:
-        return None
-    ref_tag = f"#{(ref or rh).lstrip('#')}"
-    meta = {"domain": "spec-doc", "lang": "markdown", "ref": ref_tag, "no_read_file": True}
-    cand = None
-    saved = 0
-    if result.strip().startswith("{") and '"content"' in result:
+    if skill_name:
+        entry = _session_cache("skills", skill_name, result, session_id)
+        if entry is not None:
+            cache, prev = entry
+            if prev and prev.get("digest") == rh:
+                prev_ref = str(prev.get("ref") or rh).lstrip("#")
+                stub = (
+                    f"[tt:skill_cached name=\"{skill_name}\" #{prev_ref} ({len(result)} chars) "
+                    "— identical to prior skill_view in active context -> trimtok_retrieve]"
+                )
+                tb, ta = _tok_pair(result, stub)
+                return stub, _stats(result, stub, tb, ta, "skill_cache_hit", rh, t0)
+            ref = _ccr_put(result)
+            from .dedup import _SEEN_LOCK
+            with _SEEN_LOCK:
+                cache[skill_name] = {"digest": rh, "ref": ref or rh}
+
+    cand: str | None = None
+    if parsed_json is not None:
         try:
-            parsed = _json.loads(result)
-            if isinstance(parsed, dict) and isinstance(parsed.get("content"), str) and len(parsed["content"]) >= 2000:
-                shaved, c_stats = shave_tiered(parsed["content"], meta)
-                if c_stats.get("saved_chars", 0) > 200:
-                    parsed["content"] = shaved
-                    cand = _json.dumps(parsed, ensure_ascii=False)
-                    saved = len(result) - len(cand)
+            cleaned_obj = _clean_skill_envelope(parsed_json)
+            cand = _json.dumps(cleaned_obj, ensure_ascii=False, separators=(",", ":"))
         except Exception:
-            pass
-    elif result.strip().startswith(("#", "---")):
+            cand = None
+    elif result.lstrip().startswith(("#", "---")):
         try:
-            cand, c_stats = shave_tiered(result, meta)
-            saved = c_stats.get("saved_chars", 0)
+            cand = _clean_skill_markdown(result, strip_frontmatter=False)
         except Exception:
-            pass
-    if cand is None or saved <= 200 or len(cand) >= len(result):
-        return None
-    tb, ta = _tok_pair(result, cand)
-    if ta >= tb:
-        return None
-    stats = _stats(result, cand, tb, ta, "skill_shaved", rh, t0)
-    stats["fold_saved"] = saved
-    stats["saved_chars"] = saved
-    return cand, stats
+            cand = None
+
+    if cand is not None and len(cand) + 4 <= len(result):
+        tb, ta = _tok_pair(result, cand)
+        if ta < tb:
+            stats = _stats(result, cand, tb, ta, "skill_clean", rh, t0)
+            stats["lossless_tier0"] = True
+            return cand, stats
+
+    # Protect cold SOP from generic head/tail or template truncation in dedup.py.
+    return result, {
+        "gate": "passthrough_policy",
+        "reason": "skill_sop_verbatim",
+        "digest": rh,
+        "before_chars": len(result),
+        "after_chars": len(result),
+        "saved_chars": 0,
+        "ms": (time.perf_counter() - t0) * 1000,
+    }
 
 
 def skills_list_cache(tool_name: str, args: Any, result: str, session_id: str, t0: float) -> tuple[str, dict] | None:

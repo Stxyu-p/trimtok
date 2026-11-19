@@ -65,10 +65,38 @@ class TestOptimizationsGroup1And2(unittest.TestCase):
         self.assertEqual(stats2.get("kind"), "skill_cache_hit")
         self.assertTrue(out2.startswith("[tt:skill_cached"))
 
-    def test_skill_view_cold_shave_json_wrapper(self):
+    def test_skill_view_cold_clean_json_wrapper_preserves_sop(self):
         import json
-        long_doc = "---\nname: my-skill\ndescription: test\n---\n# My Skill\n" + ("Here is a long paragraph explaining the deep background details of this skill.\n\n" * 40)
-        wrapper = json.dumps({"success": True, "name": "my-skill", "content": long_doc})
+        sop_rules = "\n".join(
+            f"- Rule {i}: NEVER skip verification step {i} before committing changes."
+            for i in range(1, 25)
+        )
+        long_doc = (
+            "---\nname: my-skill\ndescription: test skill\n---\n\n\n"
+            "# My Skill\n"
+            "# ==========\n\n\n"
+            f"{sop_rules}\n\n\n"
+            "```bash\npython -m pytest tests/\n```\n"
+        )
+        wrapper = json.dumps({
+            "success": True,
+            "name": "my-skill",
+            "description": "test skill",
+            "tags": [],
+            "related_skills": [],
+            "linked_files": None,
+            "usage_hint": None,
+            "required_environment_variables": [],
+            "required_commands": [],
+            "missing_required_environment_variables": [],
+            "missing_credential_files": [],
+            "missing_required_commands": [],
+            "setup_needed": False,
+            "setup_skipped": False,
+            "readiness_status": "available",
+            "metadata": {"hermes": {"tags": [], "related_skills": []}},
+            "content": long_doc,
+        }, indent=2)
         out, stats = compress_tool_result(
             "skill_view",
             wrapper,
@@ -77,11 +105,30 @@ class TestOptimizationsGroup1And2(unittest.TestCase):
             min_chars=500,
         )
         self.assertEqual(stats.get("gate"), "ok")
-        self.assertEqual(stats.get("kind"), "skill_shaved")
-        self.assertTrue(stats.get("saved_chars", 0) > 500)
+        self.assertEqual(stats.get("kind"), "skill_clean")
+        self.assertGreater(stats.get("saved_chars", 0), 300)
         parsed = json.loads(out)
-        self.assertIn("[tt:prose", parsed["content"])
-        self.assertIn("my-skill", parsed["name"])
+        # SOP content must remain 100% intact (never folded behind [tt:prose])
+        self.assertNotIn("[tt:prose", parsed["content"])
+        self.assertIn("Rule 12: NEVER skip verification step 12", parsed["content"])
+        self.assertIn("python -m pytest tests/", parsed["content"])
+        # Redundant empty/default metadata stripped
+        self.assertNotIn("setup_needed", parsed)
+        self.assertNotIn("missing_required_commands", parsed)
+        self.assertEqual(parsed["name"], "my-skill")
+
+        # Second identical read in the same session still hits the 99% cache stub
+        out2, stats2 = compress_tool_result(
+            "skill_view",
+            wrapper,
+            args={"name": "my-skill"},
+            session_id="test_sess_cold_shave",
+            min_chars=500,
+        )
+        self.assertEqual(stats2.get("gate"), "ok")
+        self.assertEqual(stats2.get("kind"), "skill_cache_hit")
+        self.assertTrue(out2.startswith("[tt:skill_cached"))
+        self.assertLess(len(out2), 200)
 
     def test_timeout_bounded_on_large_payload(self):
         from trimtok.signals import Deadline
