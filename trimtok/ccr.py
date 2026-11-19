@@ -143,6 +143,47 @@ def _is_alias_ref(target: str) -> bool:
     return target.startswith("#c") or (target.startswith("#") and not _is_hex_digest(target.lstrip("#")))
 
 
+_MAX_FTS_CHARS = 16_384
+_FTS_SIGNAL_RE = re.compile(
+    r"(?i)(?:error|exception|traceback|failed|fatal|panic|critical|"
+    r"^\s*(?:async\s+)?(?:def|class|function|func|fn|struct|interface|type)\b|^\s*#{1,4}\s)"
+)
+
+
+def _fts_index_text(content: str, max_chars: int = _MAX_FTS_CHARS) -> str:
+    """Bound FTS5 plaintext size while keeping head, tail, and middle symbol/fault lines."""
+    if not content or len(content) <= max_chars:
+        return content
+    head_budget = max_chars // 2          # 8,192 chars
+    tail_budget = max_chars // 4          # 4,096 chars
+    mid_budget = max_chars - head_budget - tail_budget  # 4,096 chars
+    head = content[:head_budget]
+    tail = content[-tail_budget:]
+    sig_lines: list[str] = []
+    used = 0
+    pos = head_budget
+    end = len(content) - tail_budget
+    # Stream line-by-line without allocating a full splitlines() list on MB-scale payloads.
+    while pos < end and used < mid_budget:
+        nl = content.find("\n", pos, end)
+        nxt = end if nl == -1 else nl
+        if nxt > pos:
+            raw_ln = content[pos:min(nxt, pos + 320)]
+            s = raw_ln.strip()
+            if s and _FTS_SIGNAL_RE.search(s):
+                piece = s[:240]
+                if used + len(piece) + 1 > mid_budget:
+                    break
+                sig_lines.append(piece)
+                used += len(piece) + 1
+        pos = nxt + 1
+    parts = [head]
+    if sig_lines:
+        parts.append("\n".join(sig_lines))
+    parts.append(tail)
+    return "\n".join(parts)[:max_chars]
+
+
 def _sanitize_fts5_query(query: str) -> str:
     """Quote each whitespace-separated token so FTS5 parses it literally.
 
@@ -243,7 +284,7 @@ class FastCCRStore:
             for alias, blob in missing:
                 text = _decompress_payload(blob)
                 if text:
-                    cur.execute("INSERT INTO chunks_fts (alias, content) VALUES (?, ?)", (alias, text))
+                    cur.execute("INSERT INTO chunks_fts (alias, content) VALUES (?, ?)", (alias, _fts_index_text(text)))
             cur.execute(
                 "INSERT INTO meta(key, value) VALUES('fts_synced', '1') "
                 "ON CONFLICT(key) DO UPDATE SET value='1'"
@@ -319,7 +360,7 @@ class FastCCRStore:
                         # sha was absent above, so this alias is brand new: no stale
                         # FTS row can exist and a DELETE here would scan the whole
                         # index on the hot path.
-                        cur.execute("INSERT INTO chunks_fts (alias, content) VALUES (?, ?)", (alias, content))
+                        cur.execute("INSERT INTO chunks_fts (alias, content) VALUES (?, ?)", (alias, _fts_index_text(content)))
                     except Exception:
                         pass
                     # Opportunistic TTL sweep (at most once every 50 writes)

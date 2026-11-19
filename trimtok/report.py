@@ -144,6 +144,9 @@ def gain_summary(path: Path, days: int = 0, lock: Any = None) -> str:
         avg_ms = sum(float(r.get("ms") or 0) for r in terminal_rows) / max(len(terminal_rows), 1)
         retrieve_rows = [r for r in rows if r.get("hook") == "retrieve"]
         hits = sum(1 for r in retrieve_rows if r.get("hit"))
+        exec_rows = [r for r in rows if r.get("hook") == "exec"]
+        exec_ok = sum(1 for r in exec_rows if r.get("ok"))
+        exec_queried = sum(int(r.get("payload_bytes") or 0) for r in exec_rows if r.get("ok"))
 
         # Savings by shape
         by_shape: dict = {}
@@ -178,6 +181,8 @@ def gain_summary(path: Path, days: int = 0, lock: Any = None) -> str:
         out.append(f"  total: {total_before:,} -> {total_after:,} chars ({overall_pct:.1f}% saved, {total_saved:,} chars)")
         out.append(f"  avg latency: {avg_ms:.1f}ms per transform")
         out.append(f"  retrieve: {hits}/{len(retrieve_rows)} hits")
+        if exec_rows:
+            out.append(f"  exec: {exec_ok}/{len(exec_rows)} ok ({exec_queried:,} payload bytes queried)")
 
         # Shape breakdown
         out.append("")
@@ -253,3 +258,4 @@ def usage_summary(path: Path, lock: Any = None) -> str:
         return "\n".join(out)
     except Exception:
         return "trimtok: usage unavailable."
+

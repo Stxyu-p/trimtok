@@ -78,7 +78,7 @@ try:
         adaptive_terminal_head,
         score_anchor_preservation,
     )
-    from .pruners import prune_traceback, prune_unified_diff, collapse_success_output, prune_test_runner
+    from .pruners import prune_traceback, prune_unified_diff, collapse_success_output, prune_test_runner, group_search_hits
     from .ccr import put as _ccr_put
 except (ImportError, ValueError):
     from trimtok import delta_engine
@@ -98,7 +98,7 @@ except (ImportError, ValueError):
         adaptive_terminal_head,
         score_anchor_preservation,
     )
-    from trimtok.pruners import prune_traceback, prune_unified_diff, collapse_success_output, prune_test_runner
+    from trimtok.pruners import prune_traceback, prune_unified_diff, collapse_success_output, prune_test_runner, group_search_hits
     from trimtok.ccr import put as _ccr_put
 
 try:
@@ -453,9 +453,10 @@ def _command_lanes(command: str, output: str, exit_code: int, t0: float) -> tupl
     if ta >= tb:
         return None
     _ref = _ccr_put(output)
-    ref_tag = f" #{_ref}" if _ref else ""
+    ref_clean = _ref.lstrip("#") if _ref else ""
+    ref_tag = f" #{ref_clean}" if ref_clean else ""
     return f"{filtered}{ref_tag}", {
-        "gate": "ok", "kind": "cmd_filter", "digest": _ref or "",
+        "gate": "ok", "kind": "cmd_filter", "digest": ref_clean,
         "before_chars": len(output), "after_chars": len(filtered),
         "saved_chars": len(output) - len(filtered),
         "est_tokens_before": tb, "est_tokens_after": ta,
@@ -512,18 +513,74 @@ def _tier0_small(output: str, deadline: Any | None, t0: float) -> tuple[str, dic
     return output, {"gate": "passthrough_small", "reason": "below_min_chars", "ms": 0.0}
 
 
+_WIDE_LINE_MIN = 500
+_WIDE_LINE_HEAD = 220
+_WIDE_LINE_TAIL = 100
+_WIDE_LINE_MIN_OMIT = 160
+
+
+def _fold_wide_lines(
+    text: str,
+    kind: str,
+    digest: str,
+    deadline: Any | None = None,
+) -> tuple[str, int]:
+    """Fold oversized single lines in 5+ line non-JSON/diff outputs while keeping head/tail + #ref."""
+    if not digest or kind in ("diff", "json") or len(text) < 2048:
+        return text, 0
+    lines = text.split("\n")
+    # Leave 1-4 line giant blobs (>=8KB) to the dedicated pointer_large tier.
+    if len(lines) <= 4 and len(text) >= 8192:
+        return text, 0
+    folded_chars = 0
+    out: list[str] = []
+    for idx, ln in enumerate(lines):
+        if deadline is not None and (idx & 255) == 0:
+            deadline.check()
+        if (
+            len(ln) < _WIDE_LINE_MIN
+            or ln.startswith(("[tt:", "[@#", _KEEP_PREFIX))
+        ):
+            out.append(ln)
+            continue
+        mid = ln[_WIDE_LINE_HEAD:-_WIDE_LINE_TAIL]
+        if len(mid) < _WIDE_LINE_MIN_OMIT:
+            out.append(ln)
+            continue
+        # Never hide a fault signal that occurs inside the omitted middle slice.
+        if is_important(ln) and is_important(mid):
+            out.append(ln)
+            continue
+        stub = f"{ln[:_WIDE_LINE_HEAD]} [... {len(mid)} chars in #{digest} ...] {ln[-_WIDE_LINE_TAIL:]}"
+        if len(stub) < len(ln):
+            out.append(stub)
+            folded_chars += len(ln) - len(stub)
+        else:
+            out.append(ln)
+    if folded_chars <= 0:
+        return text, 0
+    return "\n".join(out), folded_chars
+
+
 def _fold_pipeline(
-    text: str, kind: str, budget: int, deadline: Any | None
+    text: str, kind: str, budget: int, deadline: Any | None, digest: str = ""
 ) -> tuple[list[str], int, int, list[tuple[str, bool]], int]:
     """Prune, fold and window one payload. Returns (windowed, hidden, dropped, flagged, budget)."""
     if kind == "diff":
         text = prune_unified_diff(text, budget=0)
     text = prune_traceback(text)
     text, test_hidden = prune_test_runner(text)
+    search_hidden = 0
+    if kind == "search":
+        grouped, s_saved = group_search_hits(text, owner=digest or None, deadline=deadline)
+        if s_saved > 0:
+            search_hidden = max(0, text.count("\n") - grouped.count("\n"))
+            text = grouped
+    text, _wide_saved = _fold_wide_lines(text, kind, digest, deadline)
     flagged_all = _classify(text.split("\n"))
     folded, hidden = _fold_repeats(flagged_all, deadline)
     folded, t_hidden, _t_groups = _fold_templates(folded, deadline)
-    hidden += t_hidden + test_hidden
+    hidden += t_hidden + test_hidden + search_hidden
     if kind == "diff":
         # A dropped + or - line is a silently wrong patch: force all of them.
         folded = [(ln, True) if ln.startswith(("+", "-", "@")) else (ln, imp)
@@ -647,9 +704,9 @@ def compress_terminal(
             pending_dead["ms"] = (time.perf_counter() - t0) * 1000
             pending_dead["cached_dead_range"] = True
             return output, pending_dead
-        windowed, hidden, dropped, flagged_all, budget = _fold_pipeline(
-            text, kind, budget, deadline)
         digest = hashlib.sha256(output.encode("utf-8", "replace")).hexdigest()[:12]
+        windowed, hidden, dropped, flagged_all, budget = _fold_pipeline(
+            text, kind, budget, deadline, digest=digest)
         try:
             _ccr_put(output)
         except Exception:
@@ -822,14 +879,15 @@ def compress_terminal(
                     kept_head = lines[:30]
                     kept_tail = lines[-30:]
                     omitted = n_total - 60
-                    ref_tag = f" #{_ref}" if _ref else ""
+                    ref_clean = _ref.lstrip("#") if _ref else ""
+                    ref_tag = f" #{ref_clean}" if ref_clean else ""
                     stub = (
                         "\n".join(kept_head)
                         + f"\n[tt:timeout_bounded{ref_tag} ({omitted} lines omitted under deadline) -> trimtok_retrieve]\n"
                         + "\n".join(kept_tail)
                     )
                     return stub, {
-                        "gate": "ok", "kind": "timeout_bounded", "digest": _ref or "",
+                        "gate": "ok", "kind": "timeout_bounded", "digest": ref_clean,
                         "degraded": "deadline", "before_chars": len(output),
                         "after_chars": len(stub), "saved_chars": len(output) - len(stub),
                         "hidden_lines": omitted, "dropped_lines": 0,

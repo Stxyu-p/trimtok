@@ -5,6 +5,7 @@ Supports Python, JavaScript/TypeScript, Go, Rust, Java, C, and C++.
 All operations are 100% fail-open, non-recursive, patch-safe, and never raise.
 """
 import os
+from typing import Any
 
 _LANG_MAP = {
     ".py": "python",
@@ -126,6 +127,7 @@ def _skeletonize_ts_core(
     line_prefixes: list[str] | None = None,
     line_nos: list[int] | None = None,
     focus_lines: set[int] | list[int] | None = None,
+    deadline: Any | None = None,
 ) -> tuple[str, int, int]:
     """Extract signatures and fold function bodies using tree-sitter. Returns (text, saved_chars, count)."""
     ts = _get_ts_lang(lang)
@@ -133,8 +135,12 @@ def _skeletonize_ts_core(
         return code, 0, 0
     _, parser = ts
     try:
+        if deadline is not None:
+            deadline.check()
         raw_bytes = code.encode("utf-8", errors="replace")
         tree = parser.parse(raw_bytes)
+    except TimeoutError:
+        raise
     except Exception:
         return code, 0, 0
 
@@ -156,7 +162,11 @@ def _skeletonize_ts_core(
 
     # Iterative depth-first traversal to avoid recursion limits
     stack = [tree.root_node]
+    steps = 0
     while stack:
+        steps += 1
+        if deadline is not None and (steps & 255) == 0:
+            deadline.check()
         node = stack.pop()
         node_type = node.type
         is_func = node_type in (
@@ -270,6 +280,7 @@ def skeletonize_code_full(
     line_nos: list[int] | None = None,
     min_body_lines: int = 8,
     focus_lines: set[int] | list[int] | None = None,
+    deadline: Any | None = None,
 ) -> tuple[str, int, int]:
     """Full multi-language code skeletonizer with exact line prefixes and line numbers.
     Returns: (skeleton_text, saved_chars, folded_functions_count)
@@ -283,17 +294,19 @@ def skeletonize_code_full(
             res, saved, count = smart_skeletonize_code(
                 code, ref=ref, min_body_lines=min_body_lines,
                 line_prefixes=line_prefixes, line_nos=line_nos,
-                focus_lines=focus_lines,
+                focus_lines=focus_lines, deadline=deadline,
             )
             if saved > 0 and count > 0:
                 return res, saved, count
+        except TimeoutError:
+            raise
         except Exception:
             pass
     if lang in ("python", "javascript", "go", "rust", "java", "c", "cpp", "csharp", "bash"):
         return _skeletonize_ts_core(
             code, lang=lang, min_body_lines=min_body_lines, ref=ref,
             line_prefixes=line_prefixes, line_nos=line_nos,
-            focus_lines=focus_lines,
+            focus_lines=focus_lines, deadline=deadline,
         )
     return code, 0, 0
 

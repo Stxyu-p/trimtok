@@ -8,6 +8,7 @@ import os
 import re
 import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,7 @@ from .dedup import (
     expire_old_turns,
     mask_old_turns,
     note_turn,
+    record_hotspots,
     remember,
 )
 from .delta_engine import clear_session as delta_clear_session
@@ -638,6 +640,33 @@ def _storage_failure_stats(stats: dict, original: str) -> dict:
     return failed
 
 
+_HANDLED_TERMINAL_CALLS: OrderedDict[str, float] = OrderedDict()
+_TERMINAL_CALL_LOCK = threading.Lock()
+_MAX_HANDLED_TERMINAL_CALLS = 128
+
+
+def _mark_terminal_call(call_id: Any) -> None:
+    cid = str(call_id or "").strip()
+    if not cid:
+        return
+    with _TERMINAL_CALL_LOCK:
+        _HANDLED_TERMINAL_CALLS.pop(cid, None)
+        _HANDLED_TERMINAL_CALLS[cid] = time.monotonic()
+        while len(_HANDLED_TERMINAL_CALLS) > _MAX_HANDLED_TERMINAL_CALLS:
+            _HANDLED_TERMINAL_CALLS.popitem(last=False)
+
+
+def _consume_terminal_call(call_id: Any) -> bool:
+    cid = str(call_id or "").strip()
+    if not cid:
+        return False
+    with _TERMINAL_CALL_LOCK:
+        ts = _HANDLED_TERMINAL_CALLS.pop(cid, None)
+        if ts is None:
+            return False
+        return (time.monotonic() - ts) < 60.0
+
+
 def _on_transform(
     command: Any = None,
     output: Any = None,
@@ -651,18 +680,22 @@ def _on_transform(
         return None
     if _excluded_command(command, ctx):
         return None
+    sid = str(kw.get("session_id") or kw.get("task_id") or "")
+    exit_code = _safe_int(returncode, 0)
+    record_hotspots(sid, output, exit_code)
+    _mark_terminal_call(kw.get("tool_call_id"))
     min_chars = _int_cfg(ctx, "min_chars", 2048, 0, 10_000_000)
     new_output, stats = compress_terminal(
         str(command or ""),
         output,
         min_chars=min_chars,
         max_lines=_int_cfg(ctx, "max_lines", 120, 10, 10000),
-        session_id=str(kw.get("session_id") or kw.get("task_id") or ""),
+        session_id=sid,
         delta_enabled=_bool_cfg(ctx, "delta_enabled", True),
         delta_threshold=_float_cfg(ctx, "delta_threshold", 0.65, 0.5, 1.0),
         deadline=Deadline(_float_cfg(ctx, "guard_ms", 200.0, 1.0, 1000.0)),
         pressure=_context_pressure(ctx, kw),
-        exit_code=_safe_int(returncode, 0),
+        exit_code=exit_code,
     )
     out = _finalize(output, new_output, stats, ctx, {
         "tool": "terminal",
@@ -741,6 +774,8 @@ def _on_tool_result(
     if _excluded_tool(tool_name, ctx):
         return None
     verbatim_name = str(tool_name or "").strip()
+    if verbatim_name == "terminal" and _consume_terminal_call(kw.get("tool_call_id")):
+        return None
     if verbatim_name in VERBATIM_TOOLS and verbatim_name not in _READ_FILE_LIKE:
         return None
     sid = str(session_id or task_id or "default")
@@ -758,6 +793,9 @@ def _on_tool_result(
         toon_enabled=_toon_allowed(ctx),
         deadline=Deadline(_float_cfg(ctx, "guard_ms", 200.0, 1.0, 1000.0)),
         pressure=_context_pressure(ctx, kw),
+        delta_enabled=_bool_cfg(ctx, "delta_enabled", True),
+        delta_threshold=_float_cfg(ctx, "delta_threshold", 0.65, 0.5, 1.0),
+        max_lines=_int_cfg(ctx, "max_lines", 120, 10, 10000),
     )
     out = _finalize(result, new_result, stats, ctx, {
         "tool": str(tool_name or "tool"),
@@ -843,8 +881,26 @@ def _render_context_intervals(
     return "\n[...]\n".join(chunks), returned_lines
 
 
+def _usage_exec(args: dict, res: dict, ctx: Any = None) -> None:
+    try:
+        out_str = str(res.get("output") or "")
+        _usage({
+            "ts": int(time.time()),
+            "hook": "exec",
+            "hash": str((args or {}).get("hash") or "")[:16],
+            "ok": bool(res.get("ok")),
+            "exit_code": int(res.get("exit_code") or 0),
+            "payload_bytes": int(res.get("payload_bytes") or 0),
+            "out_chars": len(out_str),
+            "ms": round(float(res.get("ms") or 0.0), 2),
+        }, ctx=ctx)
+    except Exception as exc:
+        _LOGGER.warning("trimtok exec telemetry entry failed: %s", exc)
+
+
 def _handle_exec(args: dict, **kw: Any) -> str:
     from .exec_lane import run as _exec_run
+    ctx = getattr(_handle_exec, "_ctx", None)
     a = args or {}
     ref = _parse_ref(a.get("hash"))
     if not ref:
@@ -854,6 +910,7 @@ def _handle_exec(args: dict, **kw: Any) -> str:
         return _err("code is required")
     timeout = max(0.1, min(30.0, _safe_int(a.get("timeout"), 10) or 10))
     res = _exec_run(ref, code, timeout=timeout)
+    _usage_exec(a, res, ctx=ctx)
     if res.get("ok"):
         return _ok(res)
     return _err(f"exec failed (exit {res.get('exit_code')}): {str(res.get('output'))[:600]}")
@@ -1220,6 +1277,7 @@ def register(ctx: Any) -> None:
     _on_tool_result._ctx = ctx  # type: ignore[attr-defined]
     _on_post_llm._ctx = ctx  # type: ignore[attr-defined]
     _handle_retrieve._ctx = ctx  # type: ignore[attr-defined]
+    _handle_exec._ctx = ctx  # type: ignore[attr-defined]
     _handle_ts_command._ctx = ctx  # type: ignore[attr-defined]
     ctx.register_hook("transform_terminal_output", _on_transform)
     ctx.register_hook("transform_tool_result", _on_tool_result)
@@ -1256,4 +1314,5 @@ def register(ctx: Any) -> None:
     if hasattr(ctx, "register_context_engine"):
         from trimtok.context_engine import TrimtokContextEngine
         ctx.register_context_engine(TrimtokContextEngine())
+
 

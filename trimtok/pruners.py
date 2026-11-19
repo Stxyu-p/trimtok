@@ -301,7 +301,7 @@ def looks_search_shaped(text: str) -> bool:
                 paths.add(active_path)
                 continue
             active_path = None
-        if hits < _MIN_HITS or len(paths) < _MIN_PATHS:
+        if hits < _MIN_HITS or (len(paths) < _MIN_PATHS and hits < 15):
             return False
         return hits / len(lines) >= _HIT_FRACTION
     except Exception:
@@ -487,13 +487,18 @@ def smart_skeletonize_code(
     line_prefixes: list[str] | None = None,
     line_nos: list[int] | None = None,
     focus_lines: set[int] | list[int] | None = None,
+    deadline: Any | None = None,
 ) -> tuple[str, int, int]:
     """Line-anchored AST skeleton: keeps every signature, type and decorator.
 
     Long function bodies become a line-range marker; LINE| prefixes are kept.
     """
     try:
+        if deadline is not None:
+            deadline.check()
         tree = ast.parse(text)
+    except TimeoutError:
+        raise
     except Exception:
         return text, 0, 0
 
@@ -509,7 +514,9 @@ def smart_skeletonize_code(
     fold_ranges: list[tuple[int, int, str, str]] = []
     focus_set = set(focus_lines) if focus_lines else None
 
-    for node in ast.walk(tree):
+    for idx, node in enumerate(ast.walk(tree)):
+        if deadline is not None and (idx & 255) == 0:
+            deadline.check()
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         if not getattr(node, "body", None) or not hasattr(node, "end_lineno"):

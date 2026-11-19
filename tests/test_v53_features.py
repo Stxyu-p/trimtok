@@ -232,15 +232,12 @@ class TestMergedTOON(unittest.TestCase):
 class TestReadFileMultiLangAST(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        try:
-            import tree_sitter
-            cls.has_ts = True
-        except ImportError:
-            cls.has_ts = False
+        from trimtok.ts_skeleton import _get_ts_lang
+        cls.has_ts = _get_ts_lang("javascript") is not None and _get_ts_lang("go") is not None
 
     def test_read_file_typescript_skeletonizer(self):
         if not self.has_ts:
-            self.skipTest("tree-sitter not installed")
+            self.skipTest("tree-sitter language packs not installed")
         from trimtok.dedup import _handle_read_file_v42
         import time
 
@@ -255,7 +252,14 @@ class TestReadFileMultiLangAST(unittest.TestCase):
     const f = e * 6;
     const g = f / 7;
     const h = g + 8;
-    return h;
+    const m = h * 9;
+    const n = m - 10;
+    const o = n + 11;
+    const p = o * 12;
+    const q = p - 13;
+    const r2 = q + 14;
+    const s = r2 * 15;
+    return s;
 }}""")
         raw = "\n\n".join(funcs)
         lines = raw.split("\n")
@@ -288,7 +292,14 @@ class TestReadFileMultiLangAST(unittest.TestCase):
     mult := subbed * 6
     div := mult / 7
     result := div + 8
-    fmt.Fprintf(w, "Result: %d", result)
+    step9 := result * 9
+    step10 := step9 - 10
+    step11 := step10 + 11
+    step12 := step11 * 12
+    step13 := step12 - 13
+    step14 := step13 + 14
+    step15 := step14 * 15
+    fmt.Fprintf(w, "Result: %d", step15)
 }}""")
         raw = "package main\n\nimport (\n\t\"fmt\"\n\t\"net/http\"\n)\n\n" + "\n\n".join(funcs)
         lines = raw.split("\n")

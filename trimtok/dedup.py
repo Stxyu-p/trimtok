@@ -1059,6 +1059,45 @@ def _handle_read_file_v42(
 
     norm_path, offset, limit = _extract_file_args(args)
     digest = hashlib.sha256(result.encode("utf-8", "replace")).hexdigest()[:12]
+
+    # Files > 512 KB skip line-indexing (`remember`), full unwrap, and multi-second AST parsing.
+    _READ_FILE_MAX_AST_CHARS = 524_288
+    if len(result) > _READ_FILE_MAX_AST_CHARS:
+        _lg_ref = _ccr_put(result)
+        if _lg_ref:
+            _ref_tag = _lg_ref.lstrip("#")
+            n_lines_est = file_body.count("\n") + 1
+            head_chunk = file_body[:16384].splitlines()[:35]
+            tail_chunk = file_body[-16384:].splitlines()[-25:] if n_lines_est > 65 else []
+            omitted_l = max(0, n_lines_est - len(head_chunk) - len(tail_chunk))
+            marker = (
+                f"[tt:file_large #{_ref_tag} path=\"{norm_path or 'file'}\" "
+                f"({n_lines_est}L, {len(result):,} chars — exceeds 512KB AST cap, {omitted_l}L omitted) "
+                f"-> trimtok_retrieve \"#{_ref_tag}\" or read_file(offset=..., limit=...)]"
+            )
+            stub = "\n".join(head_chunk + [marker] + tail_chunk)
+            final_stub = _pack(stub)
+            tb, ta = _tok_pair(result, final_stub)
+            if len(final_stub) < len(result) and ta < tb:
+                with _SEEN_LOCK:
+                    fc = _seen(session_id).setdefault("files", {})
+                    ck = norm_path or f"__anon_{digest}"
+                    fc[ck] = {
+                        "digest": digest, "text": "", "raw_body": "",
+                        "reads": 1, "stub_hits": 0, "expired": False, "skeleton_only": True,
+                    }
+                return final_stub, {
+                    "gate": "ok",
+                    "kind": "file_large_pointer",
+                    "digest": _ref_tag,
+                    "before_chars": len(result),
+                    "after_chars": len(final_stub),
+                    "saved_chars": len(result) - len(final_stub),
+                    "est_tokens_before": tb,
+                    "est_tokens_after": ta,
+                    "ms": (time.perf_counter() - t0) * 1000,
+                }
+
     raw_body, prefixes, line_nos, headers, footers = _unwrap_numbered_lines(file_body)
     clean_text, _ = hygiene(raw_body)
     remember(clean_text, session_id, owner=digest)
@@ -1290,6 +1329,7 @@ def _handle_read_file_v42(
                 raw_body, ref=f"#{_sk_ref.lstrip('#')}", line_prefixes=prefixes, line_nos=line_nos,
                 min_body_lines=skel_body_lines,
                 focus_lines=focus_lines,
+                deadline=deadline,
             )
             if focus_lines and not (sk_saved > 200 and fn_count > 0):
                 # A hotspot range that spans most of the file preserves every body
@@ -1298,6 +1338,7 @@ def _handle_read_file_v42(
                 sk_body, sk_saved, fn_count = smart_skeletonize_code(
                     raw_body, ref=f"#{_sk_ref.lstrip('#')}", line_prefixes=prefixes,
                     line_nos=line_nos, min_body_lines=skel_body_lines,
+                    deadline=deadline,
                 )
             sk_kind = "file_skeleton"
             _ext = (norm_path or "").rsplit(".", 1)[-1].lower() if "." in (norm_path or "") else ""
@@ -1309,11 +1350,14 @@ def _handle_read_file_v42(
                         line_prefixes=prefixes, line_nos=line_nos,
                         min_body_lines=skel_body_lines,
                         focus_lines=focus_lines,
+                        deadline=deadline,
                     )
                     if sk_cand_saved > 200 and sk_cand_count > 0:
                         sk_body = sk_cand
                         sk_saved = sk_cand_saved
                         fn_count = sk_cand_count
+                except TimeoutError:
+                    raise
                 except Exception:
                     pass
             if not (sk_saved > 200 and fn_count > 0) and _ext in _TEXT_STRUCT_EXTS:
@@ -1508,6 +1552,28 @@ def _terminal_envelope(text: str) -> tuple[str, dict] | None:
     return obj["output"], obj
 
 
+def record_hotspots(session_id: str, text: str, exit_code: int = 0) -> None:
+    """Capture failing traceback file:line coordinates into the session hotspot buffer."""
+    try:
+        from .signals import extract_traceback_hotspots, is_important
+    except ImportError:
+        from signals import extract_traceback_hotspots, is_important  # type: ignore
+    try:
+        if not text or not isinstance(text, str):
+            return
+        if exit_code != 0 or any(is_important(ln) for ln in text.splitlines()[:50]):
+            spots = extract_traceback_hotspots(text)
+            if spots:
+                with _SEEN_LOCK:
+                    h_dict = _seen(session_id).setdefault("hotspots", {})
+                    for p, lns in spots.items():
+                        h_dict[p] = lns
+                    while len(h_dict) > 10:
+                        h_dict.pop(next(iter(h_dict)), None)
+    except Exception:
+        pass
+
+
 def compress_tool_result(
     tool_name: str,
     result: str,
@@ -1520,6 +1586,9 @@ def compress_tool_result(
     pressure: float = 0.0,
     level: str = "",
     policy_enabled: bool = True,
+    delta_enabled: bool = False,
+    delta_threshold: float = 0.65,
+    max_lines: int = 120,
 ) -> tuple[str, dict]:
     """Full v2+v4 pipeline on one tool result (scoped search + TOON + AST code skeletonizer). Never raises."""
     t0 = time.perf_counter()
@@ -1585,28 +1654,20 @@ def compress_tool_result(
                 except Exception:
                     pass
 
-            try:
-                from .signals import extract_traceback_hotspots, is_important
-                if _code != 0 or any(is_important(ln) for ln in inner_text.splitlines()[:50]):
-                    spots = extract_traceback_hotspots(inner_text)
-                    if spots:
-                        with _SEEN_LOCK:
-                            h_dict = _seen(session_id).setdefault("hotspots", {})
-                            for p, lns in spots.items():
-                                h_dict[p] = lns
-                            while len(h_dict) > 10:
-                                h_dict.pop(next(iter(h_dict)), None)
-            except Exception:
-                pass
+            record_hotspots(session_id, inner_text, _code)
 
             if env is not None and envelope is not None:
+                if has_marker_head(inner_text):
+                    return result, {"gate": "passthrough_sentinel", "reason": "sentinel", "ms": 0.0}
                 command = ""
                 if isinstance(args, dict):
-                    command = str(args.get("command") or "")
+                    command = str(args.get("command") or args.get("cmd") or "")
                 try:
                     from .core import compress_terminal
                     new_inner, inner_stats = compress_terminal(
-                        command, inner_text, min_chars=min_chars, deadline=deadline,
+                        command, inner_text, min_chars=min_chars, max_lines=max_lines,
+                        session_id=session_id, delta_enabled=delta_enabled,
+                        delta_threshold=delta_threshold, deadline=deadline,
                         level=level, pressure=pressure, exit_code=_code,
                     )
                 except Exception:
@@ -1616,7 +1677,19 @@ def compress_tool_result(
                         _json.dumps({**envelope, "output": new_inner}, ensure_ascii=False),
                         {**inner_stats, "kind": inner_stats.get("kind", "terminal_envelope")},
                     )
+                # Do not fall through to generic JSON minification when the
+                # terminal pipeline already decided passthrough or reverted.
+                return result, {
+                    **inner_stats,
+                    "before_chars": len(result),
+                    "after_chars": len(result),
+                    "saved_chars": 0,
+                    "kind": inner_stats.get("kind", "terminal_envelope"),
+                }
         lane = lanes.web_intake(tool_name, result, t0)
+        if lane is not None:
+            return lane
+        lane = lanes.web_search_fold(tool_name, result, t0)
         if lane is not None:
             return lane
         lane = lanes.skill_cache(tool_name, args, result, session_id, min_chars, t0)

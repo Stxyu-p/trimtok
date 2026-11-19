@@ -14,8 +14,10 @@ from __future__ import annotations
 import hashlib
 import json as _json
 import os
+import re
 import time
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .signals import adaptive_tool_head, has_marker_head, tok_pair as _tok_pair
 
@@ -122,6 +124,118 @@ def web_intake(tool_name: str, result: str, t0: float) -> tuple[str, dict] | Non
     return final, _stats(result, final, tb, ta, "web_intake", rh, t0)
 
 
+_TRACKING_PARAM_PREFIXES = ("utm_",)
+_TRACKING_PARAMS = frozenset({
+    "fbclid", "gclid", "dclid", "msclkid", "mc_cid", "mc_eid",
+    "ref_src", "_hsenc", "_hsmi", "igshid", "si", "yclid",
+})
+_MD_LINK_RE = re.compile(r"\[([^\[\]\n]{1,160})\]\(https?://[^)\s]+(?:\s+\"[^\"]*\")?\)")
+_WS_RUN_RE = re.compile(r"\s+")
+
+
+def _clean_search_url(url: str) -> str:
+    """Strip ad/analytics query parameters while keeping functional query args intact."""
+    try:
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https") or not parts.query:
+            return url
+        kept = [
+            (k, v)
+            for k, v in parse_qsl(parts.query, keep_blank_values=True)
+            if not any(k.lower().startswith(p) for p in _TRACKING_PARAM_PREFIXES)
+            and k.lower() not in _TRACKING_PARAMS
+        ]
+        new_query = urlencode(kept, doseq=True)
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, new_query, parts.fragment))
+    except Exception:
+        return url
+
+
+def _clean_search_snippet(text: str, tag: str, max_chars: int = 320) -> str:
+    """Collapse markdown link bloat and trim oversized search descriptions with #ref."""
+    cleaned = _MD_LINK_RE.sub(r"\1", text)
+    cleaned = _WS_RUN_RE.sub(" ", cleaned).strip()
+    if len(cleaned) <= max_chars + 40:
+        return cleaned
+    cut = cleaned[:max_chars]
+    sp = cut.rfind(" ")
+    if sp > max_chars // 2:
+        cut = cut[:sp]
+    return f"{cut}… [{len(text)}c -> trimtok_retrieve {tag}]"
+
+
+def web_search_fold(tool_name: str, result: str, t0: float) -> tuple[str, dict] | None:
+    """Compact `web_search` JSON results: clean tracking URLs, drop backend noise, trim long snippets."""
+    from .ccr import put as _ccr_put
+
+    if tool_name != "web_search" or has_marker_head(result) or not result.lstrip().startswith("{"):
+        return None
+    try:
+        data = _json.loads(result)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    hits = None
+    container = data
+    if isinstance(data.get("data"), dict) and isinstance(data["data"].get("web"), list):
+        container = data["data"]
+        hits = container["web"]
+    elif isinstance(data.get("web"), list):
+        hits = data["web"]
+    elif isinstance(data.get("results"), list):
+        hits = data["results"]
+
+    if not hits or not all(isinstance(item, dict) for item in hits):
+        return None
+
+    rh = digest(result)
+    ref = _ccr_put(result)
+    if not ref:
+        return None
+    tag = f"#{ref.lstrip('#')}"
+
+    changed = False
+    for item in hits:
+        url = item.get("url")
+        if isinstance(url, str):
+            clean_url = _clean_search_url(url)
+            if clean_url != url:
+                item["url"] = clean_url
+                changed = True
+        title = item.get("title")
+        if isinstance(title, str):
+            clean_title = _WS_RUN_RE.sub(" ", title).strip()
+            if clean_title != title:
+                item["title"] = clean_title
+                changed = True
+        for desc_key in ("description", "snippet", "content"):
+            desc = item.get(desc_key)
+            if isinstance(desc, str) and len(desc) > 200:
+                short_desc = _clean_search_snippet(desc, tag)
+                if len(short_desc) < len(desc):
+                    item[desc_key] = short_desc
+                    changed = True
+
+    if container is not data and data.get("success", True):
+        for noise_key in ("served_by", "rescued_from", "backend_error"):
+            if noise_key in container:
+                container.pop(noise_key, None)
+                changed = True
+
+    if not changed:
+        return None
+    cand = _json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    if len(cand) >= len(result):
+        return None
+    checked = _head_and_check(result, cand, ref)
+    if checked is None:
+        return None
+    final, tb, ta = checked
+    return final, _stats(result, final, tb, ta, "web_search_folded", rh, t0)
+
+
 def _session_cache(cache_name: str, key: str, result: str, session_id: str) -> tuple[dict, dict] | None:
     """Read one session cache entry; returns (cache, previous_entry) or None."""
     from .dedup import _SEEN_LOCK, _seen
@@ -149,7 +263,7 @@ def skill_cache(
         return None
     cache, prev = entry
     if prev and prev.get("digest") == rh:
-        prev_ref = prev.get("ref", rh)
+        prev_ref = str(prev.get("ref") or rh).lstrip("#")
         stub = (
             f"[tt:skill_cached name=\"{skill_name}\" #{prev_ref} ({len(result)} chars) "
             "— identical to prior skill_view in active context -> trimtok_retrieve]"
@@ -211,7 +325,7 @@ def skills_list_cache(tool_name: str, args: Any, result: str, session_id: str, t
         return None
     cache, prev = entry
     if prev and prev.get("digest") == rh:
-        prev_ref = prev.get("ref", rh)
+        prev_ref = str(prev.get("ref") or rh).lstrip("#")
         stub = (
             f"[tt:skills_list_cached category=\"{category}\" #{prev_ref} ({len(result)} chars) "
             "— identical to prior skills_list in active context -> trimtok_retrieve]"

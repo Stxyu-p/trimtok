@@ -4,6 +4,48 @@ All notable changes to trimtok are documented here.
 
 ## [Unreleased]
 
+## [5.9.8] - 2026-11-19
+
+### Fixed
+- **Deduplicated Hermes terminal double-hook (`trimtok/__init__.py`, `trimtok/dedup.py`).**
+  Hermes fires both `transform_terminal_output` and `transform_tool_result(tool_name="terminal")`
+  for the same `tool_call_id` (888 of 909 terminal runs in live telemetry). A bounded LRU
+  (`_HANDLED_TERMINAL_CALLS`) now short-circuits the second pass while moving
+  `record_hotspots()` into `_on_transform` so causal traceback hotspots stay active.
+- **Forwarded cross-turn delta settings into `compress_tool_result("terminal", ...)`**
+  (`session_id`, `delta_enabled`, `delta_threshold`, `max_lines`) and stopped incompressible
+  terminal envelopes from falling through into generic JSON/volatile minification.
+- **Fixed double `##ref` formatting** in `core.py` (`cmd_filter`, `timeout_bounded`) and
+  `lanes.py` (`skill_cache`, `skills_list_cache`).
+- **Wired `deadline` through `smart_skeletonize_code` and `ts_skeleton.skeletonize_code_full`**
+  with periodic checks every 256 AST nodes so large parses honor `guard_ms`.
+
+### Added
+- **Wide-line folder (`trimtok/core.py: _fold_wide_lines`):** folds oversized lines (>=500 chars)
+  in 5–120 line non-JSON/diff terminal outputs while preserving head/tail, `#ref`, and mid-line
+  fault signals. Live replay on 27 `reverted_gate` payloads: 0.0% -> **30.0%** saved (8/27 converted).
+- **Terminal `search` lane (`trimtok/core.py`, `trimtok/pruners.py`):** wired `group_search_hits`
+  into `_fold_pipeline` for `kind == "search"` and enabled single-file dense grep grouping (>=15 hits).
+- **Dedicated `web_search` lane (`trimtok/lanes.py: web_search_fold`):** strips tracking query
+  params (`utm_*`, `fbclid`, `gclid`, ...), drops redundant backend metadata on success, and trims
+  oversized snippets with `#ref`. Live replay on 8 `web_search` payloads: 4.9% -> **67.2%** saved.
+- **512 KB fast-path for `read_file` (`trimtok/dedup.py`):** files > 512 KB skip line-indexing and
+  AST parsing, emitting a bounded head+tail `file_large_pointer` backed by CCR (1.6 MB read drops
+  from ~2,400 ms to steady-state < 100 ms).
+- **Bounded FTS5 indexing (`trimtok/ccr.py: _fts_index_text`):** caps `chunks_fts` plaintext at
+  16 KB per chunk (8 KB head + 4 KB mid symbol/fault lines + 4 KB tail, streamed without full
+  `splitlines()` allocation) while keeping 100% lossless Zstd originals in `chunks`.
+- **ContextEngine stash preview (`trimtok/context_engine.py`):** stashed middle tool results now
+  include tool name and an 80-char first-line `Preview:` hint.
+- **`trimtok_exec` telemetry (`trimtok/__init__.py`, `trimtok/mcp_server.py`, `trimtok/report.py`):**
+  logs `hook="exec"` rows and surfaces `exec: X/Y ok` in `trimtok gain`.
+
+### Verification
+- `unittest discover -s tests`: 179/179 passing.
+- `eval/eval_real.py` + `eval/audit_honesty.py`: **74.98%** claimed == **74.98%** proven, 0 unproven chars, 0 gate failures.
+- `eval/fix_accuracy.py`: **8/8 LOCATE (100%)**, 54.4% tokens saved.
+- `eval/decision_eval.py`: **9/9 critical tokens (100%)**, 91.2% mean reduction.
+
 ## [5.9.7] - 2026-11-15
 
 ### Packaging

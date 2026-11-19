@@ -282,11 +282,14 @@ def _tool_retrieve(args: dict[str, Any]) -> dict[str, Any]:
 
 def _tool_exec(args: dict[str, Any]) -> dict[str, Any]:
     from .exec_lane import run as _exec_run
-    return _exec_run(
+    from . import _usage_exec
+    res = _exec_run(
         str(args.get("hash") or ""),
         str(args.get("code") or ""),
         timeout=float(args.get("timeout") or 10.0),
     )
+    _usage_exec(args, res)
+    return res
 
 
 def _tool_status(args: dict[str, Any]) -> dict[str, Any]:

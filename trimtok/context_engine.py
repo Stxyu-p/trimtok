@@ -96,7 +96,12 @@ class TrimtokContextEngine(ContextEngine):
                     ref = ccr.put(content)
                     if ref:
                         lines = content.count("\n") + 1
-                        stub = f"[tt:stashed tool result ({lines} lines, {len(content):,} chars) · trimtok_retrieve '{ref}']"
+                        tool_name = str(msg.get("name") or msg.get("tool_name") or "").strip()
+                        label = f"{tool_name} result" if tool_name else "tool result"
+                        preview = self._preview_line(content)
+                        stub = f"[tt:stashed {label} ({lines} lines, {len(content):,} chars) · trimtok_retrieve '{ref}']"
+                        if preview:
+                            stub += f"\nPreview: {preview}"
                         out.append({**msg, "content": stub})
                         stashed += 1
                         continue
@@ -105,6 +110,18 @@ class TrimtokContextEngine(ContextEngine):
         if stashed:
             self.compression_count += 1
         return out
+
+    @staticmethod
+    def _preview_line(content: str, max_chars: int = 80) -> str:
+        """Extract a compact first-line hint so the agent knows what #ref contains."""
+        for raw_ln in content.splitlines()[:8]:
+            s = " ".join(raw_ln.strip().split())
+            if not s or s.startswith("[tt:legend]"):
+                continue
+            if len(s) > max_chars:
+                return s[: max_chars - 3] + "..."
+            return s
+        return ""
 
     def _should_stash(self, content: Any) -> bool:
         """Only a large, already-stashed-free, fault-free tool result is worth a round trip.
