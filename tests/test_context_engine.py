@@ -453,6 +453,46 @@ class TestContextEngineUpgradedLayers(unittest.TestCase):
         handoff = next(m for m in out if m.get("_compressed_summary"))
         self.assertIn("Pre-warmed in background", handoff["content"])
 
+    def test_select_context_ccr_fts5_auto_recall_is_session_scoped_and_cache_safe(self):
+        engine = TrimtokContextEngine(protect_first_n=1, protect_last_n=1, enable_auto_recall=True)
+
+        # Put an unrelated payload into CCR from "another session"
+        other_ref = ccr.put("def other_session_secret_fn():\n    return 'unrelated'\n" * 80)
+        self.assertTrue(other_ref)
+
+        # Stash a payload belonging to THIS session via compress()
+        session_payload = "def reconcile_wallet_ledger():\n    # ledger_sync_v4\n" * 80
+        msgs = _messages(session_payload)
+        compressed = engine.compress(msgs)
+        m = re.search(r"(#c[0-9a-zA-Z]+)", compressed[3]["content"])
+        self.assertIsNotNone(m)
+        session_ref = m.group(1)
+
+        # User asks about `reconcile_wallet_ledger` -> appends [tt:recall ...] ONLY to trailing user msg
+        req = list(compressed) + [{"role": "user", "content": "Check `reconcile_wallet_ledger` and `other_session_secret_fn` please"}]
+        selected = engine.select_context(req, incoming_message=req[-1])
+        self.assertIsNotNone(selected)
+        # Prefix is untouched (same objects) -> prompt cache stays 100% intact
+        self.assertEqual(selected[:-1], req[:-1])
+        # Original req[-1] was not mutated
+        self.assertNotIn("[tt:recall", req[-1]["content"])
+        # Session ref is recalled, cross-session ref is NOT leaked
+        self.assertIn("[tt:recall", selected[-1]["content"])
+        self.assertIn(session_ref, selected[-1]["content"])
+        self.assertNotIn(other_ref, selected[-1]["content"])
+
+        # Idempotent on retry -> returns None
+        self.assertIsNone(engine.select_context(selected, incoming_message=selected[-1]))
+
+        # Mid-tool-loop (last message is tool, not user) -> returns None
+        tool_tail = list(compressed) + [{"role": "tool", "tool_call_id": "c9", "content": "ok"}]
+        self.assertIsNone(engine.select_context(tool_tail, incoming_message=req[-1]))
+
+        # Reset clears session refs
+        engine.on_session_reset()
+        fresh_req = [{"role": "system", "content": "s"}, {"role": "user", "content": "Check `reconcile_wallet_ledger`"}]
+        self.assertIsNone(engine.select_context(fresh_req, incoming_message=fresh_req[-1]))
+
 
 if __name__ == "__main__":
     unittest.main()

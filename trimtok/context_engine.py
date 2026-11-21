@@ -76,7 +76,13 @@ _MAX_PRUNED_SKILL_MARKERS = 20
 
 _REF_RE = re.compile(r"#c[0-9a-zA-Z]{2,16}")
 _PATH_RE = re.compile(r"(?:[A-Za-z]:\\|/)?[\w./\\-]+\.(?:py|ts|tsx|js|jsx|json|yaml|yml|md|toml|sql|sh|ps1|rs|go)")
+_BACKTICK_RE = re.compile(r"`([^`\n]{3,64})`")
+_IDENT_RE = re.compile(r"\b(?:[a-z]+_[a-z0-9_]{2,}|[A-Z][a-z]+[A-Z][A-Za-z0-9]*|[A-Z]{2,}_[A-Z0-9_]+)\b")
+_HTML_TAG_RE = re.compile(r"</?b>")
 _CHECKPOINT_FOOTER_RE = re.compile(r"\n*\[tt:checkpoint [^\]]+\]\s*$")
+_RECALL_MARKER = "[tt:recall"
+_MAX_RECALL_HITS = 3
+_MAX_RECALL_TERMS = 4
 _SUMMARY_INPUT_MAX_CHARS = 60_000
 _SUMMARY_LLM_TIMEOUT_S = 45.0
 _SUMMARY_LLM_COOLDOWN_S = 120.0
@@ -240,6 +246,52 @@ def _put_ccr(text: str) -> str:
         return ""
 
 
+def _search_ccr(query: str, limit: int = 5) -> list[dict[str, Any]]:
+    """Search CCR via SQLite FTS5 fail-open; return [] on any error."""
+    try:
+        from trimtok import ccr
+
+        return ccr.search(query, limit=limit) or []
+    except Exception:
+        return []
+
+
+def _extract_recall_terms(text: str, max_terms: int = _MAX_RECALL_TERMS) -> list[str]:
+    """Extract high-signal technical symbols/paths from a user query for FTS5 auto-recall."""
+    terms: list[str] = []
+
+    def _add(tok: str) -> None:
+        clean = tok.strip(" \t\r\n\"'.,;:()[]{}")
+        if len(clean) < 3 or clean.startswith("#c"):
+            return
+        low = clean.lower()
+        if any(t.lower() == low for t in terms):
+            return
+        terms.append(clean)
+
+    # 1. Explicit backticked code/identifiers (highest signal)
+    for m in _BACKTICK_RE.findall(text):
+        for piece in re.split(r"\s+", m.strip()):
+            _add(piece)
+            if len(terms) >= max_terms:
+                return terms
+
+    # 2. File paths / basenames
+    for p in _PATH_RE.findall(text):
+        base = p.replace("\\", "/").rsplit("/", 1)[-1]
+        _add(base)
+        if len(terms) >= max_terms:
+            return terms
+
+    # 3. Code identifiers (snake_case, CamelCase, UPPER_CONST)
+    for ident in _IDENT_RE.findall(text):
+        _add(ident)
+        if len(terms) >= max_terms:
+            return terms
+
+    return terms[:max_terms]
+
+
 class TrimtokContextEngine(ContextEngine):
     """Trimtok native Hermes ContextEngine with 3-layer hybrid compaction, prepare-ahead, and anti-thrash."""
 
@@ -259,6 +311,7 @@ class TrimtokContextEngine(ContextEngine):
         prepare_ahead_ratio: float = 0.80,
         enable_llm_summary: bool = True,
         enable_prepare_ahead: bool = True,
+        enable_auto_recall: bool = True,
     ) -> None:
         self.context_length = int(context_length)
         self.threshold_percent = float(threshold_percent)
@@ -278,6 +331,7 @@ class TrimtokContextEngine(ContextEngine):
         self.prepare_ahead_ratio = float(prepare_ahead_ratio)
         self.enable_llm_summary = bool(enable_llm_summary)
         self.enable_prepare_ahead = bool(enable_prepare_ahead)
+        self.enable_auto_recall = bool(enable_auto_recall)
         self.model_thresholds: dict[str, float] = {}
 
         # Runtime token & compaction state
@@ -297,12 +351,13 @@ class TrimtokContextEngine(ContextEngine):
         self._structural_no_op_msg_count: int = 0
         self._llm_summary_cooldown_until: float = 0.0
 
-        # Background prepare-ahead cache (per-instance, never shared across clones)
+        # Background prepare-ahead cache & session-scoped CCR recall refs
         self._prepare_lock = threading.Lock()
         self._prepared_fingerprint: str = ""
         self._prepared_middle_len: int = 0
         self._prepared_handoff: Optional[dict[str, Any]] = None
         self._prepare_in_flight: bool = False
+        self._session_refs: set[str] = set()
 
     @property
     def name(self) -> str:
@@ -393,6 +448,7 @@ class TrimtokContextEngine(ContextEngine):
             self._prepared_fingerprint = ""
             self._prepared_middle_len = 0
             self._prepared_handoff = None
+            self._session_refs.clear()
 
     def update_model(
         self,
@@ -422,6 +478,101 @@ class TrimtokContextEngine(ContextEngine):
                     resolved_pct = float(matches[0][1])
         self.threshold_percent = float(resolved_pct)
         self.threshold_tokens = int(self.context_length * self.threshold_percent)
+
+    # ------------------------------------------------------------------
+    # Per-Request CCR FTS5 Auto-Hinting (`select_context`, cache-safe)
+    # ------------------------------------------------------------------
+
+    def _record_session_ref(self, ref: str) -> None:
+        if ref:
+            with self._prepare_lock:
+                self._session_refs.add(ref)
+
+    def _collect_session_refs(self, request_messages: list[dict[str, Any]]) -> set[str]:
+        """Union of refs stashed by this engine and any stashed/checkpoint refs in the request."""
+        with self._prepare_lock:
+            refs = set(self._session_refs)
+        for msg in request_messages:
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content")
+            if isinstance(content, str) and ("[tt:stashed" in content or "[tt:checkpoint" in content):
+                refs.update(_REF_RE.findall(content))
+            for tc in msg.get("tool_calls") or []:
+                if isinstance(tc, dict):
+                    args_str = str((tc.get("function") or {}).get("arguments") or "")
+                    if "tt_stashed_ref" in args_str:
+                        refs.update(_REF_RE.findall(args_str))
+        return refs
+
+    def select_context(
+        self,
+        request_messages: list[dict[str, Any]],
+        *,
+        conversation_messages: Optional[list[dict[str, Any]]] = None,
+        incoming_message: Optional[dict[str, Any]] = None,
+        budget_tokens: int = 0,
+    ) -> Optional[list[dict[str, Any]]]:
+        """Inject a prompt-cache-safe 1-3 line CCR recall hint onto the trailing user turn.
+
+        Returns None (byte-identical no-op) unless:
+          1. This session has stashed/archived CCR refs,
+          2. The trailing message in `request_messages` is a plain-text user turn (never mid-tool-loop,
+             so the cached prefix before the latest user turn stays 100% intact), and
+          3. High-signal technical terms in the user turn match session-scoped CCR entries via FTS5.
+        """
+        if not self.enable_auto_recall or not request_messages:
+            return None
+
+        last_msg = request_messages[-1]
+        if not isinstance(last_msg, dict) or last_msg.get("role") != "user":
+            return None
+        user_text = last_msg.get("content")
+        if not isinstance(user_text, str) or len(user_text.strip()) < 8 or _RECALL_MARKER in user_text:
+            return None
+
+        session_refs = self._collect_session_refs(request_messages)
+        if not session_refs:
+            return None
+
+        query_source = user_text
+        if isinstance(incoming_message, dict) and isinstance(incoming_message.get("content"), str):
+            query_source = incoming_message["content"]
+        terms = _extract_recall_terms(query_source)
+        if not terms:
+            return None
+
+        already_cited = set(_REF_RE.findall(user_text))
+        # Aggregate per-term FTS5 hits (ccr.search ANDs multi-word queries, so per-term avoids 0-hit traps)
+        scores: dict[str, list[Any]] = {}
+        for term in terms:
+            for hit in _search_ccr(term, limit=4):
+                alias = str(hit.get("alias") or "")
+                if not alias or alias not in session_refs or alias in already_cited:
+                    continue
+                raw_snip = _HTML_TAG_RE.sub("", str(hit.get("snippet") or ""))
+                clean_snip = " ".join(raw_snip.split())[:80]
+                rank = float(hit.get("rank") or 0.0)
+                if alias not in scores:
+                    scores[alias] = [1, rank, clean_snip]
+                else:
+                    scores[alias][0] += 1
+                    scores[alias][1] = min(scores[alias][1], rank)
+
+        if not scores:
+            return None
+
+        ranked = sorted(scores.items(), key=lambda kv: (-kv[1][0], kv[1][1]))[:_MAX_RECALL_HITS]
+        lines = [
+            f"{_RECALL_MARKER} matching stashed context in this session — call trimtok_retrieve if needed:"
+        ]
+        for alias, (_hits, _rank, snip) in ranked:
+            lines.append(f"- {alias}: {snip}" if snip else f"- {alias}")
+        lines[-1] += "]"
+
+        out = list(request_messages)
+        out[-1] = {**last_msg, "content": user_text + "\n\n" + "\n".join(lines)}
+        return out
 
     # ------------------------------------------------------------------
     # Background Prepare-Ahead Hook (`on_turn_complete`)
@@ -757,6 +908,7 @@ class TrimtokContextEngine(ContextEngine):
         ref = _put_ccr(content)
         if not ref:
             return None
+        self._record_session_ref(ref)
         lines = content.count("\n") + 1
         tool_name = str(msg.get("name") or msg.get("tool_name") or "").strip()
         label = f"{tool_name} result" if tool_name else "tool result"
@@ -789,6 +941,7 @@ class TrimtokContextEngine(ContextEngine):
                 ):
                     ref = _put_ccr(args_str)
                     if ref:
+                        self._record_session_ref(ref)
                         fn_name = str(fn.get("name") or "tool")
                         stub_args = json.dumps(
                             {
@@ -821,6 +974,7 @@ class TrimtokContextEngine(ContextEngine):
         ref = _put_ccr(content)
         if not ref:
             return None
+        self._record_session_ref(ref)
         lines = content.count("\n") + 1
         head = content[:360].rstrip()
         tail = content[-180:].lstrip()
@@ -923,6 +1077,7 @@ class TrimtokContextEngine(ContextEngine):
 
         serialized_middle = self._serialize_turns(middle)
         archive_ref = _put_ccr(serialized_middle)
+        self._record_session_ref(archive_ref)
 
         prior_summary = prior_summaries[-1] if prior_summaries else ""
         turns_to_summarize = new_turns if prior_summary else middle
@@ -1193,6 +1348,7 @@ class TrimtokContextEngine(ContextEngine):
             prepare_ahead_ratio=self.prepare_ahead_ratio,
             enable_llm_summary=self.enable_llm_summary,
             enable_prepare_ahead=self.enable_prepare_ahead,
+            enable_auto_recall=self.enable_auto_recall,
         )
         cloned._config_threshold_percent = self._config_threshold_percent
         cloned.model_thresholds = dict(self.model_thresholds)
@@ -1201,4 +1357,6 @@ class TrimtokContextEngine(ContextEngine):
         cloned.last_completion_tokens = self.last_completion_tokens
         cloned.last_total_tokens = self.last_total_tokens
         cloned.last_real_prompt_tokens = self.last_real_prompt_tokens
+        with self._prepare_lock:
+            cloned._session_refs = set(self._session_refs)
         return cloned
