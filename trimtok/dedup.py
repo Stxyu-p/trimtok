@@ -38,7 +38,7 @@ try:
     from .toon_codec import fold_json_to_toon
     from .ccr import put as _ccr_put
     from .strategies.lossless_min import minify_lossless
-    from .strategies.tiered_shave import shave_tiered
+    from . import lanes
 except ImportError:
     from signals import (
         KEEP_PREFIX as _KEEP_PREFIX,
@@ -66,8 +66,8 @@ except ImportError:
     from toon_codec import fold_json_to_toon
     from ccr import put as _ccr_put
     from strategies.lossless_min import minify_lossless
+    import lanes  # type: ignore
 
-from . import lanes
 _WEB_TOOLS = lanes.WEB_TOOLS
 
 
@@ -711,6 +711,7 @@ _MAX_FILE_CACHE = 64                    # per-session cached file bodies (memory
 _MUTATING_TOOLS = frozenset({
     "patch", "edit_file", "write_file", "replace_in_file",
     "multi_edit", "apply_patch", "create_file", "str_replace_editor",
+    "skill_manage", "write_to_file", "replace_file_content",
 })
 # Hermes exposes a second read tool with the same payload shape.
 _READ_FILE_TOOLS = frozenset({
@@ -1243,20 +1244,21 @@ def _handle_read_file_v42(
                     prev_raw, raw_body, digest, prev_ref,
                     cur_prefixes=prefixes, cur_line_nos=line_nos,
                 )
-                d_saved = len(result) - len(delta_view)
+                d_packed = _pack(delta_view)
+                d_saved = len(result) - len(d_packed)
                 file_cache[cache_key] = {
                     "digest": digest, "text": result, "raw_body": raw_body,
                     "reads": 1, "stub_hits": 0, "expired": False, "skeleton_only": False,
                 }
                 if d_saved > 120:
-                    tb, ta = _tok_pair(result, delta_view)
+                    tb, ta = _tok_pair(result, d_packed)
                     if ta < tb:
-                        return delta_view, {
+                        return d_packed, {
                             "gate": "ok",
                             "kind": "file_delta",
                             "digest": digest,
                             "before_chars": len(result),
-                            "after_chars": len(delta_view),
+                            "after_chars": len(d_packed),
                             "saved_chars": d_saved,
                             "est_tokens_before": tb,
                             "est_tokens_after": ta,
@@ -1375,7 +1377,7 @@ def _handle_read_file_v42(
                 head = adaptive_tool_head(max(actual_saved, sk_saved), digest, len(result),
                                           hidden_lines=sk_lines_hidden, hidden_kind="folded",
                                           is_lossless_only=False)
-                candidate = f"{head}\n{rebuilt}" if head else rebuilt
+                candidate = _pack(f"{head}\n{rebuilt}" if head else rebuilt)
                 tb, ta = _tok_pair(result, candidate)
                 if len(candidate) < len(result) and ta < tb:
                     file_cache[cache_key]["skeleton_only"] = True
@@ -1433,10 +1435,13 @@ def _handle_read_file_v42(
                         len(result) - len(_jout), _jref.lstrip("#"), len(result),
                         is_lossless_only=False,
                     )
-                    _jcand_full = f"{_jhead}\n{_jout}" if _jhead else _jout
+                    _jcand_full = _pack(f"{_jhead}\n{_jout}" if _jhead else _jout)
                     _tb, _ta = _tok_pair(result, _jcand_full)
                     if len(_jcand_full) < len(result) and _ta < _tb:
-                        file_cache[cache_key]["skeleton_only"] = True
+                        with _SEEN_LOCK:
+                            fc_j = _seen(session_id).setdefault("files", {})
+                            if cache_key in fc_j:
+                                fc_j[cache_key]["skeleton_only"] = True
                         return _jcand_full, {
                             "gate": "ok",
                             "kind": _jkind,
@@ -1597,6 +1602,19 @@ def compress_tool_result(
             return result, {"gate": "passthrough_non_str", "ms": 0.0}
         if has_marker_head(result):
             return result, {"gate": "passthrough_sentinel", "reason": "sentinel", "ms": 0.0}
+        # Keep the body: invalidate/mark mutated files BEFORE policy short-circuit
+        # so write/edit calls always reset cached stub state.
+        if tool_name in _MUTATING_TOOLS:
+            try:
+                mut_path, _, _ = _extract_file_args(args)
+                if mut_path:
+                    with _SEEN_LOCK:
+                        f_entry = _seen(session_id or "default").setdefault("files", {}).get(mut_path)
+                        if isinstance(f_entry, dict):
+                            f_entry["mutated"] = True
+                            f_entry["stub_hits"] = 0
+            except Exception:
+                pass
         # Secrets and edit payloads stay byte-exact at any size.
         if policy_enabled:
             try:
@@ -1617,18 +1635,6 @@ def compress_tool_result(
                 level = level or _pol.level
                 if not _pol.toon_ok:
                     toon_enabled = False
-            except Exception:
-                pass
-        # Keep the body: the next read diffs against it (delta lane).
-        if tool_name in _MUTATING_TOOLS:
-            try:
-                mut_path, _, _ = _extract_file_args(args)
-                if mut_path:
-                    with _SEEN_LOCK:
-                        f_entry = _seen(session_id or "default").setdefault("files", {}).get(mut_path)
-                        if isinstance(f_entry, dict):
-                            f_entry["mutated"] = True
-                            f_entry["stub_hits"] = 0
             except Exception:
                 pass
         if tool_name in _READ_FILE_TOOLS:
@@ -1673,10 +1679,18 @@ def compress_tool_result(
                 except Exception:
                     new_inner, inner_stats = inner_text, {"gate": "error"}
                 if inner_stats.get("gate") == "ok" and len(new_inner) < len(inner_text):
-                    return (
-                        _json.dumps({**envelope, "output": new_inner}, ensure_ascii=False),
-                        {**inner_stats, "kind": inner_stats.get("kind", "terminal_envelope")},
-                    )
+                    packed = _json.dumps({**envelope, "output": new_inner}, ensure_ascii=False)
+                    if len(packed) < len(result):
+                        return (
+                            packed,
+                            {
+                                **inner_stats,
+                                "before_chars": len(result),
+                                "after_chars": len(packed),
+                                "saved_chars": len(result) - len(packed),
+                                "kind": inner_stats.get("kind", "terminal_envelope"),
+                            },
+                        )
                 # Do not fall through to generic JSON minification when the
                 # terminal pipeline already decided passthrough or reverted.
                 return result, {
@@ -1845,7 +1859,7 @@ def compress_tool_result(
             failed_hashes.add(_rh)
             return result, {
                 "gate": "reverted_gate", "before_chars": len(result),
-                "reason": "no_gain_fold",
+                "digest": _rh, "reason": "no_gain_fold",
                 "ms": (time.perf_counter() - t0) * 1000,
             }
         digest = _rh
@@ -1879,7 +1893,7 @@ def compress_tool_result(
                 failed_hashes.add(_rh)
                 return result, {
                     "gate": "reverted_gate", "before_chars": len(result),
-                    "reason": "header_cost",
+                    "digest": _rh, "reason": "header_cost",
                     "ms": (time.perf_counter() - t0) * 1000,
                 }
         _stage_saved = {

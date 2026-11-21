@@ -31,13 +31,32 @@ _SECURITY_PATH_RE = re.compile(
     r"(?:[/\\]|\.\w+$)",
     re.I,
 )
+# Agent/skill instruction documents define workflows and constraints; folding
+# prose in them into `[tt:prose ...]` stubs risks stub write-back corruption.
+_INSTRUCTION_PATH_RE = re.compile(
+    r"(?:^|[/\\])(?:SKILL|AGENTS|CLAUDE|GEMINI|SOUL|CURSORRULES)\.md$"
+    r"|(?:^|[/\\])skills[/\\][^/\\]+(?:[/\\][^/\\]+)?[/\\]SKILL\.md$",
+    re.I,
+)
 # Source files are safe to skeletonize even under security/, because the AST
 # lane keeps every signature and leaves a resolvable ref. Data files are not.
 _SOURCE_EXT = frozenset(
     ".py .pyi .js .jsx .ts .tsx .go .rs .java .kt .c .h .cpp .cc .rb .php .cs .swift .scala".split()
 )
 # A payload that *is* an edit instruction: folding it would corrupt the patch.
-_EDIT_TOOLS = frozenset({"patch", "edit_file", "write_file", "replace_in_file", "apply_patch"})
+_EDIT_TOOLS = frozenset({
+    "patch",
+    "edit_file",
+    "write_file",
+    "replace_in_file",
+    "apply_patch",
+    "skill_manage",
+    "multi_edit",
+    "create_file",
+    "str_replace_editor",
+    "write_to_file",
+    "replace_file_content",
+})
 _DIFF_HEAD_RE = re.compile(r"^(?:diff --git |--- a/|\+\+\+ b/|@@ -\d)", re.M)
 
 # Inline secret shapes. Deliberately narrow: a false positive only costs one
@@ -110,8 +129,11 @@ def classify(
     if p:
         if _SECRET_PATH_RE.search(p):
             return Policy(verbatim=True, reason="secret_path", level="off")
+        if _INSTRUCTION_PATH_RE.search(p):
+            return Policy(verbatim=True, reason="instruction_file", level="off")
         if _SECURITY_PATH_RE.search(p):
-            ext = ("." + p.rsplit(".", 1)[-1].lower()) if "." in p.rsplit("/", 1)[-1] else ""
+            tail_name = p.replace("\\", "/").rsplit("/", 1)[-1]
+            ext = ("." + tail_name.rsplit(".", 1)[-1].lower()) if "." in tail_name else ""
             if ext not in _SOURCE_EXT:
                 return Policy(verbatim=True, reason="security_path", level="off")
 

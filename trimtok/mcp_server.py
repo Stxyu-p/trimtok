@@ -5,7 +5,8 @@ Speaks newline-delimited JSON-RPC 2.0 on stdin/stdout. Tools:
   trimtok_compress_terminal — compress terminal/shell output (windowing, diff, traceback, delta)
   trimtok_compress_tool     — compress tool/search/JSON output (TOON v2, scoped search, span fold, AST code skeleton)
   trimtok_retrieve          — retrieve original content or targeted sections (errors/diff/summary/tail)
-  trimtok_status            — inspect token savings, CCR cache stats, or usage summary
+  trimtok_exec              — execute bounded Python over a stored CCR payload without loading it into context
+  trimtok_status            — inspect token savings, usage, doctor diagnostics, gain/discover, or bounded purge
 """
 
 from __future__ import annotations
@@ -26,15 +27,18 @@ except Exception:
 try:
     from . import (
         RETRIEVE_SCHEMA, _audit, _handle_retrieve, _handle_ts_command,
-        _storage_failure_stats, _usage, ccr,
+        _storage_failure_stats, _usage, _usage_exec, _parse_ref, ccr, report,
     )
     from .core import VERSION, compress_terminal
     from .dedup import compress_tool_result
+    from .signals import Deadline
 except ImportError:
     import ccr
+    import report  # type: ignore
     from core import VERSION, compress_terminal
     from dedup import compress_tool_result
-    from __init__ import RETRIEVE_SCHEMA, _audit, _handle_retrieve, _handle_ts_command, _storage_failure_stats, _usage
+    from signals import Deadline  # type: ignore
+    from __init__ import RETRIEVE_SCHEMA, _audit, _handle_retrieve, _handle_ts_command, _storage_failure_stats, _usage, _usage_exec, _parse_ref
 
 SERVER_INFO = {"name": "trimtok", "version": VERSION}
 FALLBACK_PROTOCOL = "2024-11-05"
@@ -125,15 +129,31 @@ TOOLS = [
     },
     {
         "name": "trimtok_status",
-        "description": "Inspect Trimtok compression stats, CCR cache size, or purge expired entries.",
+        "description": "Inspect Trimtok compression stats, usage, doctor health checks, gain/discover reports, or bounded CCR purge.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["status", "usage", "purge"],
+                    "enum": ["status", "usage", "doctor", "gain", "discover", "purge"],
                     "description": "Action to run (default: status)",
-                }
+                },
+                "days": {
+                    "type": "integer",
+                    "description": "For action='gain': restrict report to last N days (0 = all)",
+                },
+                "older_than_hours": {
+                    "type": "number",
+                    "description": "For action='purge': delete entries older than N hours (0 = all unless max_mb set)",
+                },
+                "max_mb": {
+                    "type": "number",
+                    "description": "For action='purge': evict oldest unpinned entries until store <= N MB",
+                },
+                "scan_path": {
+                    "type": "string",
+                    "description": "For action='doctor': optional directory/file path to scan for persisted stubs",
+                },
             },
             "additionalProperties": False,
         },
@@ -165,18 +185,24 @@ def _usage_row(hook: str, name: str, stats: dict[str, Any]) -> dict[str, Any]:
     before = int(stats.get("before_chars") or 0)
     after_value = stats.get("after_chars")
     after = int(after_value) if stats.get("gate") == "ok" and after_value is not None else before
-    return {
+    row: dict[str, Any] = {
         "hook": hook,
         "surface": "mcp",
         key: name,
+        "kind": stats.get("kind"),
         "shape": stats.get("kind") or ("mixed" if hook == "terminal" else "tool"),
         "gate": stats.get("gate"),
         "before": before,
         "after": after,
         "saved": before - after,
+        "hash": str(stats.get("digest") or ""),
+        "reason": stats.get("reason"),
+        "toon_saved": int(stats.get("toon_saved") or 0),
+        "toon_used": bool(stats.get("toon_used", False)),
         "intra_template_saved": int(stats.get("intra_template_saved") or 0),
         "ms": round(float(stats.get("ms", 0.0)), 2),
     }
+    return row
 
 
 def _tool_compress_terminal(args: dict[str, Any]) -> dict[str, Any]:
@@ -200,17 +226,25 @@ def _tool_compress_terminal(args: dict[str, Any]) -> dict[str, Any]:
         min_chars=min_chars,
         session_id=session_id,
         delta_enabled=delta_enabled,
+        deadline=Deadline(200.0),
     )
     ref = ""
     if stats.get("gate") == "ok":
-        ref = ccr.put(output)
-        if ref and stats.get("digest"):
-            compressed = compressed.replace(f"#{stats['digest']}", ref)
-        elif not ref and not stats.get("lossless_tier0"):
-            # The store refused the write, so the marker would resolve to
-            # nothing: ship the original text instead.
-            compressed = output
-        _audit({"hook": "mcp_terminal", "cmd": command[:120], **stats})
+        if stats.get("lossless_tier0"):
+            _audit({"hook": "mcp_terminal", "cmd": command[:120], **stats})
+        else:
+            try:
+                ref = ccr.put(output)
+            except Exception:
+                ref = ""
+            if ref and stats.get("digest"):
+                compressed = compressed.replace(f"#{stats['digest']}", ref)
+                _audit({"hook": "mcp_terminal", "cmd": command[:120], **stats, "hash": ref})
+            elif not ref:
+                compressed = output
+                stats = _storage_failure_stats(stats, output)
+            else:
+                _audit({"hook": "mcp_terminal", "cmd": command[:120], **stats})
     _usage(_usage_row("terminal", command[:120], stats))
     resp: dict[str, Any] = {
         "compressed": compressed,
@@ -247,20 +281,25 @@ def _tool_compress_tool(args: dict[str, Any]) -> dict[str, Any]:
         session_id=session_id,
         min_chars=min_chars,
         toon_enabled=toon_enabled,
+        deadline=Deadline(200.0),
     )
     ref = ""
     if stats.get("gate") == "ok":
-        try:
-            ref = ccr.put(result)
-        except Exception:
-            ref = ""
-        if ref and stats.get("digest"):
-            compressed = compressed.replace(f"#{stats['digest']}", ref)
-        elif not ref and not stats.get("lossless_tier0"):
-            compressed = result
-            stats = _storage_failure_stats(stats, result)
-        else:
+        if stats.get("lossless_tier0"):
             _audit({"hook": "mcp_tool", "tool": tool_name[:120], **stats})
+        else:
+            try:
+                ref = ccr.put(result)
+            except Exception:
+                ref = ""
+            if ref and stats.get("digest"):
+                compressed = compressed.replace(f"#{stats['digest']}", ref)
+                _audit({"hook": "mcp_tool", "tool": tool_name[:120], **stats, "hash": ref})
+            elif not ref:
+                compressed = result
+                stats = _storage_failure_stats(stats, result)
+            else:
+                _audit({"hook": "mcp_tool", "tool": tool_name[:120], **stats})
     _usage(_usage_row("tool", tool_name[:120], stats))
     resp: dict[str, Any] = {
         "compressed": compressed,
@@ -282,11 +321,18 @@ def _tool_retrieve(args: dict[str, Any]) -> dict[str, Any]:
 
 def _tool_exec(args: dict[str, Any]) -> dict[str, Any]:
     from .exec_lane import run as _exec_run
-    from . import _usage_exec
+    ref = _parse_ref(args.get("hash"))
+    if not ref:
+        return {"ok": False, "error": "hash is required (e.g. '#c1')", "output": "hash is required", "exit_code": 2}
+    try:
+        raw_t = float(args.get("timeout") if args.get("timeout") is not None else 10.0)
+    except (TypeError, ValueError):
+        raw_t = 10.0
+    timeout = max(0.1, min(30.0, raw_t))
     res = _exec_run(
-        str(args.get("hash") or ""),
+        ref,
         str(args.get("code") or ""),
-        timeout=float(args.get("timeout") or 10.0),
+        timeout=timeout,
     )
     _usage_exec(args, res)
     return res
@@ -294,8 +340,47 @@ def _tool_exec(args: dict[str, Any]) -> dict[str, Any]:
 
 def _tool_status(args: dict[str, Any]) -> dict[str, Any]:
     action = str(args.get("action") or "status").strip().lower()
-    if action not in ("status", "usage", "purge"):
+    if action not in ("status", "usage", "doctor", "gain", "discover", "purge"):
         action = "status"
+    if action == "doctor":
+        scan_path = str(args.get("scan_path") or "").strip()
+        scan_list = [scan_path] if scan_path else None
+        diag = report.run_doctor(scan_paths=scan_list)
+        return {"version": VERSION, "action": "doctor", **diag}
+    if action == "gain":
+        try:
+            days = max(0, int(args.get("days") or 0))
+        except (TypeError, ValueError):
+            days = 0
+        text = _handle_ts_command(f"gain {days}" if days else "gain")
+        return {"version": VERSION, "action": "gain", "summary": text, "ccr": ccr.stats()}
+    if action == "purge":
+        try:
+            hours = max(0.0, float(args.get("older_than_hours") or 0.0))
+        except (TypeError, ValueError):
+            hours = 0.0
+        try:
+            max_mb = max(0.0, float(args.get("max_mb") or 0.0))
+        except (TypeError, ValueError):
+            max_mb = 0.0
+        before = ccr.stats()
+        purged = 0
+        evicted = 0
+        if hours > 0:
+            purged = ccr.purge(before_seconds=hours * 3600.0)
+        elif max_mb <= 0:
+            purged = ccr.purge()
+        if max_mb > 0:
+            evicted = ccr.evict_to_size(int(max_mb * 1024 * 1024))
+        after = ccr.stats()
+        return {
+            "version": VERSION,
+            "action": "purge",
+            "purged": purged,
+            "evicted": evicted,
+            "summary": f"trimtok: purged {purged}, evicted {evicted} ({before.get('entries', 0)} -> {after.get('entries', 0)} entries).",
+            "ccr": after,
+        }
     text = _handle_ts_command(action)
     ccr_info = ccr.stats()
     return {
@@ -345,9 +430,8 @@ def handle(request: dict[str, Any]) -> dict[str, Any]:
             "content": [
                 {"type": "text", "text": json.dumps(result, ensure_ascii=False)}
             ],
-            # A handler that returns {"error": ...} did not succeed; the agent
-            # must be able to tell that the context it asked for is missing.
-            "isError": isinstance(result, dict) and "error" in result,
+            # A handler that returns {"error": ...} or {"ok": False} did not succeed.
+            "isError": isinstance(result, dict) and ("error" in result or result.get("ok") is False),
         }
     raise MethodNotFound(str(method))
 

@@ -14,6 +14,7 @@ read back into the prompt.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -96,8 +97,4 @@ def run(
     except Exception as exc:  # noqa: BLE001 - a tool must answer, not raise
         return {"ok": False, "output": f"{type(exc).__name__}: {exc}", "exit_code": 1, "ms": 0.0}
     finally:
-        try:
-            os.remove(path)
-            os.rmdir(tmpdir)
-        except OSError:
-            pass
+        shutil.rmtree(tmpdir, ignore_errors=True)

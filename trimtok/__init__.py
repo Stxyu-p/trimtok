@@ -116,6 +116,19 @@ def _usage_path() -> Path:
     return default_dir() / "usage.jsonl"
 
 
+def _rotate_replace(path: Path, backup: Path) -> None:
+    """Atomically rotate `path` to `backup` with Windows file-watcher retry."""
+    for attempt in range(5):
+        try:
+            os.replace(path, backup)
+            return
+        except PermissionError:
+            if attempt == 4:
+                path.write_text("", encoding="utf-8")
+                return
+            time.sleep(0.02 * (2 ** attempt))
+
+
 def _usage(entry: dict, ctx: Any = None) -> None:
     if ctx is not None and not _bool_cfg(ctx, "usage_enabled", True):
         return
@@ -136,9 +149,9 @@ def _usage(entry: dict, ctx: Any = None) -> None:
             if backup.exists() and backup.stat().st_size > _MAX_USAGE_BYTES:
                 backup.unlink(missing_ok=True)
             if path.exists() and path.stat().st_size > _MAX_USAGE_BYTES:
-                path.write_text(json.dumps({"event": "usage_history_truncated"}) + "\n", encoding="utf-8")
+                _rotate_replace(path, backup)
             if path.exists() and path.stat().st_size + len(line.encode("utf-8")) > _MAX_USAGE_BYTES:
-                os.replace(path, backup)
+                _rotate_replace(path, backup)
             with path.open("a", encoding="utf-8") as f:
                 f.write(line)
     except Exception as exc:
@@ -303,9 +316,9 @@ def _audit(entry: dict, ctx: Any = None) -> None:
             if backup.exists() and backup.stat().st_size > _MAX_AUDIT_BYTES:
                 backup.unlink(missing_ok=True)
             if path.exists() and path.stat().st_size > _MAX_AUDIT_BYTES:
-                path.write_text(json.dumps({"event": "audit_history_truncated"}) + "\n", encoding="utf-8")
+                _rotate_replace(path, backup)
             if path.exists() and path.stat().st_size + len(line.encode("utf-8")) > _MAX_AUDIT_BYTES:
-                os.replace(path, backup)
+                _rotate_replace(path, backup)
             with path.open("a", encoding="utf-8") as f:
                 f.write(line)
     except Exception as exc:
@@ -618,6 +631,31 @@ def _consume_terminal_call(call_id: Any) -> bool:
         return (time.monotonic() - ts) < 60.0
 
 
+def _on_pre_tool_call(
+    tool_name: Any = None,
+    args: Any = None,
+    **kw: Any,
+) -> dict[str, str] | None:
+    """Block mutating tool calls that attempt to persist compressed Trimtok stubs."""
+    ctx = getattr(_on_pre_tool_call, "_ctx", None)
+    if ctx is not None and (not _bool_cfg(ctx, "enabled", True) or _bool_cfg(ctx, "allow_stub_write", False)):
+        return None
+    effective_args = args if args is not None else (
+        kw.get("tool_args") or kw.get("arguments") or kw.get("input") or kw
+    )
+    try:
+        from .guard import check_write_args
+    except ImportError:
+        from guard import check_write_args  # type: ignore
+    try:
+        hit = check_write_args(str(tool_name or ""), effective_args)
+        if hit:
+            return {"action": "block", "message": hit["message"]}
+    except Exception:
+        pass
+    return None
+
+
 def _on_transform(
     command: Any = None,
     output: Any = None,
@@ -630,6 +668,7 @@ def _on_transform(
     if not isinstance(output, str):
         return None
     if _excluded_command(command, ctx):
+        _mark_terminal_call(kw.get("tool_call_id"))
         return None
     sid = str(kw.get("session_id") or kw.get("task_id") or "")
     exit_code = _safe_int(returncode, 0)
@@ -647,6 +686,7 @@ def _on_transform(
         deadline=Deadline(_float_cfg(ctx, "guard_ms", 200.0, 1.0, 1000.0)),
         pressure=_context_pressure(ctx, kw),
         exit_code=exit_code,
+        policy_enabled=_bool_cfg(ctx, "policy_enabled", True),
     )
     out = _finalize(output, new_output, stats, ctx, {
         "tool": "terminal",
@@ -742,6 +782,7 @@ def _on_tool_result(
         session_id=sid,
         min_chars=_int_cfg(ctx, "min_chars", 2048, 0, 10_000_000),
         toon_enabled=_toon_allowed(ctx),
+        policy_enabled=_bool_cfg(ctx, "policy_enabled", True),
         deadline=Deadline(_float_cfg(ctx, "guard_ms", 200.0, 1.0, 1000.0)),
         pressure=_context_pressure(ctx, kw),
         delta_enabled=_bool_cfg(ctx, "delta_enabled", True),
@@ -873,6 +914,8 @@ def _retrieve_by_query(args: dict, query: str, ttl_hours: int) -> str:
         return _err("FTS5 search is unavailable in this SQLite build; use hash retrieval instead.")
     limit = max(1, min(50, _safe_int((args or {}).get("limit"), 5)))
     hits = ccr.search(query, limit=limit, ttl_hours=ttl_hours)
+    ctx = getattr(_handle_retrieve, "_ctx", None)
+    _usage_retrieve(args, hit=bool(hits), ctx=ctx, mode="query", matches=len(hits))
     return _ok({"hits": hits, "count": len(hits), "query": query})
 
 
@@ -1092,7 +1135,11 @@ def _usage_summary() -> str:
 
 
 def _handle_ts_command(raw_args: str) -> str:
-    arg = (raw_args or "").strip().lower()
+    arg_raw = (raw_args or "").strip()
+    head, _, rest = arg_raw.partition(" ")
+    verb = head.lower()
+    arg_rest = rest.strip()
+    arg = f"{verb} {arg_rest}".strip() if verb in ("gain", "recall", "retrieve") else arg_raw.lower()
     if arg in ("", "status"):
         try:
             path = _audit_path()
@@ -1102,16 +1149,31 @@ def _handle_ts_command(raw_args: str) -> str:
                 for audit_file in (backup, path):
                     if audit_file.exists():
                         lines.extend(audit_file.read_text(encoding="utf-8").splitlines())
-            saved = sum((json.loads(ln).get("saved_chars") or 0) for ln in lines if ln.strip().startswith("{"))
+            saved = 0
+            transforms = 0
+            for ln in lines:
+                s = ln.strip()
+                if not s.startswith("{"):
+                    continue
+                try:
+                    obj = json.loads(s)
+                except Exception:
+                    continue
+                if not isinstance(obj, dict) or "event" in obj or obj.get("tool") == "mask":
+                    continue
+                transforms += 1
+                saved += int(obj.get("saved_chars") or 0)
             c_stat = ccr_stats()
             return (
-                f"trimtok: {len(lines)} transforms logged (recent window), ~{saved:,} chars saved.\n"
+                f"trimtok: {transforms} transforms logged (recent window), ~{saved:,} chars saved.\n"
                 f"CCR Cache: {c_stat.get('entries', 0)} entries (~{c_stat.get('bytes', 0) // 1024} KB)."
             )
         except Exception:
             return "trimtok: status unavailable."
     if arg == "stats":
         return _handle_ts_command("status")
+    if arg == "doctor":
+        return json.dumps(report.run_doctor(), indent=2, ensure_ascii=False)
     if arg == "usage":
         return _usage_summary()
     if arg.startswith("gain"):
@@ -1128,8 +1190,8 @@ def _handle_ts_command(raw_args: str) -> str:
     if arg.startswith("recall"):
         h = arg.partition(" ")[2].strip()
         parts = h.split()
-        if len(parts) >= 2 and parts[1] in ("errors", "diff", "summary", "tail"):
-            return _handle_retrieve({"hash": parts[0], "section": parts[1]})
+        if len(parts) >= 2 and parts[1].lower() in ("errors", "diff", "summary", "tail"):
+            return _handle_retrieve({"hash": parts[0], "section": parts[1].lower()})
         return _handle_retrieve({"hash": parts[0] if parts else ""})
     if arg == "purge":
         purged = ccr_purge()
@@ -1137,8 +1199,8 @@ def _handle_ts_command(raw_args: str) -> str:
     if arg.startswith("retrieve"):
         h = arg.partition(" ")[2].strip()
         parts = h.split()
-        if len(parts) >= 2 and parts[1] in ("errors", "diff", "summary", "tail"):
-            return _handle_retrieve({"hash": parts[0], "section": parts[1]})
+        if len(parts) >= 2 and parts[1].lower() in ("errors", "diff", "summary", "tail"):
+            return _handle_retrieve({"hash": parts[0], "section": parts[1].lower()})
         return _handle_retrieve({"hash": parts[0] if parts else ""})
     return "Usage: /trimtok [status|stats|usage|gain|discover|recall|purge|retrieve <hash> [section]]"
 
@@ -1199,12 +1261,19 @@ def _project_root(start: Path | None = None) -> Path | None:
 
 
 def _pre_llm_call(session_id: str = "", conversation_history: Any = None, **_: Any) -> dict[str, str] | None:
+    ctx = getattr(_pre_llm_call, "_ctx", None)
+    if ctx is not None and not _bool_cfg(ctx, "enabled", True):
+        return None
     if os.environ.get("TRIMTOK_MAP", "1") == "0":
         return None
     for message in reversed(conversation_history or []):
         if not isinstance(message, dict):
             continue
-        api_content = message.get("api_content")
+        for _fld in ("api_content", "content"):
+            _txt = message.get(_fld)
+            if isinstance(_txt, str) and "Codebase map (" in _txt:
+                return None
+        api_content = None
         if isinstance(api_content, str) and "Codebase map (" in api_content:
             return None
     try:
@@ -1224,12 +1293,15 @@ def _pre_llm_call(session_id: str = "", conversation_history: Any = None, **_: A
 
 
 def register(ctx: Any) -> None:
+    _on_pre_tool_call._ctx = ctx  # type: ignore[attr-defined]
+    _pre_llm_call._ctx = ctx  # type: ignore[attr-defined]
     _on_transform._ctx = ctx  # type: ignore[attr-defined]
     _on_tool_result._ctx = ctx  # type: ignore[attr-defined]
     _on_post_llm._ctx = ctx  # type: ignore[attr-defined]
     _handle_retrieve._ctx = ctx  # type: ignore[attr-defined]
     _handle_exec._ctx = ctx  # type: ignore[attr-defined]
     _handle_ts_command._ctx = ctx  # type: ignore[attr-defined]
+    ctx.register_hook("pre_tool_call", _on_pre_tool_call)
     ctx.register_hook("transform_terminal_output", _on_transform)
     ctx.register_hook("transform_tool_result", _on_tool_result)
     ctx.register_hook("post_llm_call", _on_post_llm)

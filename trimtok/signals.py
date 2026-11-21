@@ -260,6 +260,21 @@ def has_marker_head(text: str) -> bool:
     head = text.lstrip()[:200].split("\n", 1)[0]
     return bool(SENTINEL_RE.search(head))
 
+
+def has_persisted_stubs(text: str) -> bool:
+    """True when text contains concrete persisted trimtok stubs anywhere."""
+    try:
+        from .guard import has_persisted_stubs as _guard_has_stubs
+        return _guard_has_stubs(text)
+    except ImportError:
+        try:
+            from guard import has_persisted_stubs as _guard_has_stubs  # type: ignore
+            return _guard_has_stubs(text)
+        except Exception:
+            return False
+    except Exception:
+        return False
+
 SLOT_RE = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
     r"|<TAG>|<UUID>|<SESS>|<TS>|\b\d{1,2}:\d{2}:\d{2}\b"

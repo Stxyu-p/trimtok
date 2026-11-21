@@ -4,6 +4,7 @@ entry_point: __init__.py
 author: "P Choke & MIKA"
 provides_hooks:
   - pre_llm_call
+  - pre_tool_call
   - transform_terminal_output
   - transform_tool_result
   - post_llm_call
@@ -101,3 +102,7 @@ config_schema:
     type: int
     default: 24
     description: Hours before cached original files expire.
+  allow_stub_write:
+    type: bool
+    default: false
+    description: Allow mutating tool calls containing [tt:...] stub markers (default false blocks stub write-back corruption).

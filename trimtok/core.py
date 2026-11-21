@@ -453,12 +453,14 @@ def _command_lanes(command: str, output: str, exit_code: int, t0: float) -> tupl
     if ta >= tb:
         return None
     _ref = _ccr_put(output)
-    ref_clean = _ref.lstrip("#") if _ref else ""
-    ref_tag = f" #{ref_clean}" if ref_clean else ""
+    if not _ref:
+        return None
+    ref_clean = _ref.lstrip("#")
+    ref_tag = f" #{ref_clean}"
     return f"{filtered}{ref_tag}", {
         "gate": "ok", "kind": "cmd_filter", "digest": ref_clean,
-        "before_chars": len(output), "after_chars": len(filtered),
-        "saved_chars": len(output) - len(filtered),
+        "before_chars": len(output), "after_chars": len(filtered) + len(ref_tag),
+        "saved_chars": len(output) - (len(filtered) + len(ref_tag)),
         "est_tokens_before": tb, "est_tokens_after": ta,
         "hidden_lines": output.count("\n"), "dropped_lines": 0,
         "ms": (time.perf_counter() - t0) * 1000,
@@ -820,7 +822,7 @@ def compress_terminal(
             # Partial output keeps the saving; the #ref restores the rest.
             if not new_output:
                 rev_st = {
-                    "gate": "reverted_quality", "kind": kind,
+                    "gate": "reverted_quality", "kind": kind, "digest": digest,
                     "before_chars": len(output), "after_chars": len(output),
                     "saved_chars": 0, "missing_errors": unrecovered_faults,
                     "ms": (time.perf_counter() - t0) * 1000,
@@ -850,6 +852,7 @@ def compress_terminal(
             if anchor_score < 0.70:
                 rev_st = {
                     "gate": "reverted_gate", "kind": kind, "reason": "low_anchor_preservation",
+                    "digest": digest,
                     "before_chars": len(output), "after_chars": len(output),
                     "saved_chars": 0, "anchor_score": anchor_score, "ms": (time.perf_counter() - t0) * 1000,
                 }
@@ -875,12 +878,12 @@ def compress_terminal(
                 _ref = _ccr_put(output)
                 lines = output.splitlines()
                 n_total = len(lines)
-                if n_total > 80:
+                if _ref and n_total > 80:
                     kept_head = lines[:30]
                     kept_tail = lines[-30:]
                     omitted = n_total - 60
-                    ref_clean = _ref.lstrip("#") if _ref else ""
-                    ref_tag = f" #{ref_clean}" if ref_clean else ""
+                    ref_clean = _ref.lstrip("#")
+                    ref_tag = f" #{ref_clean}"
                     stub = (
                         "\n".join(kept_head)
                         + f"\n[tt:timeout_bounded{ref_tag} ({omitted} lines omitted under deadline) -> trimtok_retrieve]\n"

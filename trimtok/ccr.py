@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import os
 import re
@@ -104,17 +105,19 @@ def _decompress_payload(stored: Any) -> str | None:
         return stored
     if isinstance(stored, (bytes, bytearray, memoryview)):
         b = bytes(stored)
-        if b.startswith(b"zstd:") and _ZSTD_AVAILABLE and _ZSTD_DCTX is not None:
+        if b.startswith(b"zstd:"):
+            if not _ZSTD_AVAILABLE or _ZSTD_DCTX is None:
+                return None
             try:
                 with _LOCK:
                     return _ZSTD_DCTX.decompress(b[5:]).decode("utf-8", errors="replace")
             except Exception:
-                pass
+                return None
         if b.startswith(b"zlib:"):
             try:
                 return zlib.decompress(b[5:]).decode("utf-8", errors="replace")
             except Exception:
-                pass
+                return None
         try:
             return b.decode("utf-8", errors="replace")
         except Exception:
@@ -133,14 +136,17 @@ _SHORT_ALIAS_RE = re.compile(r"^c[0-9A-Za-z]+$")
 def _norm_ref(ref: str) -> str:
     """`c1` -> `#c1`; everything else is stripped and returned as-is."""
     target = (ref or "").strip()
-    if _SHORT_ALIAS_RE.match(target) and len(target) <= 8:
+    if _SHORT_ALIAS_RE.match(target) and len(target) <= 8 and not _is_hex_digest(target):
         return f"#{target}"
     return target
 
 
 def _is_alias_ref(target: str) -> bool:
     """True for a `#c...` alias, false for a `#<hex>` content digest."""
-    return target.startswith("#c") or (target.startswith("#") and not _is_hex_digest(target.lstrip("#")))
+    bare = target.lstrip("#")
+    if _is_hex_digest(bare):
+        return False
+    return target.startswith("#c") or target.startswith("#")
 
 
 _MAX_FTS_CHARS = 16_384
@@ -207,6 +213,7 @@ class FastCCRStore:
         self.max_mem_items = max_mem_items
         self._lock = threading.Lock()
         self._mem: OrderedDict[str, str] = OrderedDict()
+        self._mem_meta: dict[str, tuple[float, bool]] = {}
         self._alias_mem: dict[str, str] = {}
         self._sha_alias: dict[str, str] = {}
         self._conn: sqlite3.Connection | None = None
@@ -249,15 +256,15 @@ class FastCCRStore:
             self._alias_seq = int(row[0]) if row and str(row[0]).isdigit() else 0
             if self._fts_ok:
                 self._backfill_fts(cur)
-            # Steady state: a contended writer must never stall the hook. put() on a
-            # 1MB payload costs ~26ms, so 250ms is ~10x headroom; the 10s above is for
-            # schema work only. Without this, one tool call blocked for 33s while
-            # another process held the write lock (telemetry: gate=passthrough_timeout,
-            # ms=5042 on a 2490-char payload that compressed to nothing).
             cur.execute(f"PRAGMA busy_timeout={int(_WRITE_BUSY_TIMEOUT_S * 1000)};")
             self._writable = True
         except Exception:
-            self._conn = None
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
 
     @staticmethod
     def _backfill_fts(cur: sqlite3.Cursor) -> None:
@@ -309,35 +316,69 @@ class FastCCRStore:
                     pass
                 self._conn = None
 
-    def put(self, content: str, *, ttl_hours: int = 24) -> str:
+    def put(
+        self,
+        content: str,
+        *,
+        ttl_hours: int = 24,
+        max_entries: int = 0,
+        max_bytes: int = 0,
+    ) -> str:
         """Store content, return Base62 alias (e.g. #c1). Never raises."""
         if not content:
             return ""
         sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
         with self._lock:
-            # Both maps must agree: unpin()/resolve_hash() can drop the RAM entry
-            # while keeping the alias, and move_to_end would then raise KeyError
-            # out of put() and lose the payload.
-            if sha in self._sha_alias and sha in self._mem:
-                alias = self._sha_alias[sha]
-                self._mem.move_to_end(sha)
-                return alias
-
             if not self._writable or self._conn is None:
                 # Fail open: never emit a retrieval marker that cannot be
                 # resolved after a process restart (in-memory-only alias).
                 return ""
+
+            # Fast RAM path: verify SQLite row still exists and is within TTL.
+            if sha in self._sha_alias and sha in self._mem:
+                alias = self._sha_alias[sha]
+                now_chk = time.time()
+                meta = self._mem_meta.get(sha)
+                expired_mem = (
+                    ttl_hours > 0
+                    and meta is not None
+                    and not meta[1]
+                    and (now_chk - meta[0]) > (ttl_hours * 3600.0)
+                )
+                row_chk = None
+                if not expired_mem:
+                    try:
+                        row_chk = self._conn.execute(
+                            "SELECT alias, created_at, pinned FROM chunks WHERE sha=?",
+                            (sha,),
+                        ).fetchone()
+                    except Exception:
+                        row_chk = None
+                if row_chk and row_chk[0]:
+                    is_pinned = bool(row_chk[2]) if len(row_chk) > 2 else False
+                    row_ts = float(row_chk[1]) if row_chk[1] is not None else now_chk
+                    if ttl_hours <= 0 or is_pinned or (now_chk - row_ts) <= (ttl_hours * 3600.0):
+                        self._mem.move_to_end(sha)
+                        self._mem_meta[sha] = (row_ts, is_pinned)
+                        return row_chk[0]
+                self._mem.pop(sha, None)
+                self._mem_meta.pop(sha, None)
+                self._sha_alias.pop(sha, None)
+                self._alias_mem.pop(alias, None)
 
             t_start = time.monotonic()
             for attempt in range(3):
                 try:
                     cur = self._conn.cursor()
                     cur.execute("BEGIN IMMEDIATE")
-                    row = cur.execute("SELECT alias FROM chunks WHERE sha=?", (sha,)).fetchone()
-                    if row:
+                    now = time.time()
+                    row = cur.execute("SELECT alias, created_at, pinned FROM chunks WHERE sha=?", (sha,)).fetchone()
+                    if row and row[0]:
                         alias = row[0]
+                        is_pinned = bool(row[2]) if len(row) > 2 else False
+                        cur.execute("UPDATE chunks SET created_at=? WHERE sha=?", (now, sha))
                         cur.execute("COMMIT")
-                        self._set_mem(sha, alias, content)
+                        self._set_mem(sha, alias, content, created_at=now, pinned=is_pinned)
                         return alias
 
                     cur.execute(
@@ -349,7 +390,6 @@ class FastCCRStore:
                     self._alias_seq = max(self._alias_seq, seq_num)
                     alias = f"#c{_to_base62(seq_num)}"
 
-                    now = time.time()
                     stored_blob = _compress_payload(content)
                     cur.execute(
                         "INSERT INTO chunks (sha, alias, content, created_at) VALUES (?, ?, ?, ?) "
@@ -374,19 +414,70 @@ class FastCCRStore:
                                 if not row or not row[1]:
                                     continue
                                 cur.execute("DELETE FROM chunks_fts WHERE alias = ?", (row[1],))
-                                # Drop the RAM entries too, or put() keeps handing out
-                                # an alias whose row no longer exists and the marker
-                                # dies at the next process start.
                                 if row[0]:
                                     self._mem.pop(row[0], None)
+                                    self._mem_meta.pop(row[0], None)
                                     self._sha_alias.pop(row[0], None)
                                 self._alias_mem.pop(row[1], None)
                         except Exception:
                             pass
                         cur.execute("DELETE FROM chunks WHERE created_at < ? AND (pinned IS NULL OR pinned = 0)", (expire_before,))
 
+                    # Opportunistic cap enforcement (respects pinned=1)
+                    enforce_caps = (
+                        (max_entries > 0 and (max_entries <= 50 or seq_num % 25 == 0))
+                        or (max_bytes > 0 and (max_bytes <= 1_048_576 or seq_num % 25 == 0))
+                    )
+                    if enforce_caps:
+                        if max_entries > 0:
+                            try:
+                                total_cnt = int(cur.execute("SELECT COUNT(*) FROM chunks").fetchone()[0] or 0)
+                                excess = total_cnt - max_entries
+                                if excess > 0:
+                                    victims = cur.execute(
+                                        "SELECT sha, alias FROM chunks WHERE (pinned IS NULL OR pinned = 0) "
+                                        "ORDER BY created_at ASC LIMIT ?",
+                                        (excess,),
+                                    ).fetchall()
+                                    for v_sha, v_alias in victims:
+                                        if v_alias:
+                                            cur.execute("DELETE FROM chunks_fts WHERE alias = ?", (v_alias,))
+                                            self._alias_mem.pop(v_alias, None)
+                                        if v_sha:
+                                            cur.execute("DELETE FROM chunks WHERE sha = ?", (v_sha,))
+                                            self._mem.pop(v_sha, None)
+                                            self._mem_meta.pop(v_sha, None)
+                                            self._sha_alias.pop(v_sha, None)
+                            except Exception:
+                                pass
+                        if max_bytes > 0:
+                            try:
+                                p_bytes = int(cur.execute("SELECT COALESCE(SUM(LENGTH(CAST(content AS BLOB))), 0) FROM chunks").fetchone()[0] or 0)
+                                try:
+                                    fts_lens = dict(cur.execute("SELECT alias, LENGTH(CAST(content AS BLOB)) FROM chunks_fts").fetchall())
+                                except Exception:
+                                    fts_lens = {}
+                                total_bytes = p_bytes + sum(fts_lens.values())
+                                if total_bytes > max_bytes:
+                                    for v_sha, v_alias, v_sz in cur.execute(
+                                        "SELECT sha, alias, LENGTH(CAST(content AS BLOB)) FROM chunks "
+                                        "WHERE (pinned IS NULL OR pinned = 0) ORDER BY created_at ASC"
+                                    ).fetchall():
+                                        if total_bytes <= max_bytes:
+                                            break
+                                        if v_alias:
+                                            cur.execute("DELETE FROM chunks_fts WHERE alias = ?", (v_alias,))
+                                            self._alias_mem.pop(v_alias, None)
+                                        cur.execute("DELETE FROM chunks WHERE sha = ?", (v_sha,))
+                                        self._mem.pop(v_sha, None)
+                                        self._mem_meta.pop(v_sha, None)
+                                        self._sha_alias.pop(v_sha, None)
+                                        total_bytes -= int(v_sz or 0) + int(fts_lens.pop(v_alias, 0) or 0)
+                            except Exception:
+                                pass
+
                     cur.execute("COMMIT")
-                    self._set_mem(sha, alias, content)
+                    self._set_mem(sha, alias, content, created_at=now, pinned=False)
                     return alias
                 except sqlite3.OperationalError as exc:
                     try:
@@ -426,9 +517,25 @@ class FastCCRStore:
                 sha = self._alias_mem.get(target)
             else:
                 sha = target.lstrip("#")
-            if sha and sha in self._mem and ttl_hours >= 24:
-                self._mem.move_to_end(sha)
-                return self._mem[sha]
+            if sha and sha in self._mem:
+                meta = self._mem_meta.get(sha)
+                mem_expired = (
+                    ttl_hours > 0
+                    and meta is not None
+                    and not meta[1]
+                    and (time.time() - meta[0]) > (ttl_hours * 3600.0)
+                )
+                if not mem_expired:
+                    self._mem.move_to_end(sha)
+                    return self._mem[sha]
+                old_alias = self._sha_alias.get(sha)
+                self._forget(sha, old_alias)
+                if self._writable and self._conn is not None:
+                    try:
+                        self._conn.execute("DELETE FROM chunks WHERE sha=? AND (pinned IS NULL OR pinned = 0)", (sha,))
+                    except Exception:
+                        pass
+                return None
 
             if not self._writable or self._conn is None:
                 return self._mem.get(sha) if sha else None
@@ -466,24 +573,39 @@ class FastCCRStore:
                                 cur.execute("DELETE FROM chunks_fts WHERE alias=?", (row_alias,))
                             except Exception:
                                 pass
-                        self._conn.commit()
                         self._forget(sha, row_alias)
                         return None
                     decomp = _decompress_payload(blob)
                     if decomp is not None:
                         alias = row_alias or (target if target.startswith("#") else f"#{sha}")
-                        self._set_mem(sha, alias, decomp)
+                        self._set_mem(
+                            sha,
+                            alias,
+                            decomp,
+                            created_at=float(created_at) if created_at is not None else time.time(),
+                            pinned=is_pinned,
+                        )
                         return decomp
             except Exception:
                 return None
         return None
 
-    def _set_mem(self, sha: str, alias: str, content: str) -> None:
+    def _set_mem(
+        self,
+        sha: str,
+        alias: str,
+        content: str,
+        *,
+        created_at: float | None = None,
+        pinned: bool = False,
+    ) -> None:
         self._mem[sha] = content
+        self._mem_meta[sha] = (float(created_at) if created_at is not None else time.time(), bool(pinned))
         self._alias_mem[alias] = sha
         self._sha_alias[sha] = alias
         while len(self._mem) > self.max_mem_items:
             old_sha, _ = self._mem.popitem(last=False)
+            self._mem_meta.pop(old_sha, None)
             old_alias = self._sha_alias.pop(old_sha, None)
             if old_alias:
                 self._alias_mem.pop(old_alias, None)
@@ -526,6 +648,7 @@ class FastCCRStore:
     def _forget(self, sha: str, alias: str | None) -> None:
         """Drop RAM maps + FTS row for a chunk (the chunks row is the caller's job)."""
         self._mem.pop(sha, None)
+        self._mem_meta.pop(sha, None)
         self._sha_alias.pop(sha, None)
         if not alias:
             return
@@ -536,7 +659,7 @@ class FastCCRStore:
             except Exception:
                 pass
 
-    def evict_to_size(self, max_bytes: int) -> int:
+    def evict_to_size(self, max_bytes: int, *, include_pinned: bool = False) -> int:
         """Delete the oldest chunks until payload + FTS index are under `max_bytes`."""
         if max_bytes <= 0:
             return 0
@@ -546,6 +669,7 @@ class FastCCRStore:
                 return 0
             try:
                 cur = self._conn.cursor()
+                cur.execute("BEGIN IMMEDIATE")
                 row = cur.execute("SELECT COALESCE(SUM(LENGTH(CAST(content AS BLOB))), 0) FROM chunks").fetchone()
                 total = int(row[0] or 0)
                 try:
@@ -554,9 +678,11 @@ class FastCCRStore:
                     fts_lens = {}
                 total += sum(fts_lens.values())
                 if total <= max_bytes:
+                    cur.execute("COMMIT")
                     return 0
+                pin_clause = "" if include_pinned else " WHERE (pinned IS NULL OR pinned = 0)"
                 for sha, alias, size in cur.execute(
-                    "SELECT sha, alias, LENGTH(CAST(content AS BLOB)) FROM chunks ORDER BY created_at ASC"
+                    f"SELECT sha, alias, LENGTH(CAST(content AS BLOB)) FROM chunks{pin_clause} ORDER BY created_at ASC"
                 ).fetchall():
                     if total <= max_bytes:
                         break
@@ -564,12 +690,12 @@ class FastCCRStore:
                     cur.execute("DELETE FROM chunks WHERE sha = ?", (sha,))
                     total -= int(size or 0) + int(fts_lens.pop(alias, 0) or 0)
                     evicted += 1
-                self._conn.commit()
+                cur.execute("COMMIT")
                 if evicted:
                     self._conn.execute("VACUUM")
             except Exception:
                 try:
-                    self._conn.rollback()
+                    self._conn.execute("ROLLBACK")
                 except Exception:
                     pass
         return evicted
@@ -604,28 +730,31 @@ class FastCCRStore:
                     pass
         return default
 
-    def purge(self, *, before_seconds: float = 0) -> int:
+    def purge(self, *, before_seconds: float = 0, include_pinned: bool = False) -> int:
         """Purge stored chunks (all when before_seconds <= 0, or older than before_seconds)."""
         count = 0
         with self._lock:
-            if before_seconds <= 0:
+            if before_seconds <= 0 and include_pinned:
                 self._mem.clear()
+                self._mem_meta.clear()
                 self._alias_mem.clear()
                 self._sha_alias.clear()
             if self._writable and self._conn is not None:
                 try:
                     cur = self._conn.cursor()
+                    cur.execute("BEGIN IMMEDIATE")
+                    pin_and = "" if include_pinned else " AND (pinned IS NULL OR pinned = 0)"
                     if before_seconds > 0:
                         cutoff = time.time() - before_seconds
                         rows = cur.execute(
-                            "SELECT sha, alias FROM chunks WHERE created_at < ?",
+                            f"SELECT sha, alias FROM chunks WHERE created_at < ?{pin_and}",
                             (cutoff,),
                         ).fetchall()
                         count = len(rows)
                         for sha, alias in rows:
                             self._forget(sha, alias)
-                        cur.execute("DELETE FROM chunks WHERE created_at < ?", (cutoff,))
-                    else:
+                        cur.execute(f"DELETE FROM chunks WHERE created_at < ?{pin_and}", (cutoff,))
+                    elif include_pinned:
                         row = cur.execute("SELECT COUNT(*) FROM chunks").fetchone()
                         count = row[0] or 0
                         cur.execute("DELETE FROM chunks")
@@ -633,11 +762,20 @@ class FastCCRStore:
                             cur.execute("DELETE FROM chunks_fts")
                         except Exception:
                             pass
-                    self._conn.commit()
-                    self._conn.execute("VACUUM")
+                    else:
+                        rows = cur.execute(
+                            "SELECT sha, alias FROM chunks WHERE (pinned IS NULL OR pinned = 0)"
+                        ).fetchall()
+                        count = len(rows)
+                        for sha, alias in rows:
+                            self._forget(sha, alias)
+                        cur.execute("DELETE FROM chunks WHERE (pinned IS NULL OR pinned = 0)")
+                    cur.execute("COMMIT")
+                    if count:
+                        self._conn.execute("VACUUM")
                 except Exception:
                     try:
-                        self._conn.rollback()
+                        self._conn.execute("ROLLBACK")
                     except Exception:
                         pass
         return count
@@ -653,11 +791,16 @@ class FastCCRStore:
             try:
                 cur = self._conn.cursor()
                 if _is_alias_ref(target):
+                    row = cur.execute("SELECT sha FROM chunks WHERE alias = ?", (target,)).fetchone()
+                    sha = row[0] if row else ""
                     cur.execute("UPDATE chunks SET pinned = 1 WHERE alias = ?", (target,))
                 else:
                     sha = target.lstrip("#")
+                    row = cur.execute("SELECT sha FROM chunks WHERE sha = ? OR substr(sha,1,?) = ?", (sha, len(sha), sha)).fetchone()
+                    sha = row[0] if row else sha
                     cur.execute("UPDATE chunks SET pinned = 1 WHERE sha = ? OR substr(sha,1,?) = ?", (sha, len(sha), sha))
-                self._conn.commit()
+                if sha and sha in self._mem_meta:
+                    self._mem_meta[sha] = (self._mem_meta[sha][0], True)
                 return cur.rowcount > 0
             except Exception:
                 return False
@@ -681,7 +824,7 @@ class FastCCRStore:
                     cur.execute("UPDATE chunks SET pinned = 0 WHERE sha = ? OR substr(sha,1,?) = ?", (sha, len(sha), sha))
                 if sha:
                     self._mem.pop(sha, None)
-                self._conn.commit()
+                    self._mem_meta.pop(sha, None)
                 return cur.rowcount > 0
             except Exception:
                 return False
@@ -741,7 +884,14 @@ def _file_put(
                 temp_path = Path(f.name)
                 f.write(data)
                 f.flush()
-            os.replace(temp_path, path)
+            for attempt in range(5):
+                try:
+                    os.replace(temp_path, path)
+                    break
+                except PermissionError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.02 * (2 ** attempt))
             temp_path = None
         with _LOCK:
             _PUT_COUNT += 1
@@ -891,7 +1041,14 @@ def put(content: str, *, dir: Path | None = None, ttl_hours: int = 24, **kwargs:
     try:
         if dir is not None:
             return _file_put(content, Path(dir), ttl_hours=ttl_hours, **kwargs)
-        return _get_store().put(content, ttl_hours=ttl_hours)
+        max_entries = int(kwargs.get("max_entries") or 0)
+        max_bytes = int(kwargs.get("max_bytes") or 0)
+        return _get_store().put(
+            content,
+            ttl_hours=ttl_hours,
+            max_entries=max_entries,
+            max_bytes=max_bytes,
+        )
     except Exception:
         return ""
 
@@ -903,8 +1060,7 @@ def get(ref: str, *, dir: Path | None = None, ttl_hours: int = 24, **kwargs: Any
             return None
         target = ref.strip()
         base = Path(dir) if dir else default_dir()
-        is_alias = target.startswith("#c") or bool(re.match(r"^c[0-9A-Za-z]+$", target) and len(target) <= 8)
-        if is_alias:
+        if _is_alias_ref(_norm_ref(target)):
             return _get_store(base).get(target, ttl_hours=ttl_hours)
 
         # For hex digests: check SQLite store first, only fall back to _file_get if not in SQLite
@@ -964,11 +1120,11 @@ def stats(*, dir: Path | None = None, ttl_hours: int = 24, **kwargs: Any) -> dic
 
 
 
-def purge(*, dir: Path | None = None, before_seconds: float = 0, **kwargs: Any) -> int:
+def purge(*, dir: Path | None = None, before_seconds: float = 0, include_pinned: bool = False, **kwargs: Any) -> int:
     try:
         if dir is not None:
             return _file_purge(Path(dir), before_seconds=before_seconds)
-        return _get_store().purge(before_seconds=before_seconds)
+        return _get_store().purge(before_seconds=before_seconds, include_pinned=include_pinned)
     except Exception:
         return 0
 
@@ -978,12 +1134,15 @@ def resolve_hash(ref: str) -> str | None:
     if not ref:
         return None
     target = _norm_ref(ref)
+    bare = target.lstrip("#")
+    if _HEX12_RE.match(bare):
+        return bare[:12]
     store = _get_store()
-    sha = store._alias_mem.get(target)
-    if sha:
-        return sha
-    if target.startswith("#") and store._writable and store._conn is not None:
-        with store._lock:
+    with store._lock:
+        sha = store._alias_mem.get(target)
+        if sha:
+            return sha[:12]
+        if target.startswith("#") and store._writable and store._conn is not None:
             try:
                 row = store._conn.execute(
                     "SELECT sha FROM chunks WHERE alias=?", (target,)
@@ -991,10 +1150,10 @@ def resolve_hash(ref: str) -> str | None:
                 if row and row[0]:
                     store._alias_mem[target] = row[0]
                     store._sha_alias[row[0]] = target
-                    return row[0]
+                    return row[0][:12]
             except Exception:
                 pass
-    return target if _HEX12_RE.match(target) else None
+    return None
 
 
 def pin(ref: str, *, dir: Path | None = None) -> bool:
@@ -1031,3 +1190,6 @@ def fts_ready(*, dir: Path | None = None) -> bool:
         return bool(_get_store(base)._fts_ok)
     except Exception:
         return False
+
+
+atexit.register(close)

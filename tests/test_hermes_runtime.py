@@ -142,7 +142,7 @@ def main() -> int:
         # temp HERMES_HOME (Windows keeps an open db file locked).
         for module in list(sys.modules.values()):
             if (
-                str(getattr(module, "__file__", "")).lower().endswith("ccr_v2.py")
+                str(getattr(module, "__file__", "")).lower().endswith(("ccr.py", "ccr_v2.py"))
                 and hasattr(module, "close")
             ):
                 module.close()

@@ -208,7 +208,7 @@ def _skeletonize_ts_core(
                         name = "<anon>"
                         for child in node.children:
                             if child.type in ("identifier", "property_identifier", "name", "field_identifier"):
-                                name = code[child.start_byte:child.end_byte]
+                                name = raw_bytes[child.start_byte:child.end_byte].decode("utf-8", errors="replace")
                                 break
                         line_text = lines[body_start - 1] if body_start - 1 < total_lines else ""
                         indent = len(line_text) - len(line_text.lstrip())

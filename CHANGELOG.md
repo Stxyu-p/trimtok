@@ -4,6 +4,20 @@ All notable changes to trimtok are documented here.
 
 ## [Unreleased]
 
+### Added
+- **Write-safety guardrail (`trimtok/guard.py`, `pre_tool_call`, `trimtok guard-check`):**
+  Detects and blocks writes that would persist `[tt:...]` / `#ref` compression stubs to
+  disk across file-edit/skill tools (`write_file`, `patch`, `edit_file`, `skill_manage`),
+  and adds `trimtok guard-check <path> --json` for vault/repository audits.
+- **Standalone health diagnostics (`trimtok doctor --json`):** Contract 2 JSON health
+  report covering SQLite `quick_check`, CCR storage/FTS5 sync, and telemetry gate status;
+  also exposed via MCP `trimtok_status(action="doctor")`.
+
+### Fixed & Hardened
+- **CCR & SQLite WAL concurrency hardening (`trimtok/ccr.py`):** Explicit WAL retry/busy
+  handling on Windows, pinned-chunk protection, TTL eviction, and alias retrieval safety.
+- **Instruction-file verbatim policy & deadline parity (`trimtok/policy.py`, `trimtok/mcp_server.py`, `trimtok/ts_skeleton.py`):** Keeps `SKILL.md` / agent rule files byte-exact (`passthrough_policy`), forwards `Deadline(200.0)` consistently through `mcp_server`, and cleans up `_tool_exec` + `exec_lane` / `signals` edge cases.
+
 ## [5.9.8] - 2026-11-19
 
 ### Fixed

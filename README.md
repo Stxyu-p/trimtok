@@ -13,6 +13,15 @@
 </p>
 
 <p align="center">
+  <a href="#quick-start">Quick Start</a> ·
+  <a href="#verified-benchmarks">Benchmarks</a> ·
+  <a href="#how-it-works">Architecture</a> ·
+  <a href="#zero-loss-recovery">CLI &amp; Write Guard</a> ·
+  <a href="#hermes-agent-integration">Hermes</a> ·
+  <a href="#verification">Verification</a>
+</p>
+
+<p align="center">
   <img src="assets/before-after.svg" width="100%" alt="trimtok — Before vs After Context Shield" />
 </p>
 
@@ -20,6 +29,7 @@ Coding agents burn most of their context window on noisy test logs, repeated fil
 
 ---
 
+<a id="quick-start"></a>
 ## Quick Start
 
 ```bash
@@ -27,14 +37,14 @@ pip install trimtok
 # Optional: enable Tree-sitter AST skeletonization for JS/TS, Go, Rust, Java, C/C++, C#, Bash, YAML, TOML, JSON
 pip install "trimtok[multilang]"
 
-# Initialize the local CCR vault and register the MCP server across detected clients
+# Initialize the local CCR vault and register the MCP server (5 tools) across detected clients
 trimtok install
-trimtok status
+trimtok doctor --json
 ```
 
 **Supported clients:** Claude Code, Claude Desktop, Cursor, Windsurf, VS Code (Copilot), Codex CLI, Gemini CLI, Antigravity, OpenCode, Cline, and **Hermes Agent**.
 
-> **Hooks vs. MCP:** `trimtok install` registers MCP tools across all 11 clients so the model can compress, retrieve, and compute on demand. Automatic in-path compression of every tool/terminal result runs through native plugin hooks on **Hermes**; on any other host, use `trimtok wrap` or `trimtok mcp-proxy` for automatic in-path filtering. Full wiring guide: **[docs/INSTALL.md](docs/INSTALL.md)**.
+> **Hooks vs. MCP:** `trimtok install` registers **5 MCP tools** (`trimtok_compress_terminal`, `trimtok_compress_tool`, `trimtok_retrieve`, `trimtok_exec`, `trimtok_status` with `action="doctor"`) across all 11 clients so the model can compress, retrieve, compute, and run health diagnostics on demand. Automatic in-path compression and write-safety guarding run natively through **Hermes** hooks; on any other host, use `trimtok wrap` or `trimtok mcp-proxy` for automatic in-path filtering. Full wiring guide: **[docs/INSTALL.md](docs/INSTALL.md)**.
 
 ---
 
@@ -52,19 +62,20 @@ trimtok status
 | **Noisy CLI output** (`git`, `ls`, `npm`, `pip`, `find`, `docker ps`) | Command-specific filters & zero-exit install collapse | Counts, ranges, summaries, and full original in CCR |
 | **System prompts & MCP schemas** | `trimtok map`, `trimtok mcp-proxy`, `trimtok kv-lock` | Budgeted symbol map, allow/deny filtered tool schemas, KV-cache-stable prompt prefix |
 
+<a id="verified-benchmarks"></a>
 ### Verified Benchmarks
 
 Numbers from different populations are never mixed:
 
 | Suite | Metric | Verified Result |
 | :--- | :--- | :--- |
-| **32-payload fixed corpus** (`eval/eval_real.py`) | Character reduction | **74.98%** (`851,327 / 1,135,441 chars`), **0 gate failures** |
-| **Honesty audit** (`eval/audit_honesty.py`) | Claimed vs. proven via CCR | **74.98% claimed == 74.98% proven**, **0 unproven chars** |
-| **Fix-locate benchmark** (`eval/fix_accuracy.py`) | Bug still locatable after folding | **8 / 8 (100%)** at **54.4% token reduction** (`56,933 → 25,956 tok`) |
-| **Decision equivalence** (`eval/decision_eval.py`) | Critical action tokens retained | **9 / 9 (100%)** at **91.2% mean reduction** |
-| **Adversarial fuzzing** (`eval/fuzz_adversarial_1000.py`) | 1,000 hostile vectors | **0 unhandled exceptions**, **0% payload inflation** |
+| **32-payload honesty audit** (`eval/audit_honesty.py`) | Proven vs. claimed reduction | **72.77%** (`826,286 / 1,135,441 chars`), **0 unproven chars** |
+| **32-payload timed gate run** (`eval/eval_real.py`) | Gate contract & latency guard | **0 gate failures** (`64.76%`–`72.77%` under `200 ms` deadline) |
+| **Fix-locate benchmark** (`eval/fix_accuracy.py`) | Bug still locatable after folding | **8 / 8 (100%)** at **53.8% token reduction** (`58,224 → 26,905 tok`) |
+| **Decision equivalence** (`eval/decision_eval.py`) | Critical action tokens retained | **9 / 9 (100%)** across 3 scenarios (`91.2%` mean reduction) |
+| **Adversarial fuzzing** (`eval/fuzz_adversarial_1000.py`) | 1,000 hostile vectors | **1,000 / 1,000**, **0 exceptions**, **0% payload inflation** |
 
-Production telemetry reports **characters delivered** (not model-specific tokens) and includes deliberate 0% passthroughs (small outputs, targeted slices, secrets, and edit patches). Inspect your own real traffic anytime with `trimtok gain`.
+> Instruction playbooks (`SKILL.md`, `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`) deliberately pass through verbatim at 0% (`gate=passthrough_policy`) so agents never mistake compressed stubs for authoritative instructions. Inspect your own live savings anytime with `trimtok gain`.
 
 ---
 
@@ -96,7 +107,8 @@ Production telemetry reports **characters delivered** (not model-specific tokens
 ### Core Guarantees
 
 - **Zero Data Loss (`#ref`):** Every folded payload writes its exact bytes to SQLite WAL + Zstandard before shipping a `#c...` marker. If the store write fails, trimtok fails open and returns the raw output — never a dead pointer.
-- **Policy-Protected by Default:** Credentials (`.env`, `*.pem`, `*.key`, AWS/GitHub/OpenAI/Slack/JWT tokens — scanned at both head and tail), security-policy data files, and edit/patch payloads stay byte-exact (`gate=passthrough_policy`).
+- **Write-Safety Guardrail (`guard-check` + `pre_tool_call`):** Blocks agents from writing persisted `[tt:...]` / `#ref` compression stubs back into source files or skill playbooks (`write_file`, `patch`, `edit_file`, `skill_manage`), and scans repositories or skill vaults via `trimtok guard-check <path> --json`.
+- **Policy-Protected by Default:** Credentials (`.env`, `*.pem`, `*.key`, AWS/GitHub/OpenAI/Slack/JWT tokens — scanned at both head and tail), security-policy files, instruction documents (`SKILL.md`, `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`), and edit/patch payloads stay byte-exact (`gate=passthrough_policy`).
 - **Causal Hotspots:** When a terminal run fails with a traceback, trimtok remembers `(file, line)` per session and keeps the failing function verbatim on the next `read_file` while folding unrelated helpers.
 - **Adaptive & Model-Aware:** Scales folding thresholds with `context_pressure` (`light` < 0.35, `normal` 0.35–0.75, `aggressive` > 0.75) and toggles TOON vs. minified JSON via `toon_mode` (`auto` | `always` | `never`).
 - **Strictly Bounded Latency:** Monotonic `guard_ms: 200` checks run inside regex/AST loops, files over 512 KB jump directly to a bounded head+tail pointer (`file_large_pointer`), and incompressible payloads hit an LRU dead-range cache.
@@ -146,9 +158,11 @@ trimtok mcp-proxy --deny "ctx_doctor,ctx_stats" --kv-lock -- npx -y some-mcp-ser
 trimtok kv-lock system_prompt.md
 ```
 
-### Telemetry & Vault Maintenance
+### Telemetry, Health & Write-Safety Guard
 
 ```bash
+trimtok doctor --json                             # Standalone SQLite integrity, FTS sync & telemetry health
+trimtok guard-check ~/.agents/skills --json       # Scan files/vaults for persisted [tt:...] stub markers
 trimtok status                                    # Vault size, chunk count, recent savings
 trimtok gain --days 7                             # Savings by shape/tool/cmd + retrieve & exec stats
 trimtok discover                                  # Surface high-volume, low-savings bottlenecks
@@ -157,9 +171,10 @@ trimtok purge --older-than 24 --max-mb 50         # Age purge + LRU size ceiling
 
 ---
 
+<a id="hermes-agent-integration"></a>
 ## Hermes Agent Integration (Automatic Hooks + Context Engine)
 
-Install as a native Hermes plugin for automatic in-path compression across `transform_terminal_output`, `transform_tool_result`, `pre_llm_call` (auto codebase map), and `post_llm_call` (turn expiry), plus native `trimtok_retrieve` and `trimtok_exec` tools:
+Install as a native Hermes plugin for automatic in-path compression across `transform_terminal_output`, `transform_tool_result`, `pre_tool_call` (write-safety stub blocker), `pre_llm_call` (auto codebase map), `post_llm_call` (turn expiry), and native `trimtok_retrieve` / `trimtok_exec` tools:
 
 ```bash
 # Windows (PowerShell)
@@ -189,6 +204,7 @@ plugins:
         toon_mode: auto          # auto | always | never
         model_family: ""         # e.g. claude, gpt, qwen (empty keeps TOON on)
         policy_enabled: true
+        write_guard_enabled: true
         adaptive_enabled: true
         mask_enabled: true
         mask_keep_turns: 2
@@ -209,17 +225,19 @@ When `context.engine: "trimtok"` is enabled, head goals and recent turns stay ve
 
 ---
 
+<a id="verification"></a>
 ## Verification
 
 Every claim in this repository is locally reproducible:
 
 ```bash
-python -m unittest discover -s tests   # 179 unit & regression cases
-python -m pytest tests/ -q             # 280 total pytest cases
-python eval/eval_real.py               # 32-payload fixed corpus
+python -m unittest discover -s tests   # Unittest regression suite
+python -m pytest tests/ -q             # Full pytest suite
+python eval/eval_real.py               # 32-payload fixed corpus (live 200 ms deadline)
 python eval/audit_honesty.py           # Recomputes claimed vs. proven chars from CCR
 python eval/fix_accuracy.py            # LOCATE accuracy over real modules (no LLM needed)
 python eval/decision_eval.py           # Decision-equivalence gate
+python eval/fuzz_adversarial_1000.py   # 1,000 hostile vector fuzz suite
 ```
 
 ---
@@ -231,13 +249,13 @@ python eval/decision_eval.py           # Decision-equivalence gate
 - **[Changelog](CHANGELOG.md)** — Per-release engineering notes with measured before/after numbers.
 - **[llms.txt](llms.txt)** — Machine-readable summary for AI assistants.
 
-Works standalone or alongside two local zero-daemon companions:
+Works standalone or alongside two zero-daemon companions:
 
 | Tool | Hub | Role |
 | :--- | :--- | :--- |
-| **[trimtok](https://github.com/Stxyu-p/trimtok)** | `~/.trimtok` | In-process context shield + lossless SQLite WAL/Zstd `#ref` vault |
+| **[trimtok](https://github.com/Stxyu-p/trimtok)** | `~/.trimtok` | In-process context shield + write-safety guard + lossless `#ref` vault |
 | **[MemCore](https://github.com/Stxyu-p/memcore)** | `~/.memcore` | Bitemporal shared memory with SQL scope boundaries and lexical recall |
-| **[Skill Proof](https://github.com/Stxyu-p/skill-proof)** | `~/.skill-proof` | Deterministic sub-2ms local skill router and immutable SOP vault |
+| **[Skill Proof](https://github.com/Stxyu-p/skill-proof)** | `~/.agents/skills` | Deterministic stdlib skill router and canonical vault |
 
 ---
 

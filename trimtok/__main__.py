@@ -6,7 +6,8 @@ Usage:
   trimtok uninstall [--client <name>] [--dry-run]           # Remove MCP server registration
   trimtok clients                                           # List all supported agent clients and registration status
   trimtok mcp                                               # Start the stdio MCP server
-  trimtok status | usage | purge                            # Inspect savings, usage stats, or purge CCR cache
+  trimtok status | usage | doctor | purge                   # Inspect savings, usage, health, or purge CCR cache
+  trimtok guard-check [paths...] [--staged] [--json]        # Detect persisted [tt:...] stub markers
   trimtok retrieve <ref> [errors|diff|summary|tail]         # Retrieve original or section from CCR
   trimtok compress [--cmd <cmd>] [--tool <name>] [file|-]   # Compress terminal or tool text from file or stdin
 """
@@ -76,10 +77,13 @@ def _sync_global_skill() -> None:
         "  SQLite WAL Content-Controlled Retrieval (CCR) cache with section-based retrieval.\n"
         "---\n\n"
         "# Trimtok — Context Compression & Section Retrieval\n\n"
-        "Use `trimtok_compress_terminal`, `trimtok_compress_tool`, `trimtok_retrieve`, and `trimtok_status` "
+        "Use `trimtok_compress_terminal`, `trimtok_compress_tool`, `trimtok_retrieve`, `trimtok_exec`, and `trimtok_status` "
+        "(actions: `status`, `usage`, `doctor`, `gain`, `discover`, `purge`) "
         "to compress noisy outputs or large files on disk (`file_path`) and retrieve exact sections (`errors`, `diff`, `summary`, `tail`).\n"
     )
-    vault_root = Path.home() / ".skill-proof" / "skills"
+    _ag_vault = Path.home() / ".agents" / "skills"
+    _lg_vault = Path.home() / ".skill-proof" / "skills"
+    vault_root = _ag_vault if _ag_vault.is_dir() else _lg_vault
     for root in (
         vault_root,
         Path.home() / ".agents" / "skills",
@@ -176,6 +180,13 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("mcp", help="Run the stdio MCP server (JSON-RPC 2.0)")
     sub.add_parser("status", help="Show compression savings and CCR cache status")
     sub.add_parser("usage", help="Show detailed hook/tool usage breakdown")
+    p_doc = sub.add_parser("doctor", help="Run standalone CCR, telemetry, and optional stub integrity checks")
+    p_doc.add_argument("--json", action="store_true", help="Output unified JSON health envelope")
+    p_doc.add_argument("--scan-path", action="append", default=[], help="Optional file/directory to scan for persisted stubs")
+    p_guard = sub.add_parser("guard-check", help="Scan files or staged git diff for persisted [tt:...] stubs")
+    p_guard.add_argument("paths", nargs="*", help="Paths to scan (default: current directory)")
+    p_guard.add_argument("--staged", action="store_true", help="Scan staged git diff additions instead of files")
+    p_guard.add_argument("--json", action="store_true", help="Output JSON scan report")
     sub.add_parser("gain", help="Show detailed character savings gain report").add_argument("--days", type=int, default=0)
     sub.add_parser("discover", help="Scan telemetry for low-savings shapes and suggest filters")
     sub.add_parser("recall", help="Retrieve cached original by hash").add_argument("hash", nargs="?", default="")
@@ -245,6 +256,36 @@ def _dispatch(ns: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     if ns.cmd == "usage":
         print(_handle_ts_command("usage"))
         return 0
+    if ns.cmd == "doctor":
+        try:
+            from . import report
+        except ImportError:
+            import report  # type: ignore
+        res = report.run_doctor(scan_paths=ns.scan_path or None)
+        if ns.json:
+            print(json.dumps(res, indent=2, ensure_ascii=False))
+        else:
+            print(f"trimtok doctor (v{res['version']}): {res['status'].upper()}")
+            for chk in res["checks"]:
+                print(f"  [{chk['status'].upper()}] {chk['id']}: {chk['detail']}")
+                if chk.get("fix_hint"):
+                    print(f"       fix: {chk['fix_hint']}")
+        return 1 if res["status"] == "fail" else 0
+    if ns.cmd == "guard-check":
+        try:
+            from .guard import scan_paths
+        except ImportError:
+            from guard import scan_paths  # type: ignore
+        res = scan_paths(ns.paths or ["."], staged=bool(ns.staged))
+        if ns.json:
+            print(json.dumps(res, indent=2, ensure_ascii=False))
+        elif res["clean"]:
+            print(f"trimtok guard-check: clean ({res['files_scanned']} files scanned).")
+        else:
+            print(f"trimtok guard-check: FOUND {len(res['findings'])} persisted stub(s) in {res['corrupted_files']} file(s):")
+            for f in res["findings"][:30]:
+                print(f"  {f['file']}:{f['line']} [{f['kind']}] {f['marker']}")
+        return 0 if res["clean"] else 1
     if ns.cmd == "gain":
         days = getattr(ns, "days", 0)
         print(_handle_ts_command(f"gain {days}" if days else "gain"))

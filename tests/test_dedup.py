@@ -4,7 +4,18 @@ import os
 import sys
 import tempfile
 
-os.environ.setdefault("TRIMTOK_DATA_DIR", tempfile.mkdtemp(prefix="trimtok-test-dedup-"))
+import atexit as _atexit, shutil as _shutil
+_OWN_TMP_DIR = tempfile.mkdtemp(prefix="trimtok-test-dedup-") if "TRIMTOK_DATA_DIR" not in os.environ else None
+if _OWN_TMP_DIR:
+    os.environ["TRIMTOK_DATA_DIR"] = _OWN_TMP_DIR
+    def _cleanup_tmp():
+        try:
+            from trimtok import ccr as _ccr
+            _ccr.close()
+        except Exception:
+            pass
+        _shutil.rmtree(_OWN_TMP_DIR, ignore_errors=True)
+    _atexit.register(_cleanup_tmp)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from trimtok.dedup import (

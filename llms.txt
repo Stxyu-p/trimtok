@@ -30,17 +30,22 @@ failed transform passes the original through untouched.
   savings. `eval/audit_honesty.py` recomputes claimed vs proven savings and reports
   the gap; telemetry is reported per release so a fixed bucket cannot hide inside
   an all-versions average.
-- Measured on a fixed 32-payload corpus (1,135,441 chars, v5.9.8): **74.98%**
-  character reduction (851,327 chars) with **0 unproven characters** and 0 gate
-  failures; **8/8 (100%)** fix-locate accuracy at 54.4% token reduction; **9/9
-  (100%)** decision-equivalence tokens retained. Production telemetry for the
-  5.9.4 cohort: 33.2% of chars delivered across 414 events (measured 2026-11-15).
-  These two populations are never combined.
-- Integrates with Hermes (automatic in-path plugin hooks with terminal
-  double-hook dedup + native `context.engine: trimtok` with 80-char stash
-  previews) and with Claude Code, Cursor, Codex, Gemini, Antigravity, Windsurf,
-  VS Code, Cline, OpenCode and Claude Desktop over MCP (plus `trimtok wrap` and
-  `trimtok mcp-proxy`). Host-by-host detail: docs/INSTALL.md.
+- Measured on a fixed 32-payload corpus (1,135,441 chars, v5.9.8): **72.77%**
+  proven character reduction (826,286 chars, `eval/audit_honesty.py`) with
+  **0 unproven characters** and 0 gate failures (`SKILL.md` and instruction
+  files pass through verbatim under `passthrough_policy`); **8/8 (100%)**
+  fix-locate accuracy at 53.8% token reduction (`58,224 -> 26,905 tok`);
+  **9/9 (100%)** decision-equivalence tokens retained; **1,000/1,000** fuzz pass.
+- Standalone health & write-safety guardrails: `trimtok doctor --json` (and
+  MCP `trimtok_status(action="doctor")`) verifies SQLite integrity, CCR FTS5
+  sync, and telemetry; `trimtok guard-check <path> --json` and the Hermes
+  `pre_tool_call` hook reject writes that persist `[tt:...]` stub markers to disk.
+- Integrates with Hermes (automatic in-path plugin hooks including
+  `pre_tool_call` write guard, terminal double-hook dedup, and native
+  `context.engine: trimtok` with 80-char stash previews) and with Claude Code,
+  Cursor, Codex, Gemini, Antigravity, Windsurf, VS Code, Cline, OpenCode and
+  Claude Desktop over 5 MCP tools (plus `trimtok wrap` and `trimtok mcp-proxy`).
+  Host-by-host detail: docs/INSTALL.md.
 - Python 3.10+, MIT licence, published on PyPI as `trimtok` (v5.9.8).
 
 ## Not what it is

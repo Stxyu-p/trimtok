@@ -9,7 +9,18 @@ import tempfile
 import unittest
 from pathlib import Path
 
-os.environ.setdefault("TRIMTOK_DATA_DIR", tempfile.mkdtemp(prefix="trimtok-v534-"))
+import atexit as _atexit, shutil as _shutil
+_OWN_TMP_DIR = tempfile.mkdtemp(prefix="trimtok-v534-") if "TRIMTOK_DATA_DIR" not in os.environ else None
+if _OWN_TMP_DIR:
+    os.environ["TRIMTOK_DATA_DIR"] = _OWN_TMP_DIR
+    def _cleanup_tmp():
+        try:
+            from trimtok import ccr as _ccr
+            _ccr.close()
+        except Exception:
+            pass
+        _shutil.rmtree(_OWN_TMP_DIR, ignore_errors=True)
+    _atexit.register(_cleanup_tmp)
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from trimtok import _handle_retrieve  # noqa: E402
