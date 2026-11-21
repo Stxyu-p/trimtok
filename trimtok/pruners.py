@@ -115,30 +115,32 @@ def prune_python_traceback(lines: list[str]) -> list[str]:
 
         tb_head = line
         i += 1
-        frames: list[tuple[str, str, bool]] = []
+        frames: list[tuple[str, list[str], bool]] = []
         while i < n:
             m = _PY_FRAME_RE.match(lines[i])
             if m:
                 hdr = lines[i]
-                code = ""
+                extra: list[str] = []
                 i += 1
-                if i < n and (lines[i].startswith("    ") or lines[i].startswith("\t")):
-                    code = lines[i]
+                # Consume code line + optional Python 3.11+ caret highlight lines (`~~~~^^^^`)
+                while i < n and len(extra) < 3 and (lines[i].startswith("    ") or lines[i].startswith("\t")):
+                    if _PY_FRAME_RE.match(lines[i]):
+                        break
+                    extra.append(lines[i])
                     i += 1
                 is_fw = _is_framework_path(m.group(1))
-                frames.append((hdr, code, is_fw))
+                frames.append((hdr, extra, is_fw))
             else:
                 break
 
         if len(frames) <= 3:
             out.append(tb_head)
-            for hdr, code, _ in frames:
+            for hdr, extra, _ in frames:
                 out.append(hdr)
-                if code:
-                    out.append(code)
+                out.extend(extra)
             continue
 
-        kept_blocks: list[tuple[str, str] | str] = []
+        kept_blocks: list[tuple[str, list[str]] | str] = []
         kept_blocks.append((frames[0][0], frames[0][1]))
 
         fw_run = 0
@@ -175,8 +177,7 @@ def prune_python_traceback(lines: list[str]) -> list[str]:
                 out.append(item)
             else:
                 out.append(item[0])
-                if item[1]:
-                    out.append(item[1])
+                out.extend(item[1])
 
     return out
 
@@ -313,11 +314,13 @@ def _render_segment(
     hits: list[tuple[int, str, str]],
     owner: str | None,
     deadline: Any | None,
+    *,
+    had_header: bool = False,
 ) -> list[str]:
     raw = [h[2] for h in hits]
     n = len(hits)
     if n <= _KEEP_ALL:
-        return raw
+        return ([path] + raw) if had_header else raw
     keep = {0, n - 1}
     for i, (_, _, line) in enumerate(hits):
         if is_important(line):
@@ -364,7 +367,7 @@ def _render_segment(
             run.append(i)
     _flush()
     if not folded_any:
-        return raw
+        return ([path] + raw) if had_header else raw
     return [header] + out
 
 
@@ -380,13 +383,15 @@ def group_search_hits(
         lines = text.split("\n")
         out: list[str] = []
         seg_path: str | None = None
+        seg_had_header = False
         seg_hits: list[tuple[int, str, str]] = []
 
         def _flush_seg() -> None:
-            nonlocal seg_path, seg_hits
+            nonlocal seg_path, seg_had_header, seg_hits
             if seg_path is not None:
-                out.extend(_render_segment(seg_path, seg_hits, owner, deadline))
+                out.extend(_render_segment(seg_path, seg_hits, owner, deadline, had_header=seg_had_header))
             seg_path = None
+            seg_had_header = False
             seg_hits = []
 
         for ln in lines:
@@ -401,6 +406,7 @@ def group_search_hits(
             if _PATH_LINE_RE.match(ln):
                 _flush_seg()
                 seg_path = ln
+                seg_had_header = True
                 continue
             if seg_path is not None:
                 m_ind = _INDENT_HIT_RE.match(ln)
@@ -758,10 +764,16 @@ def fold_text_structure(
                 emit_kept(i, j, keep)
             i = j
 
-        saved = sum(len(x) for x in lines) - sum(len(x) for x in out)
-        if saved < 200 or saved < int(_MIN_TEXT_FOLD_RATIO * len(text)):
+        new_text = "\n".join(out)
+        orig_len = (
+            sum(len(line_prefixes[i]) + len(lines[i]) + 1 for i in range(total)) - 1
+            if use_p
+            else len(text)
+        )
+        saved = orig_len - len(new_text)
+        if saved < 200 or saved < int(_MIN_TEXT_FOLD_RATIO * orig_len):
             return text, 0
-        return "\n".join(out), saved
+        return new_text, saved
     except Exception:
         return text, 0
 
@@ -771,23 +783,28 @@ _SUCCESS_COLLAPSE_CMDS = (
     "yarn install", "yarn add", "docker pull", "git push", "git fetch",
 )
 
+_RE_SUCCESS_COMPOUND = re.compile(r"(?:&&|\|\||<<|[;|\n`]|[$][(]|\s&\s)")
+
+
 def collapse_success_output(cmd: str, text: str, exit_code: int = 0) -> str:
     # Noisy build/install logs that succeeded contain zero intelligence for reasoning
-    if exit_code != 0 or not text:
+    if exit_code != 0 or not text or not cmd:
         return text
     clean_cmd = cmd.strip()
-    if not any(clean_cmd.startswith(c) for c in _SUCCESS_COLLAPSE_CMDS):
+    if _RE_SUCCESS_COMPOUND.search(clean_cmd):
+        return text
+    if not any(clean_cmd == c or clean_cmd.startswith(c + " ") for c in _SUCCESS_COLLAPSE_CMDS):
         return text
     lines = [l.strip() for l in text.splitlines() if l.strip()]
-    # Safety guard: never swallow a fault, whatever wording the tool uses.
-    # A fixed list of five substrings missed "error " (yarn) and "ERR_PNPM_"
-    # (pnpm), turning a failed install into "[tt:success ...]".
-    if any(is_important(l) for l in lines[:200]):
+    # Scan head AND tail lines so late install/build errors past line 200 are never swallowed
+    probe = lines if len(lines) <= 400 else (lines[:200] + lines[-200:])
+    if any(is_important(l) for l in probe):
         return text
     summary = lines[-1] if lines else "completed"
     if len(lines) > 1 and ("added" in lines[0] or "packages" in lines[0]):
         summary = lines[0]
-    return f"[tt:success cmd=\"{clean_cmd}\" {summary}]"
+    out = f"[tt:success cmd=\"{clean_cmd}\" {summary}]"
+    return out if len(out) < len(text) else text
 
 def group_directory_siblings(lines: list[str], threshold: int = 5) -> list[str]:
     # Folding repetitive sibling files in directory trees preserves navigational anchors

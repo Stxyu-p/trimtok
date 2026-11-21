@@ -10,6 +10,7 @@ files/directories on disk, or staged git diffs while ignoring backticked docs.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -18,6 +19,7 @@ from typing import Any
 
 # Inline code spans (`...`) document marker syntax without being live stubs.
 _INLINE_BACKTICK_RE = re.compile(r"`[^`\n]+`")
+_FENCE_LINE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
 
 # Real persisted Trimtok stub markers carry concrete line ranges, counts, or
 # Base62/hex CCR references (never f-string templates like `L{s}-L{e}`).
@@ -44,7 +46,15 @@ _STUB_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
     (
         "tt_stashed_stub",
-        re.compile(r"\[tt:stashed\s+\d+\s+chars\b[^\]]*\]"),
+        re.compile(
+            r"\[tt:stashed\s+(?:\d+\s+chars|[^\]]*trimtok_retrieve\s+'#c?[0-9A-Za-z]+')[^\]]*\]"
+        ),
+    ),
+    (
+        "tt_context_stub",
+        re.compile(
+            r"\[tt:(?:checkpoint|skill_cached|masked|headtail)\b[^\]]*#[0-9A-Za-z]+[^\]]*\]"
+        ),
     ),
     (
         "tt_ellipsis_stub",
@@ -63,6 +73,7 @@ _WRITE_CONTENT_KEYS = (
     "new_string",
     "replacement",
     "Replacement",
+    "ReplacementContent",
     "Content",
     "patch",
     "diff",
@@ -70,6 +81,7 @@ _WRITE_CONTENT_KEYS = (
     "text",
     "code",
 )
+_NESTED_LIST_KEYS = ("operations", "edits", "ReplacementChunks")
 
 _SKIP_DIRS = frozenset({".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", ".pytest_cache"})
 _TEXT_EXTS = frozenset({
@@ -81,14 +93,31 @@ _TEXT_EXTS = frozenset({
 
 
 def find_stub_markers(text: str) -> list[dict[str, Any]]:
-    """Return concrete Trimtok stub markers found outside inline backticks."""
+    """Return concrete Trimtok stub markers found outside inline backticks and fenced code blocks."""
     if not text or not isinstance(text, str):
         return []
     if "[tt:" not in text and "[@#" not in text and "[..." not in text:
         return []
 
     findings: list[dict[str, Any]] = []
+    in_fence = False
+    fence_char = ""
+    fence_len = 0
     for lineno, line in enumerate(text.splitlines(), 1):
+        fm = _FENCE_LINE_RE.match(line)
+        if fm:
+            marker = fm.group(1)
+            if not in_fence:
+                in_fence = True
+                fence_char = marker[0]
+                fence_len = len(marker)
+            elif marker[0] == fence_char and len(marker) >= fence_len:
+                in_fence = False
+                fence_char = ""
+                fence_len = 0
+            continue
+        if in_fence:
+            continue
         if "[tt:" not in line and "[@#" not in line and "[..." not in line:
             continue
         cleaned = _INLINE_BACKTICK_RE.sub("", line)
@@ -122,6 +151,11 @@ def check_write_args(tool_name: str, args: Any) -> dict[str, Any] | None:
     name = str(tool_name or "").strip()
     if name not in _EDIT_TOOLS and name.lower() not in _EDIT_TOOLS:
         return None
+    if isinstance(args, str) and args.lstrip().startswith("{"):
+        try:
+            args = json.loads(args)
+        except Exception:
+            return None
     if not isinstance(args, dict):
         return None
 
@@ -172,13 +206,14 @@ def check_write_args(tool_name: str, args: Any) -> dict[str, Any] | None:
     direct = _inspect_mapping(args)
     if direct is not None:
         return direct
-    ops = args.get("operations")
-    if isinstance(ops, list):
-        for op in ops:
-            if isinstance(op, dict):
-                res = _inspect_mapping(op)
-                if res is not None:
-                    return res
+    for list_key in _NESTED_LIST_KEYS:
+        ops = args.get(list_key)
+        if isinstance(ops, list):
+            for op in ops:
+                if isinstance(op, dict):
+                    res = _inspect_mapping(op)
+                    if res is not None:
+                        return res
     return None
 
 
@@ -188,23 +223,45 @@ def scan_paths(paths: list[str | Path] | None = None, *, staged: bool = False) -
     files_scanned = 0
 
     if staged:
-        proc = subprocess.run(
-            ["git", "diff", "--cached", "--unified=0", "--no-color"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
+        git_cmd = ["git", "diff", "--cached", "--unified=0", "--no-color"]
+        if paths:
+            git_cmd.extend(["--", *[str(p) for p in paths]])
+        try:
+            proc = subprocess.run(
+                git_cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                stdin=subprocess.DEVNULL,
+                check=False,
+            )
+        except Exception as exc:
+            return {
+                "mode": "staged",
+                "files_scanned": 0,
+                "corrupted_files": 0,
+                "findings": [],
+                "clean": False,
+                "error": str(exc),
+            }
         cur_file = "<staged>"
+        cur_skip = False
         cur_line = 0
+        seen_staged: set[str] = set()
         for raw in (proc.stdout or "").splitlines():
             if raw.startswith("+++ b/"):
                 cur_file = raw[6:].strip()
+                cur_skip = "tests" in Path(cur_file).parts
+                if not cur_skip and cur_file not in seen_staged:
+                    seen_staged.add(cur_file)
+                    files_scanned += 1
                 continue
             if raw.startswith("@@ "):
                 m = re.search(r"\+(\d+)", raw)
                 cur_line = int(m.group(1)) if m else 0
+                continue
+            if cur_skip:
                 continue
             if raw.startswith("+") and not raw.startswith("+++"):
                 added = raw[1:]
@@ -248,7 +305,6 @@ def scan_paths(paths: list[str | Path] | None = None, *, staged: bool = False) -
             if key in seen_files:
                 continue
             seen_files.add(key)
-            # Skip test files exercising stub markers intentionally
             if any(part == "tests" for part in fp.parts):
                 continue
             files_scanned += 1

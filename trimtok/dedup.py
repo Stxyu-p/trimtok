@@ -7,6 +7,7 @@ import hashlib
 import json as _json
 import os
 import re
+from collections import OrderedDict
 import threading
 import time
 from typing import Any
@@ -111,7 +112,8 @@ _TS_LONG_RE = re.compile(
 )
 _TS_SHORT_RE = re.compile(r"(?<![\d:])\d{1,2}:\d{2}:\d{2}(?![\d:])")
 
-_SEEN: dict[str, dict] = {}
+_MAX_SESSIONS = 64
+_SEEN: OrderedDict[str, dict] = OrderedDict()
 _SEEN_LOCK = threading.RLock()
 
 
@@ -120,10 +122,14 @@ def _seen(session_id: str) -> dict:
     with _SEEN_LOCK:
         entry = _SEEN.get(key)
         if entry is None:
+            while len(_SEEN) >= _MAX_SESSIONS:
+                _SEEN.popitem(last=False)
             entry = {
                 "spans": [], "span_chars": 0, "lines": {}, "raw": set(), "turns": {}, "hotspots": {}
             }
             _SEEN[key] = entry
+        else:
+            _SEEN.move_to_end(key)
         if "span_chars" not in entry:
             entry["span_chars"] = sum(len(text) for _, text in entry["spans"])
         if "turns" not in entry:
@@ -265,8 +271,10 @@ def fold_spans(
     deadline: Any | None = None,
 ) -> tuple[str, list[tuple[str, str]], int]:
     """Replace verbatim runs seen in earlier tool results with pointers."""
-    seen = _seen(session_id)
-    corpus = seen["spans"]
+    with _SEEN_LOCK:
+        seen = _seen(session_id)
+        corpus = list(seen["spans"])
+        line_owner = dict(seen["lines"])
     lines = text.split("\n")
     if not corpus:
         return text, [], 0
@@ -274,16 +282,49 @@ def fold_spans(
     for idx, (h, span) in enumerate(corpus):
         fl = span.split("\n", 1)[0]
         by_first.setdefault(fl, []).append(idx)
-    line_owner = seen["lines"]
     out: list[str] = []
     folded_chars = 0
     i = 0
     n = len(lines)
-    new_spans: list[tuple[str, str]] = []
     while i < n:
         if deadline is not None and (i & 255) == 0:
             deadline.check()
         line = lines[i]
+        # Prefer multi-line span folding before single-line pointers so a 10-line
+        # verbatim block collapses to 1 pointer instead of 10 single-line stubs.
+        best: tuple[int, int, str] | None = None
+        if (
+            not line.startswith("[tt:")
+            and not line.startswith(_KEEP_PREFIX)
+            and not is_exempt(line)
+            and not is_important(line)
+        ):
+            for idx in by_first.get(line, ()):
+                h, span = corpus[idx]
+                slines = span.split("\n")
+                m = 0
+                while i + m < n and m < len(slines) and lines[i + m] == slines[m]:
+                    cur_ln = lines[i + m]
+                    if (
+                        cur_ln.startswith("[tt:")
+                        or cur_ln.startswith(_KEEP_PREFIX)
+                        or is_exempt(cur_ln)
+                        or is_important(cur_ln)
+                    ):
+                        break
+                    m += 1
+                if m >= min_lines:
+                    seg = "\n".join(lines[i:i + m])
+                    if len(seg) >= min_chars and (best is None or m > best[0]):
+                        best = (m, idx, h)
+        if best:
+            m, _, _h = best
+            seg = "\n".join(lines[i:i + m])
+            ptr = seen_lines(m, owner or _h)
+            out.append(ptr)
+            folded_chars += len(seg) - len(ptr)
+            i += m
+            continue
         if (
             line_owner.get(line) is not None
             and len(line) >= _MIN_LINE_CHARS
@@ -297,35 +338,16 @@ def fold_spans(
             folded_chars += len(line) - len(ptr)
             i += 1
             continue
-        best: tuple[int, int, str] | None = None
-        for idx in by_first.get(lines[i], ()):
-            h, span = corpus[idx]
-            slines = span.split("\n")
-            m = 0
-            while i + m < n and m < len(slines) and lines[i + m] == slines[m]:
-                m += 1
-            if m >= min_lines:
-                seg = "\n".join(lines[i:i + m])
-                if len(seg) >= min_chars and (best is None or m > best[0]):
-                    best = (m, idx, h)
-        if best:
-            m, _, _h = best
-            seg = "\n".join(lines[i:i + m])
-            ptr = seen_lines(m, owner or _h)
-            out.append(ptr)
-            folded_chars += len(seg) - len(ptr)
-            i += m
-        else:
-            folded_line, extra = _fold_inner(lines[i], line_owner, owner)
-            out.append(folded_line)
-            folded_chars += extra
-            i += 1
+        folded_line, extra = _fold_inner(line, line_owner, owner)
+        out.append(folded_line)
+        folded_chars += extra
+        i += 1
     if folded_chars == 0 and out:
-        corpus_long = [ln for ln in line_owner if len(ln.split()) >= _SHINGLE_MIN_WORDS]
+        corpus_long = [ln for ln in line_owner if len(ln.split()) >= _SHINGLE_MIN_WORDS][-512:]
         if corpus_long:
             out, sh_saved = _fold_shingles(out, corpus_long, owner, deadline)
             folded_chars += sh_saved
-    return "\n".join(out), new_spans, folded_chars
+    return "\n".join(out), [], folded_chars
 
 
 def _fold_intra_repeats(text: str, deadline: Any | None = None) -> tuple[str, int]:
@@ -400,6 +422,7 @@ def _fold_intra_templates(
             or len(line) > _MAX_TEMPLATE_LINE
             or line.startswith("[tt:")
             or line.startswith(_KEEP_PREFIX)
+            or is_exempt(line)
             or is_important(line)
         ):
             continue
@@ -546,6 +569,9 @@ def _fold_inner(
                     line_owner.get(ln) is not None
                     and len(ln) >= _MIN_LINE_CHARS
                     and not ln.startswith("[tt:")
+                    and not ln.startswith(_KEEP_PREFIX)
+                    and not is_exempt(ln)
+                    and not is_important(ln)
                 ):
                     ptr = seen_line(owner or line_owner[ln])
                     saved += len(ln) - len(ptr)

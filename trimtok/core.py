@@ -110,8 +110,6 @@ except Exception:
         def try_command_filter(c, o):  # type: ignore
             return None
 
-_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][AB0]")
-
 _TS_PREFIX_RE = re.compile(
     r"^\[?\d{4}[-/]\d{2}[-/]\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,9})?(?:Z|[+-]\d{2}:?\d{2})?\]?\s*"
 )
@@ -120,9 +118,10 @@ _PROGRESS_RE = re.compile(
     r"^\s*(?:[⠁⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏◐◓◑◒]|[-/\\|]\s*(?:$|\d+%)|(?:\d{1,3}%|\[\s*\d+/\d+\]))"
 )
 _NOISE_LINE_RE = re.compile(
-    r"(?i)^\s*(npm notice|.*deprecated.*|.*audit.* vulnerabilities? \(.*\)|"
-    r".*up to date.*|.*already (satisfied|installed).*|^\s*Collecting .*|"
-    r"^\s*Downloading .*|^\s*Using cached .*)$"
+    r"(?i)^\s*(?:npm notice\b|[^\n]{0,200}\bdeprecated\b|"
+    r"[^\n]{0,120}\baudit\b[^\n]{0,80}\bvulnerabilities?\s*\([^\n]{0,80}\)|"
+    r"[^\n]{0,120}\bup to date\b|[^\n]{0,120}\balready (?:satisfied|installed)\b|"
+    r"Collecting\s+|Downloading\s+|Using cached\s+)"
 )
 _HEAD_KEEP = 2
 _TAIL_KEEP = 2
@@ -245,7 +244,7 @@ def detect_kind(text: str) -> str:
         return "diff"
     if re.search(r"(?m)^(FAIL|ERROR|ok|PASSED|FAILED|Traceback|  File |panic:|thread '.*' panicked)", sample):
         return "log"
-    if re.search(r"(?m)^[^:\n]{1,120}:\d+:", text[:4000]):
+    if re.search(r"(?m)^(?:[A-Za-z]:[/\\])?(?!\d{1,2}:\d{2}:\d{2})[^:\n]{1,120}:\d+:", text[:4000]):
         return "search"
     try:
         stripped = text.strip()
@@ -286,15 +285,17 @@ def _fold_repeats(
         norm = _normalize_line(line)
         j = i + 1
         # Fuzzy template match (>=0.85) on short lines only: O(n^2) guard.
-        _do_fuzzy = _FUZZY_AVAILABLE and len(norm) < 200
-        while j < n and not flagged[j][1]:
+        _short_norm = len(norm) < 200
+        _do_fuzzy = _FUZZY_AVAILABLE and _short_norm
+        while j < n and not flagged[j][1] and not is_exempt(flagged[j][0]):
+            if deadline is not None and (j & 511) == 0:
+                deadline.check()
             other_norm = _normalize_line(flagged[j][0])
-            if len(other_norm) >= 200:
-                # Long lines: exact match only (performance guard).
-                if other_norm != norm:
-                    break
+            if other_norm == norm:
                 j += 1
                 continue
+            if not _short_norm or len(other_norm) >= 200:
+                break
             if _do_fuzzy:
                 sim = _Levenshtein.normalized_similarity(norm, other_norm)
             else:
@@ -361,8 +362,16 @@ def _window(
     if len(keep_set) > budget:
         essential = forced_set | {0, max(0, n - 1)}
         if len(essential) <= budget:
-            sorted_all = sorted(keep_set)
-            keep_set = set(sorted_all[:budget]) | essential
+            keep_set = set(essential)
+            rem = budget - len(keep_set)
+            if rem > 0:
+                # Prioritize tail (summaries/exit stats) then head within exact budget
+                tail_fill = sorted(tail_indices - keep_set, reverse=True)[:rem]
+                keep_set.update(tail_fill)
+                rem = budget - len(keep_set)
+            if rem > 0:
+                head_fill = sorted(head_indices - keep_set)[:rem]
+                keep_set.update(head_fill)
         else:
             # Fault-dense: sample faults evenly and always keep the tail.
             faults = sorted(forced_set)
@@ -434,33 +443,38 @@ def _command_lanes(command: str, output: str, exit_code: int, t0: float) -> tupl
     if not command or len(output) < 256:
         return None
     clean_success = collapse_success_output(command, output, exit_code)
-    if clean_success != output:
+    if clean_success != output and len(clean_success) < len(output):
         tb = estimate_tokens(output)
         ta = estimate_tokens(clean_success)
-        return clean_success, {
-            "gate": "ok", "kind": "success_collapse", "digest": "",
-            "before_chars": len(output), "after_chars": len(clean_success),
-            "saved_chars": len(output) - len(clean_success),
-            "est_tokens_before": tb, "est_tokens_after": ta,
-            "hidden_lines": output.count("\n"), "dropped_lines": 0,
-            "ms": (time.perf_counter() - t0) * 1000,
-        }
+        if ta < tb:
+            return clean_success, {
+                "gate": "ok", "kind": "success_collapse", "digest": "",
+                "before_chars": len(output), "after_chars": len(clean_success),
+                "saved_chars": len(output) - len(clean_success),
+                "est_tokens_before": tb, "est_tokens_after": ta,
+                "hidden_lines": output.count("\n"), "dropped_lines": 0,
+                "ms": (time.perf_counter() - t0) * 1000,
+            }
+    if exit_code != 0:
+        return None
     filtered = try_command_filter(command, output)
     if filtered is None or len(filtered) >= len(output):
-        return None
-    tb = estimate_tokens(output)
-    ta = estimate_tokens(filtered)
-    if ta >= tb:
         return None
     _ref = _ccr_put(output)
     if not _ref:
         return None
     ref_clean = _ref.lstrip("#")
-    ref_tag = f" #{ref_clean}"
-    return f"{filtered}{ref_tag}", {
+    final_filtered = f"{filtered} #{ref_clean}"
+    if len(final_filtered) >= len(output):
+        return None
+    tb = estimate_tokens(output)
+    ta = estimate_tokens(final_filtered)
+    if ta >= tb:
+        return None
+    return final_filtered, {
         "gate": "ok", "kind": "cmd_filter", "digest": ref_clean,
-        "before_chars": len(output), "after_chars": len(filtered) + len(ref_tag),
-        "saved_chars": len(output) - (len(filtered) + len(ref_tag)),
+        "before_chars": len(output), "after_chars": len(final_filtered),
+        "saved_chars": len(output) - len(final_filtered),
         "est_tokens_before": tb, "est_tokens_after": ta,
         "hidden_lines": output.count("\n"), "dropped_lines": 0,
         "ms": (time.perf_counter() - t0) * 1000,
@@ -594,6 +608,7 @@ def _fold_pipeline(
         or (kind == "diff" and (ln.startswith(("+", "-", "@", "diff ", "index ", "---", "+++")) or ln.startswith(" ")))
         or (not _PROGRESS_RE.match(ln) and not _NOISE_LINE_RE.match(ln))
     ]
+    hidden += len(folded) - len(kept)
     windowed, dropped = _window(kept, budget)
     # Fold after the window: before it, markers ate budget slots (49K -> 58K).
     windowed_f, f_hidden = _fold_fault_sigs(
@@ -636,12 +651,6 @@ def compress_terminal(
         # The lookup is deferred until after the delta lane: an identical repeat is
         # exactly what a delta describes best, yet a cached revert used to ship the
         # whole payload again instead of a two-line "nothing changed".
-        cache_key = ""
-        pending_dead: dict | None = None
-        if len(output) >= min_chars and not has_marker_head(output):
-            fast_hash = hashlib.sha256(output.encode("utf-8", "replace")).hexdigest()[:16]
-            cache_key = f"{fast_hash}:{max_lines}:{exit_code}:{level}"
-            pending_dead = _get_dead_range(cache_key)
         # Secrets stay verbatim; the budget follows context pressure.
         if policy_enabled:
             try:
@@ -658,11 +667,11 @@ def compress_terminal(
             except Exception:
                 pass
         if deadline is not None and len(output) > 100_000:
-            # Scale the deadline with payload size: the guard bounds work, not size.
+            # Scale only an unexpired deadline (never resurrect an already-expired guard).
             _remain = max(0.0, (getattr(deadline, "deadline", 0.0) - time.monotonic()) * 1000.0)
             _base = getattr(deadline, "budget_ms", 200.0)
             _scaled = _base + (len(output) - 100_000) / 1200.0
-            if _scaled > _remain:
+            if _remain > 0.0 and _scaled > _remain:
                 deadline = Deadline(min(_base * 3.0, max(_scaled, _remain)))
         if session_id and command:
             # A command that rewrites files invalidates that path's cached body.
@@ -687,26 +696,32 @@ def compress_terminal(
         budget = _budget_for(command, kind, max_lines)
         text = strip_ansi(output)
 
+        fast_hash = hashlib.sha256(output.encode("utf-8", "replace")).hexdigest()[:16]
+        digest = fast_hash[:12]
+        cache_key = f"{fast_hash}:{budget}:{exit_code}:{level}"
+        pending_dead = _get_dead_range(cache_key)
+
         if delta_enabled:
             _delta = delta_engine.try_delta(
                 session_id, command, text,
                 threshold=delta_threshold, deadline=deadline,
             )
             if _delta is not None and len(_delta) < len(output):
-                return _delta, {
-                    "gate": "ok", "kind": kind, "delta": True,
-                    "before_chars": len(output), "after_chars": len(_delta),
-                    "saved_chars": len(output) - len(_delta),
-                    "est_tokens_before": estimate_tokens(output),
-                    "est_tokens_after": estimate_tokens(_delta),
-                    "digest": hashlib.sha256(output.encode("utf-8", "replace")).hexdigest()[:12],
-                    "ms": (time.perf_counter() - t0) * 1000,
-                }
+                tb_d, ta_d = estimate_tokens(output), estimate_tokens(_delta)
+                if ta_d < tb_d:
+                    return _delta, {
+                        "gate": "ok", "kind": kind, "delta": True,
+                        "before_chars": len(output), "after_chars": len(_delta),
+                        "saved_chars": len(output) - len(_delta),
+                        "est_tokens_before": tb_d,
+                        "est_tokens_after": ta_d,
+                        "digest": digest,
+                        "ms": (time.perf_counter() - t0) * 1000,
+                    }
         if pending_dead is not None:
             pending_dead["ms"] = (time.perf_counter() - t0) * 1000
             pending_dead["cached_dead_range"] = True
             return output, pending_dead
-        digest = hashlib.sha256(output.encode("utf-8", "replace")).hexdigest()[:12]
         windowed, hidden, dropped, flagged_all, budget = _fold_pipeline(
             text, kind, budget, deadline, digest=digest)
         try:

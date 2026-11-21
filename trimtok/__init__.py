@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -17,6 +18,10 @@ from .context_engine import ContextEngine, TrimtokContextEngine
 
 __version__ = VERSION
 _LOGGER = logging.getLogger("trimtok")
+_REGISTERED_ENGINE: TrimtokContextEngine | None = None
+_PRE_LLM_MAPPED_SESSIONS: OrderedDict[str, float] = OrderedDict()
+_PRE_LLM_LOCK = threading.Lock()
+_MAX_MAPPED_SESSIONS = 128
 
 from .ccr import (
     default_dir,
@@ -117,16 +122,34 @@ def _usage_path() -> Path:
 
 
 def _rotate_replace(path: Path, backup: Path) -> None:
-    """Atomically rotate `path` to `backup` with Windows file-watcher retry."""
-    for attempt in range(5):
+    """Atomically rotate `path` to `backup` with bounded Windows file-watcher retry."""
+    for attempt in range(3):
         try:
             os.replace(path, backup)
             return
         except PermissionError:
-            if attempt == 4:
+            if attempt == 2:
                 path.write_text("", encoding="utf-8")
                 return
-            time.sleep(0.02 * (2 ** attempt))
+            time.sleep(0.01 * (2 ** attempt))
+
+
+def _append_jsonl(path: Path, entry: dict, max_bytes: int, oversize_event: str) -> None:
+    """Append one JSONL row with size-bounded rotation under _AUDIT_LOCK."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(entry, ensure_ascii=False) + "\n"
+    line_bytes = len(line.encode("utf-8"))
+    if line_bytes > max_bytes:
+        line = json.dumps({"event": oversize_event}) + "\n"
+        line_bytes = len(line.encode("utf-8"))
+    with _AUDIT_LOCK:
+        backup = path.with_name(path.name + ".1")
+        if backup.exists() and backup.stat().st_size > max_bytes:
+            backup.unlink(missing_ok=True)
+        if path.exists() and path.stat().st_size + line_bytes > max_bytes:
+            _rotate_replace(path, backup)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(line)
 
 
 def _usage(entry: dict, ctx: Any = None) -> None:
@@ -139,21 +162,7 @@ def _usage(entry: dict, ctx: Any = None) -> None:
             tid = os.environ.get("TRINITY_TRACE_ID") or (_str_cfg(ctx, "trace_id", "") if ctx else "")
             if tid:
                 entry["trace_id"] = str(tid)[:64]
-        path = _usage_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        line = json.dumps(entry, ensure_ascii=False) + "\n"
-        if len(line.encode("utf-8")) > _MAX_USAGE_BYTES:
-            line = json.dumps({"event": "usage_entry_oversize"}) + "\n"
-        with _AUDIT_LOCK:
-            backup = path.with_name(path.name + ".1")
-            if backup.exists() and backup.stat().st_size > _MAX_USAGE_BYTES:
-                backup.unlink(missing_ok=True)
-            if path.exists() and path.stat().st_size > _MAX_USAGE_BYTES:
-                _rotate_replace(path, backup)
-            if path.exists() and path.stat().st_size + len(line.encode("utf-8")) > _MAX_USAGE_BYTES:
-                _rotate_replace(path, backup)
-            with path.open("a", encoding="utf-8") as f:
-                f.write(line)
+        _append_jsonl(_usage_path(), entry, _MAX_USAGE_BYTES, "usage_entry_oversize")
     except Exception as exc:
         _LOGGER.warning("trimtok usage telemetry write failed: %s", exc)
 
@@ -306,26 +315,14 @@ def _audit(entry: dict, ctx: Any = None) -> None:
     try:
         entry.setdefault("ts", int(time.time()))
         entry.setdefault("version", VERSION)
-        path = _audit_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        line = json.dumps(entry, ensure_ascii=False) + "\n"
-        if len(line.encode("utf-8")) > _MAX_AUDIT_BYTES:
-            line = json.dumps({"event": "audit_entry_oversize"}) + "\n"
-        with _AUDIT_LOCK:
-            backup = path.with_name(path.name + ".1")
-            if backup.exists() and backup.stat().st_size > _MAX_AUDIT_BYTES:
-                backup.unlink(missing_ok=True)
-            if path.exists() and path.stat().st_size > _MAX_AUDIT_BYTES:
-                _rotate_replace(path, backup)
-            if path.exists() and path.stat().st_size + len(line.encode("utf-8")) > _MAX_AUDIT_BYTES:
-                _rotate_replace(path, backup)
-            with path.open("a", encoding="utf-8") as f:
-                f.write(line)
+        _append_jsonl(_audit_path(), entry, _MAX_AUDIT_BYTES, "audit_entry_oversize")
     except Exception as exc:
         _LOGGER.warning("trimtok audit telemetry write failed: %s", exc)
 
 
 def _config_value(ctx: Any, key: str, default: Any) -> Any:
+    if ctx is None:
+        return default
     try:
         return ctx.get_config(key, default)
     except Exception:
@@ -344,6 +341,8 @@ def _float_cfg(ctx: Any, key: str, default: float, low: float, high: float) -> f
     try:
         value = float(_config_value(ctx, key, default))
     except Exception:
+        return default
+    if not math.isfinite(value):
         return default
     return max(low, min(high, value))
 
@@ -578,6 +577,11 @@ def _finalize(
     if stored is None:
         return None
     new_text, digest = stored
+    if _REGISTERED_ENGINE is not None and digest:
+        try:
+            _REGISTERED_ENGINE._record_session_ref(digest)
+        except Exception:
+            pass
     _audit({
         **audit_base,
         "before_chars": stats.get("before_chars"),
@@ -662,15 +666,15 @@ def _on_transform(
     returncode: Any = 0,
     **kw: Any,
 ) -> str | None:
-    ctx = _on_transform._ctx  # type: ignore[attr-defined]
-    if not _bool_cfg(ctx, "enabled", True):
+    ctx = getattr(_on_transform, "_ctx", None)
+    if ctx is not None and not _bool_cfg(ctx, "enabled", True):
         return None
     if not isinstance(output, str):
         return None
     if _excluded_command(command, ctx):
         _mark_terminal_call(kw.get("tool_call_id"))
         return None
-    sid = str(kw.get("session_id") or kw.get("task_id") or "")
+    sid = str(kw.get("session_id") or kw.get("task_id") or "default")
     exit_code = _safe_int(returncode, 0)
     record_hotspots(sid, output, exit_code)
     _mark_terminal_call(kw.get("tool_call_id"))
@@ -719,6 +723,8 @@ def _toon_allowed(ctx: Any) -> bool:
     if mode == "always":
         return True
     family = str(_str_cfg(ctx, "model_family", "") or "").strip().lower()
+    if not family and _REGISTERED_ENGINE is not None:
+        family = str(getattr(_REGISTERED_ENGINE, "active_model_family", "") or "").strip().lower()
     if not family:
         return True  # unknown caller: keep the existing behaviour
     try:
@@ -729,7 +735,7 @@ def _toon_allowed(ctx: Any) -> bool:
 
 
 def _context_pressure(ctx: Any, kw: dict) -> float:
-    """Fraction of the context window already used, from the hook or config."""
+    """Fraction of the context window already used, from hook kwargs, static config, or live engine."""
     if not _bool_cfg(ctx, "adaptive_enabled", True):
         return 0.0
     for key in ("context_pressure", "pressure", "context_used_pct", "context_usage"):
@@ -740,10 +746,22 @@ def _context_pressure(ctx: Any, kw: dict) -> float:
             f = float(v)
         except Exception:
             continue
+        if not math.isfinite(f):
+            continue
         if f > 1.0:
             f = f / 100.0
         return max(0.0, min(1.0, f))
-    return _float_cfg(ctx, "context_pressure", 0.0, 0.0, 1.0)
+    cfg_p = _float_cfg(ctx, "context_pressure", 0.0, 0.0, 1.0)
+    if cfg_p > 0.0:
+        return cfg_p
+    if _REGISTERED_ENGINE is not None:
+        try:
+            live = float(_REGISTERED_ENGINE.live_pressure)
+            if math.isfinite(live) and live > 0.0:
+                return max(0.0, min(1.0, live))
+        except Exception:
+            pass
+    return 0.0
 
 
 def _on_tool_result(
@@ -755,10 +773,10 @@ def _on_tool_result(
     turn_id: Any = None,
     **kw: Any,
 ) -> str | None:
-    ctx = _on_tool_result._ctx  # type: ignore[attr-defined]
-    if not _bool_cfg(ctx, "enabled", True):
+    ctx = getattr(_on_tool_result, "_ctx", None)
+    if ctx is not None and not _bool_cfg(ctx, "enabled", True):
         return None
-    if not _bool_cfg(ctx, "phase2_enabled", True):
+    if ctx is not None and not _bool_cfg(ctx, "phase2_enabled", True):
         return None
     if not isinstance(result, str):
         return None
@@ -771,10 +789,11 @@ def _on_tool_result(
         return None
     sid = str(session_id or task_id or "default")
     turn = str(turn_id or "")
-    # The tool args (path/offset/limit) decide whether a read is a full read or
-    # a targeted slice -- if the caller passed them elsewhere, use that.
     effective_args = args if args is not None else (
         kw.get("tool_args") or kw.get("arguments") or kw.get("input"))
+    if verbatim_name == "terminal" and isinstance(effective_args, dict):
+        if _excluded_command(effective_args.get("command") or effective_args.get("cmd"), ctx):
+            return None
     new_result, stats = compress_tool_result(
         str(tool_name or ""),
         result,
@@ -809,8 +828,8 @@ def _on_post_llm(
     turn_id: Any = None,
     **kw: Any,
 ) -> None:
-    ctx = _on_post_llm._ctx  # type: ignore[attr-defined]
-    if not _bool_cfg(ctx, "enabled", True) or not _bool_cfg(ctx, "mask_enabled", True):
+    ctx = getattr(_on_post_llm, "_ctx", None)
+    if ctx is not None and (not _bool_cfg(ctx, "enabled", True) or not _bool_cfg(ctx, "mask_enabled", True)):
         return None
     sid = str(session_id or task_id or "default")
     try:
@@ -833,7 +852,9 @@ def _parse_ref(raw: Any) -> str:
         return "#" + re.sub(r"[^0-9A-Za-z]", "", ref[1:])[:16]
     if re.match(r"^c[0-9A-Za-z]+$", ref) and len(ref) <= 8:
         return "#" + ref
-    hex_ref = "".join(c for c in ref if c in "0123456789abcdef")[:16]
+    if re.fullmatch(r"[0-9a-fA-F]{6,64}", ref):
+        return ref.lower()[:16]
+    hex_ref = "".join(c for c in ref.lower() if c in "0123456789abcdef")[:16]
     if hex_ref:
         return hex_ref
     return re.sub(r"[^0-9A-Za-z]", "", ref)[:16]
@@ -844,6 +865,16 @@ def _safe_int(val: Any, default: int) -> int:
         if val is None or isinstance(val, bool):
             return default
         return int(val)
+    except Exception:
+        return default
+
+
+def _safe_float(val: Any, default: float) -> float:
+    try:
+        if val is None or isinstance(val, bool):
+            return default
+        f = float(val)
+        return f if math.isfinite(f) else default
     except Exception:
         return default
 
@@ -900,8 +931,10 @@ def _handle_exec(args: dict, **kw: Any) -> str:
     code = str(a.get("code") or "")
     if not code.strip():
         return _err("code is required")
-    timeout = max(0.1, min(30.0, _safe_int(a.get("timeout"), 10) or 10))
-    res = _exec_run(ref, code, timeout=timeout)
+    raw_to = _safe_float(a.get("timeout"), 10.0)
+    timeout = max(0.1, min(30.0, raw_to if raw_to > 0.0 else 10.0))
+    ttl_hours = _int_cfg(ctx, "ccr_ttl_hours", 24, 1, 720)
+    res = _exec_run(ref, code, timeout=timeout, ttl_hours=ttl_hours)
     _usage_exec(a, res, ctx=ctx)
     if res.get("ok"):
         return _ok(res)
@@ -1176,38 +1209,49 @@ def _handle_ts_command(raw_args: str) -> str:
         return json.dumps(report.run_doctor(), indent=2, ensure_ascii=False)
     if arg == "usage":
         return _usage_summary()
-    if arg.startswith("gain"):
-        parts = arg.split()
+    parts = arg.split()
+    verb = parts[0].lower() if parts else ""
+    if verb == "gain":
         days = 0
         if len(parts) >= 2:
             try:
-                days = int(parts[1])
+                days = max(0, int(parts[1]))
             except ValueError:
                 pass
         return _gain_summary(days=days)
-    if arg.startswith("discover"):
+    if verb == "discover":
         return _discover_summary()
-    if arg.startswith("recall"):
-        h = arg.partition(" ")[2].strip()
-        parts = h.split()
-        if len(parts) >= 2 and parts[1].lower() in ("errors", "diff", "summary", "tail"):
-            return _handle_retrieve({"hash": parts[0], "section": parts[1].lower()})
-        return _handle_retrieve({"hash": parts[0] if parts else ""})
-    if arg == "purge":
+    if verb in ("recall", "retrieve"):
+        rest = parts[1:]
+        if len(rest) >= 2 and rest[1].lower() in ("errors", "diff", "summary", "tail"):
+            return _handle_retrieve({"hash": rest[0], "section": rest[1].lower()})
+        return _handle_retrieve({"hash": rest[0] if rest else ""})
+    if verb == "purge":
         purged = ccr_purge()
         return f"trimtok: purged {purged} cached original files."
-    if arg.startswith("retrieve"):
-        h = arg.partition(" ")[2].strip()
-        parts = h.split()
-        if len(parts) >= 2 and parts[1].lower() in ("errors", "diff", "summary", "tail"):
-            return _handle_retrieve({"hash": parts[0], "section": parts[1].lower()})
-        return _handle_retrieve({"hash": parts[0] if parts else ""})
-    return "Usage: /trimtok [status|stats|usage|gain|discover|recall|purge|retrieve <hash> [section]]"
+    return "Usage: /trimtok [status|stats|doctor|usage|gain|discover|recall|purge|retrieve <hash> [section]]"
 
 
 def _on_session_reset(session_id: Any = None, **kw: Any) -> None:
-    clear_session(str(session_id or ""))
-    delta_clear_session(str(session_id or ""))
+    sid = str(session_id or kw.get("task_id") or "").strip()
+    if not sid:
+        return
+    clear_session(sid)
+    delta_clear_session(sid)
+    with _PRE_LLM_LOCK:
+        _PRE_LLM_MAPPED_SESSIONS.pop(sid, None)
+
+
+def _persist_agent_payload(raw: str, new_text: str, stats: dict) -> tuple[str, dict]:
+    if stats.get("gate") != "ok" or stats.get("lossless_tier0"):
+        return new_text, stats
+    digest = str(stats.get("digest") or "")
+    ref = ccr_put(raw)
+    if not ref:
+        return raw, _storage_failure_stats(stats, raw)
+    if digest and f"#{digest}" in new_text:
+        new_text = new_text.replace(f"#{digest}", ref)
+    return new_text, stats
 
 
 def compress_agent_payload(
@@ -1216,22 +1260,26 @@ def compress_agent_payload(
     try:
         if isinstance(payload, str):
             if mode == "terminal":
-                return compress_terminal(kw.get("command", ""), payload)
-            return compress_tool_result(
-                kw.get("tool_name", "agent"), payload,
-                session_id=str(kw.get("session_id", "")),
-            )
+                new_text, stats = compress_terminal(kw.get("command", ""), payload)
+            else:
+                new_text, stats = compress_tool_result(
+                    kw.get("tool_name", "agent"), payload,
+                    session_id=str(kw.get("session_id", "")),
+                )
+            return _persist_agent_payload(payload, new_text, stats)
         if isinstance(payload, dict):
             for key in ("content", "output", "stdout", "result"):
                 if isinstance(payload.get(key), str):
+                    raw = payload[key]
                     if mode == "terminal":
-                        new_text, stats = compress_terminal(kw.get("command", ""), payload[key])
+                        new_text, stats = compress_terminal(kw.get("command", ""), raw)
                     else:
                         new_text, stats = compress_tool_result(
                             str(payload.get("tool_name") or kw.get("tool_name", "agent")),
-                            payload[key],
+                            raw,
                             session_id=str(payload.get("session_id") or kw.get("session_id", "")),
                         )
+                    new_text, stats = _persist_agent_payload(raw, new_text, stats)
                     return {**payload, key: new_text}, stats
         return payload, {"gate": "passthrough_non_str"}
     except Exception:
@@ -1260,22 +1308,35 @@ def _project_root(start: Path | None = None) -> Path | None:
     return None
 
 
+def _contains_codemap(val: Any) -> bool:
+    if isinstance(val, str):
+        return "Codebase map (" in val
+    if isinstance(val, list):
+        for part in val:
+            if isinstance(part, dict) and isinstance(part.get("text"), str) and "Codebase map (" in part["text"]:
+                return True
+            if isinstance(part, str) and "Codebase map (" in part:
+                return True
+    return False
+
+
 def _pre_llm_call(session_id: str = "", conversation_history: Any = None, **_: Any) -> dict[str, str] | None:
     ctx = getattr(_pre_llm_call, "_ctx", None)
     if ctx is not None and not _bool_cfg(ctx, "enabled", True):
         return None
     if os.environ.get("TRIMTOK_MAP", "1") == "0":
         return None
+    sid = str(session_id or "").strip()
+    if sid:
+        with _PRE_LLM_LOCK:
+            if sid in _PRE_LLM_MAPPED_SESSIONS:
+                return None
     for message in reversed(conversation_history or []):
         if not isinstance(message, dict):
             continue
         for _fld in ("api_content", "content"):
-            _txt = message.get(_fld)
-            if isinstance(_txt, str) and "Codebase map (" in _txt:
+            if _contains_codemap(message.get(_fld)):
                 return None
-        api_content = None
-        if isinstance(api_content, str) and "Codebase map (" in api_content:
-            return None
     try:
         from .codemap import build_codebase_map
     except ImportError:
@@ -1286,6 +1347,11 @@ def _pre_llm_call(session_id: str = "", conversation_history: Any = None, **_: A
             return None
         cmap = build_codebase_map(root=root, budget_chars=1500)
         if cmap:
+            if sid:
+                with _PRE_LLM_LOCK:
+                    _PRE_LLM_MAPPED_SESSIONS[sid] = time.monotonic()
+                    while len(_PRE_LLM_MAPPED_SESSIONS) > _MAX_MAPPED_SESSIONS:
+                        _PRE_LLM_MAPPED_SESSIONS.popitem(last=False)
             return {"context": cmap}
     except Exception:
         pass
@@ -1293,6 +1359,7 @@ def _pre_llm_call(session_id: str = "", conversation_history: Any = None, **_: A
 
 
 def register(ctx: Any) -> None:
+    global _REGISTERED_ENGINE
     _on_pre_tool_call._ctx = ctx  # type: ignore[attr-defined]
     _pre_llm_call._ctx = ctx  # type: ignore[attr-defined]
     _on_transform._ctx = ctx  # type: ignore[attr-defined]
@@ -1300,7 +1367,6 @@ def register(ctx: Any) -> None:
     _on_post_llm._ctx = ctx  # type: ignore[attr-defined]
     _handle_retrieve._ctx = ctx  # type: ignore[attr-defined]
     _handle_exec._ctx = ctx  # type: ignore[attr-defined]
-    _handle_ts_command._ctx = ctx  # type: ignore[attr-defined]
     ctx.register_hook("pre_tool_call", _on_pre_tool_call)
     ctx.register_hook("transform_terminal_output", _on_transform)
     ctx.register_hook("transform_tool_result", _on_tool_result)
@@ -1334,8 +1400,15 @@ def register(ctx: Any) -> None:
             description="View trimtok token savings, status, or retrieve cached originals",
             handler=_handle_ts_command,
         )
-    if hasattr(ctx, "register_context_engine"):
-        from trimtok.context_engine import TrimtokContextEngine
-        ctx.register_context_engine(TrimtokContextEngine())
+    if hasattr(ctx, "register_context_engine") and _bool_cfg(ctx, "enabled", True):
+        engine = TrimtokContextEngine(
+            min_stash_chars=_int_cfg(ctx, "min_chars", 2048, 256, 10_000_000),
+            policy_enabled=_bool_cfg(ctx, "policy_enabled", True),
+            ccr_max_entries=_int_cfg(ctx, "ccr_max_entries", 1000, 10, 100_000),
+            ccr_max_bytes=_int_cfg(ctx, "ccr_max_bytes", 52_428_800, 1024 * 1024, 2_000_000_000),
+            ccr_ttl_hours=_int_cfg(ctx, "ccr_ttl_hours", 24, 1, 720),
+        )
+        _REGISTERED_ENGINE = engine
+        ctx.register_context_engine(engine)
 
 

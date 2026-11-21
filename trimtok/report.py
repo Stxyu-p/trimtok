@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from pathlib import Path
 from typing import Any, Iterator
@@ -52,6 +53,34 @@ def _rows_from(files: tuple[Path, ...]) -> Iterator[dict]:
             _LOGGER.warning("trimtok usage file read failed for %s: %s", f, exc)
 
 
+def _safe_int(val: Any) -> int:
+    try:
+        n = int(val)
+        return n if n >= 0 else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def _safe_float(val: Any) -> float:
+    try:
+        f = float(val)
+        return f if math.isfinite(f) and f >= 0.0 else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _normalize_row_sizes(r: dict[str, Any]) -> tuple[int, int, int]:
+    """Return consistent (before, after, saved) where before - after == saved."""
+    before = _safe_int(r.get("before"))
+    if r.get("gate") != "ok":
+        return before, before, 0
+    if r.get("after") is not None:
+        after = min(before, _safe_int(r.get("after")))
+        return before, after, max(0, before - after)
+    saved = min(before, _safe_int(r.get("saved")))
+    return before, max(0, before - saved), saved
+
+
 def discover_summary(path: Path, lock: Any = None) -> str:
     """Scan telemetry to find shapes/tools with low savings and suggest filters."""
     try:
@@ -65,9 +94,10 @@ def discover_summary(path: Path, lock: Any = None) -> str:
             sh = str(r.get("shape") or "?")
             if sh not in by_shape:
                 by_shape[sh] = {"count": 0, "before": 0, "saved": 0}
+            b, _a, s = _normalize_row_sizes(r)
             by_shape[sh]["count"] += 1
-            by_shape[sh]["before"] += int(r.get("before") or 0)
-            by_shape[sh]["saved"] += int(r.get("saved") or 0)
+            by_shape[sh]["before"] += b
+            by_shape[sh]["saved"] += s
 
         # By tool/cmd
         by_cmd: dict = {}
@@ -75,9 +105,10 @@ def discover_summary(path: Path, lock: Any = None) -> str:
             c = str(r.get("cmd") or r.get("tool") or "?")[:50]
             if c not in by_cmd:
                 by_cmd[c] = {"count": 0, "before": 0, "saved": 0}
+            b, _a, s = _normalize_row_sizes(r)
             by_cmd[c]["count"] += 1
-            by_cmd[c]["before"] += int(r.get("before") or 0)
-            by_cmd[c]["saved"] += int(r.get("saved") or 0)
+            by_cmd[c]["before"] += b
+            by_cmd[c]["saved"] += s
 
         out = [f"trimtok discover: {len(terminal_rows)} events analyzed"]
         out.append("")
@@ -128,7 +159,7 @@ def gain_summary(path: Path, days: int = 0, lock: Any = None) -> str:
         cutoff = (time.time() - (days * 86400)) if days > 0 else 0.0
         rows = []
         for r in iter_usage_rows(path, lock):
-            if cutoff and float(r.get("ts") or 0.0) < cutoff:
+            if cutoff and _safe_float(r.get("ts")) < cutoff:
                 continue
             rows.append(r)
         if not rows:
@@ -137,42 +168,47 @@ def gain_summary(path: Path, days: int = 0, lock: Any = None) -> str:
         # Overall stats
         terminal_rows = [r for r in rows if r.get("hook") in ("terminal", "tool")]
         n_folds = sum(1 for r in terminal_rows if r.get("gate") == "ok")
-        total_before = sum(int(r.get("before") or 0) for r in terminal_rows)
-        total_after = sum(int(r.get("after") or 0) for r in terminal_rows)
-        total_saved = sum(int(r.get("saved") or 0) for r in terminal_rows)
-        overall_pct = (total_saved / total_before * 100) if total_before > 0 else 0.0
-        avg_ms = sum(float(r.get("ms") or 0) for r in terminal_rows) / max(len(terminal_rows), 1)
-        retrieve_rows = [r for r in rows if r.get("hook") == "retrieve"]
-        hits = sum(1 for r in retrieve_rows if r.get("hit"))
-        exec_rows = [r for r in rows if r.get("hook") == "exec"]
-        exec_ok = sum(1 for r in exec_rows if r.get("ok"))
-        exec_queried = sum(int(r.get("payload_bytes") or 0) for r in exec_rows if r.get("ok"))
-
-        # Savings by shape
+        total_before = 0
+        total_after = 0
+        total_saved = 0
+        total_ms = 0.0
         by_shape: dict = {}
+        by_cmd: dict = {}
         for r in terminal_rows:
+            b, a, s = _normalize_row_sizes(r)
+            ms = _safe_float(r.get("ms"))
+            total_before += b
+            total_after += a
+            total_saved += s
+            total_ms += ms
+
             sh = str(r.get("shape") or "?")
             if sh not in by_shape:
                 by_shape[sh] = {"count": 0, "before": 0, "after": 0, "saved": 0, "ms": 0.0, "ok": 0}
             by_shape[sh]["count"] += 1
-            by_shape[sh]["before"] += int(r.get("before") or 0)
-            by_shape[sh]["after"] += int(r.get("after") or 0)
-            by_shape[sh]["saved"] += int(r.get("saved") or 0)
-            by_shape[sh]["ms"] += float(r.get("ms") or 0)
+            by_shape[sh]["before"] += b
+            by_shape[sh]["after"] += a
+            by_shape[sh]["saved"] += s
+            by_shape[sh]["ms"] += ms
             if r.get("gate") == "ok":
                 by_shape[sh]["ok"] += 1
 
-        # Savings by tool/cmd
-        by_cmd: dict = {}
-        for r in terminal_rows:
             c = str(r.get("cmd") or r.get("tool") or "?")[:40]
             if c not in by_cmd:
                 by_cmd[c] = {"count": 0, "before": 0, "after": 0, "saved": 0, "ms": 0.0}
             by_cmd[c]["count"] += 1
-            by_cmd[c]["before"] += int(r.get("before") or 0)
-            by_cmd[c]["after"] += int(r.get("after") or 0)
-            by_cmd[c]["saved"] += int(r.get("saved") or 0)
-            by_cmd[c]["ms"] += float(r.get("ms") or 0)
+            by_cmd[c]["before"] += b
+            by_cmd[c]["after"] += a
+            by_cmd[c]["saved"] += s
+            by_cmd[c]["ms"] += ms
+
+        overall_pct = (total_saved / total_before * 100) if total_before > 0 else 0.0
+        avg_ms = total_ms / max(len(terminal_rows), 1)
+        retrieve_rows = [r for r in rows if r.get("hook") == "retrieve"]
+        hits = sum(1 for r in retrieve_rows if r.get("hit"))
+        exec_rows = [r for r in rows if r.get("hook") == "exec"]
+        exec_ok = sum(1 for r in exec_rows if r.get("ok"))
+        exec_queried = sum(_safe_int(r.get("payload_bytes")) for r in exec_rows if r.get("ok"))
 
         out = []
         out.append(f"trimtok gain report ({len(rows)} events, {n_folds} folds)")
@@ -233,13 +269,15 @@ def usage_summary(path: Path, lock: Any = None) -> str:
         if not rows:
             return "trimtok: no usage logged yet."
         n_ok = sum(1 for r in rows if r.get("gate") == "ok")
-        saved = sum(int(r.get("saved") or 0) for r in rows if r.get("hook") in ("terminal", "tool"))
+        saved = 0
         gates: dict = {}
         revert_reasons: dict = {}
         shapes: dict = {}
         cmds: dict = {}
         for r in rows:
             if r.get("hook") in ("terminal", "tool"):
+                _b, _a, row_saved = _normalize_row_sizes(r)
+                saved += row_saved
                 g = str(r.get("gate") or "?")
                 gates[g] = gates.get(g, 0) + 1
                 if g in ("reverted_gate", "reverted_quality") and r.get("reason"):
@@ -248,7 +286,7 @@ def usage_summary(path: Path, lock: Any = None) -> str:
                 sh = str(r.get("shape") or "?")
                 shapes[sh] = shapes.get(sh, 0) + 1
                 c = str(r.get("cmd") or r.get("tool") or "?")[:40]
-                cmds[c] = [cmds.get(c, [0, 0])[0] + 1, cmds.get(c, [0, 0])[1] + int(r.get("saved") or 0)]
+                cmds[c] = [cmds.get(c, [0, 0])[0] + 1, cmds.get(c, [0, 0])[1] + row_saved]
         retr = [r for r in rows if r.get("hook") == "retrieve"]
         hits = sum(1 for r in retr if r.get("hit"))
         all_g = sorted(gates.items(), key=lambda kv: -kv[1])
@@ -351,14 +389,16 @@ def run_doctor(
         })
 
         conn = None
+        integrity_recorded = False
         try:
+            db_uri = db_path.resolve().as_uri()
             try:
-                conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0)
+                conn = sqlite3.connect(f"{db_uri}?mode=ro", uri=True, timeout=2.0)
                 conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
             except sqlite3.OperationalError:
                 if conn is not None:
                     conn.close()
-                conn = sqlite3.connect(f"file:{db_path}?mode=ro&immutable=1", uri=True, timeout=2.0)
+                conn = sqlite3.connect(f"{db_uri}?mode=ro&immutable=1", uri=True, timeout=2.0)
 
             qc = conn.execute("PRAGMA quick_check").fetchone()
             qc_ok = bool(qc and qc[0] == "ok")
@@ -368,6 +408,7 @@ def run_doctor(
                 "detail": f"PRAGMA quick_check={qc[0] if qc else 'unknown'}",
                 "fix_hint": "" if qc_ok else "Run `trimtok purge` or recreate CCR store.",
             })
+            integrity_recorded = True
 
             chunks_cnt = int(conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0] or 0)
             pinned_cnt = int(conn.execute("SELECT COUNT(*) FROM chunks WHERE pinned = 1").fetchone()[0] or 0)
@@ -435,7 +476,7 @@ def run_doctor(
                 })
         except Exception as exc:
             checks.append({
-                "id": "ccr_sqlite_integrity",
+                "id": "ccr_schema" if integrity_recorded else "ccr_sqlite_integrity",
                 "status": "fail",
                 "detail": f"Failed to inspect CCR SQLite DB: {exc}",
                 "fix_hint": "Check file permissions or rebuild CCR store.",

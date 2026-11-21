@@ -34,23 +34,19 @@ except ImportError:
     from signals import estimate_bpe_gain, fast_json_loads
 
 MIN_ROWS = 3
-# Wide but uniform tables are safe to columnarize: the sparse/heterogeneous
-# case is already refused by the exact schema-equality check, not by this cap.
 MAX_FIELDS = 128
 MIN_BPE_GAIN = 4
 _MIN_DOC_CHARS = 64
-_MAX_RAW_CELL = 160  # raw cells longer than this get quoted for safety
+_MAX_RAW_CELL = 160
 _MAX_INLINE_JSON_CELL = 120
-# Marker for a nested list/dict too long to inline. '=' cannot start a plain
-# string cell (strings are quoted when they begin with a non-word char that
-# would otherwise be misread), so the decode path is unambiguous.
 _JSON_CELL = "="
 
 _ALIAS = "~/"
 _NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
 _HDR_RE = re.compile(r"^@([A-Za-z_][A-Za-z0-9_.]*)\[(\d+)\]\{(.*)\}:$")
 _PREFIX_RE = re.compile(r"^@prefix\((.+?)\)=(.*)$")
-_NUM_RE = re.compile(r"^-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$")
+# ASCII-only numeric regex so Unicode superscripts (e.g. "1²") are never misparsed as ints
+_NUM_RE = re.compile(r"^-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$", re.ASCII)
 _BAD_RE = re.compile(r'["|\r\n]|^\s|\s$')
 _BAD_FIELD_CHARS = ',{}[]"|\r\n'
 
@@ -98,12 +94,11 @@ def _encode_cell(v: Any, prefix: str, cache: dict | None = None) -> str | None:
             return None
         if len(s) <= _MAX_INLINE_JSON_CELL:
             return s
-        # Nested objects (GitHub API `owner`, Stripe `metadata`, ...) routinely
-        # exceed the inline cap. Refusing the whole table threw away 40%+ on
-        # payloads whose top level is perfectly uniform, so long cells are
-        # stored behind an explicit JSON marker that the decoder reverses.
         return _JSON_CELL + s
-    return json.dumps(v, ensure_ascii=False)
+    try:
+        return json.dumps(v, ensure_ascii=False)
+    except Exception:
+        return None
 
 
 def _decode_cell(t: str, prefix: str | None) -> Any:
@@ -127,7 +122,7 @@ def _decode_cell(t: str, prefix: str | None) -> Any:
     if c0 == "=" and len(t) > 1:
         return fast_json_loads(t[1:])
     if c0 in "-.0123456789":
-        if t.isdigit() or (c0 == "-" and t[1:].isdigit()):
+        if (t.isascii() and t.isdigit()) or (c0 == "-" and len(t) > 1 and t[1:].isascii() and t[1:].isdigit()):
             return int(t)
         if _NUM_RE.match(t):
             return float(t)
@@ -175,38 +170,56 @@ def _split_cells(line: str) -> list[str]:
     return cells
 
 
-def _common_prefix(records: list[dict]) -> str:
-    """Longest common path prefix across qualifying strings (>= half the rows)."""
-    vals = [
-        v
-        for r in records
-        for v in r.values()
-        if isinstance(v, str) and len(v) > 16 and ("/" in v or "\\" in v)
-    ]
-    if not vals or len(vals) < max(1, len(records) // 2):
+def _common_prefix(records: list[dict], fields: list[str] | None = None) -> str:
+    """Best per-column path prefix saving the most characters across rows."""
+    if not records:
         return ""
-    cand = os.path.commonprefix(vals)
-    sep = max(cand.rfind("/"), cand.rfind("\\"))
-    if sep >= 10:
-        return cand[: sep + 1]
-    return ""
+    keys = fields if fields is not None else list(records[0].keys())
+    best_prefix = ""
+    best_gain = 0
+    min_hits = max(1, len(records) // 2)
+    for k in keys:
+        vals = [
+            v
+            for r in records
+            if isinstance((v := r.get(k)), str) and len(v) > 16 and ("/" in v or "\\" in v)
+        ]
+        if len(vals) < min_hits:
+            continue
+        cand = os.path.commonprefix(vals)
+        sep = max(cand.rfind("/"), cand.rfind("\\"))
+        if sep >= 10:
+            pfx = cand[: sep + 1]
+            gain = (len(pfx) - len(_ALIAS)) * len(vals) - (len(pfx) + 12)
+            if gain > best_gain:
+                best_gain = gain
+                best_prefix = pfx
+    return best_prefix
+
+
+def _is_uniform_records(rows: Any) -> bool:
+    if not isinstance(rows, list) or len(rows) < MIN_ROWS or not all(isinstance(x, dict) for x in rows):
+        return False
+    first_keys = set(rows[0].keys())
+    if not first_keys or len(first_keys) > MAX_FIELDS:
+        return False
+    return all(set(r.keys()) == first_keys for r in rows[1:])
 
 
 def _find_records(data: Any, max_depth: int = 3) -> tuple[list[dict] | None, str | None, dict]:
     """Locate table records, dot-notation target path, and sibling meta dict."""
     if isinstance(data, list):
-        if len(data) >= MIN_ROWS and all(isinstance(x, dict) for x in data):
+        if _is_uniform_records(data):
             return data, None, {}
         return None, None, {}
     if not isinstance(data, dict):
         return None, None, {}
 
-    # Fast 1-level path (matches v1)
+    # Fast 1-level path: reject dotted keys (would split on decode) and skip non-uniform arrays
     for k, v in data.items():
-        if isinstance(v, list) and len(v) >= MIN_ROWS and all(isinstance(x, dict) for x in v):
-            if _NAME_RE.match(k):
-                meta = {mk: mv for mk, mv in data.items() if mk != k}
-                return v, k, meta
+        if isinstance(k, str) and "." not in k and _NAME_RE.match(k) and _is_uniform_records(v):
+            meta = {mk: mv for mk, mv in data.items() if mk != k}
+            return v, k, meta
 
     # Multi-level search (e.g. data.web, results.items) up to max_depth
     def _search(d: dict, path: list[str], depth: int):
@@ -216,7 +229,7 @@ def _find_records(data: Any, max_depth: int = 3) -> tuple[list[dict] | None, str
             if not isinstance(k, str) or "." in k or not _NAME_RE.match(k):
                 continue
             cur_path = path + [k]
-            if isinstance(v, list) and len(v) >= MIN_ROWS and all(isinstance(x, dict) for x in v):
+            if _is_uniform_records(v):
                 return v, ".".join(cur_path)
             if isinstance(v, dict):
                 found = _search(v, cur_path, depth + 1)
@@ -265,7 +278,7 @@ def _encode_doc(data: Any) -> str | None:
     if any(not k or any(c in k for c in _BAD_FIELD_CHARS) for k in fields):
         return None
 
-    prefix = _common_prefix(records)
+    prefix = _common_prefix(records, fields)
     used_prefix = False
     row_lines: list[str] = []
     enc_cache: dict = {}
@@ -275,8 +288,8 @@ def _encode_doc(data: Any) -> str | None:
             v = r.get(k)
             encoded_val = _encode_cell(v, prefix, enc_cache)
             if encoded_val is None:
-                return None  # unsupported cell structure
-            if prefix and isinstance(v, str) and v.startswith(prefix):
+                return None
+            if prefix and encoded_val.startswith(_ALIAS):
                 used_prefix = True
             cells.append(encoded_val)
         row_lines.append("|".join(cells))
@@ -285,7 +298,8 @@ def _encode_doc(data: Any) -> str | None:
     out: list[str] = []
     if used_prefix:
         out.append(f"@prefix({_ALIAS})={prefix}")
-    if meta:
+    # Emit explicit @meta:{} for single-key {"rows": [...]} objects so decode returns dict, not bare list
+    if meta or target == "rows":
         out.append("@meta:" + json.dumps(meta, ensure_ascii=False, separators=(",", ":")))
     out.append(f"@{name}[{len(records)}]{{{','.join(fields)}}}:")
     out.extend(row_lines)
@@ -305,7 +319,8 @@ def toon_decode(text: str) -> Any:
     for line in text.split("\n"):
         if not line:
             continue
-        if line[0] == "@":
+        # Header directives (@prefix, @meta, @name[N]{...}:) only appear BEFORE data rows
+        if fields is None and line[0] == "@":
             if line.startswith("@prefix("):
                 m = _PREFIX_RE.match(line)
                 if not m:
@@ -318,7 +333,7 @@ def toon_decode(text: str) -> Any:
                     raise ValueError("meta must be an object")
                 continue
             m = _HDR_RE.match(line)
-            if m and fields is None:
+            if m:
                 name = m.group(1)
                 count = int(m.group(2))
                 fields = m.group(3).split(",")
@@ -337,7 +352,9 @@ def toon_decode(text: str) -> Any:
             got = dcache.get(c, miss)
             if got is miss:
                 got = _decode_cell(c, prefix)
-                dcache[c] = got
+                # Never cache mutable lists/dicts across rows (shared-reference corruption)
+                if not isinstance(got, (list, dict)):
+                    dcache[c] = got
             rec[f] = got
         records.append(rec)
     if fields is None:
@@ -345,8 +362,7 @@ def toon_decode(text: str) -> Any:
     if len(records) != count:
         raise ValueError("row count mismatch")
 
-    # Reconstruct nested target path if any (e.g. data.web)
-    if meta:
+    if meta is not None:
         base: dict = dict(meta)
         parts = name.split(".")
         cur = base
@@ -386,12 +402,7 @@ def _strict_eq(a: Any, b: Any) -> bool:
 
 
 def fold_json_to_toon(raw_text: str) -> str:
-    """Lossless JSON→TOON fold for a whole-document JSON string.
-
-    Returns the ORIGINAL text whenever the doc is unsupported, the decode
-    round-trip is not exact, the table is not smaller, or the BPE gain is
-    below MIN_BPE_GAIN. Never raises.
-    """
+    """Lossless JSON→TOON fold for a whole-document JSON string. Never raises."""
     try:
         if not isinstance(raw_text, str) or len(raw_text) < _MIN_DOC_CHARS:
             return raw_text
@@ -413,10 +424,10 @@ def fold_json_to_toon(raw_text: str) -> str:
 
 def encode(data: Any) -> str | None:
     """Public helper to encode Python structure to TOON table with strict round-trip verification."""
-    res = _encode_doc(data)
-    if not res:
-        return None
     try:
+        res = _encode_doc(data)
+        if not res:
+            return None
         restored = toon_decode(res)
         if _strict_eq(restored, data):
             return res

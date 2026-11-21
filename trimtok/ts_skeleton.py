@@ -1,10 +1,11 @@
 """Multi-language AST code skeletonizer using tree-sitter.
 
 Extracts signatures, classes, interfaces, and folds large function bodies.
-Supports Python, JavaScript/TypeScript, Go, Rust, Java, C, and C++.
-All operations are 100% fail-open, non-recursive, patch-safe, and never raise.
+Supports Python, JavaScript/TypeScript, Go, Rust, Java, C, C++, C#, and Bash.
+All operations are 100% fail-open, non-recursive, thread-safe, patch-safe, and never raise.
 """
 import os
+import threading
 from typing import Any
 
 _LANG_MAP = {
@@ -37,52 +38,65 @@ _LANG_MAP = {
     ".json": "json",
 }
 
-_TS_LANGS: dict = {}
+_TS_LANGS: dict[str, Any] = {}
+_TS_LANG_LOCK = threading.Lock()
+_TS_LOCAL = threading.local()
 
 
 def _get_ts_lang(lang: str):
-    """Load and cache tree-sitter language parser. Caches None on failure."""
-    if lang in _TS_LANGS:
-        return _TS_LANGS[lang]
-    try:
-        mod = None
-        if lang == "python":
-            import tree_sitter_python as mod
-        elif lang == "javascript":
-            import tree_sitter_javascript as mod
-        elif lang == "go":
-            import tree_sitter_go as mod
-        elif lang == "rust":
-            import tree_sitter_rust as mod
-        elif lang == "java":
-            import tree_sitter_java as mod
-        elif lang == "c":
-            import tree_sitter_c as mod
-        elif lang == "cpp":
-            import tree_sitter_cpp as mod
-        elif lang == "csharp":
-            import tree_sitter_c_sharp as mod
-        elif lang == "bash":
-            import tree_sitter_bash as mod
-        elif lang == "yaml":
-            import tree_sitter_yaml as mod
-        elif lang == "toml":
-            import tree_sitter_toml as mod
-        elif lang == "json":
-            import tree_sitter_json as mod
+    """Load immutable Language once and return a thread-local Parser (TSParser is not thread-safe)."""
+    with _TS_LANG_LOCK:
+        language = _TS_LANGS.get(lang, False)
+    if language is False:
+        loaded = None
+        try:
+            mod = None
+            if lang == "python":
+                import tree_sitter_python as mod
+            elif lang == "javascript":
+                import tree_sitter_javascript as mod
+            elif lang == "go":
+                import tree_sitter_go as mod
+            elif lang == "rust":
+                import tree_sitter_rust as mod
+            elif lang == "java":
+                import tree_sitter_java as mod
+            elif lang == "c":
+                import tree_sitter_c as mod
+            elif lang == "cpp":
+                import tree_sitter_cpp as mod
+            elif lang == "csharp":
+                import tree_sitter_c_sharp as mod
+            elif lang == "bash":
+                import tree_sitter_bash as mod
 
-        if mod is None:
-            _TS_LANGS[lang] = None
-            return None
+            if mod is not None:
+                from tree_sitter import Language
 
-        from tree_sitter import Language, Parser
-        language = Language(mod.language())
-        parser = Parser(language)
-        _TS_LANGS[lang] = (language, parser)
-        return _TS_LANGS[lang]
-    except Exception:
-        _TS_LANGS[lang] = None
+                loaded = Language(mod.language())
+        except Exception:
+            loaded = None
+        with _TS_LANG_LOCK:
+            _TS_LANGS[lang] = loaded
+        language = loaded
+
+    if language is None:
         return None
+
+    parsers = getattr(_TS_LOCAL, "parsers", None)
+    if parsers is None:
+        parsers = {}
+        _TS_LOCAL.parsers = parsers
+    parser = parsers.get(lang)
+    if parser is None:
+        try:
+            from tree_sitter import Parser
+
+            parser = Parser(language)
+            parsers[lang] = parser
+        except Exception:
+            return None
+    return language, parser
 
 
 def detect_language(code: str, filename: str = "") -> str:
@@ -101,22 +115,34 @@ def detect_language(code: str, filename: str = "") -> str:
     if "func " in code and ("package " in code or "import (" in code):
         return "go"
     if ("#include <" in code or '#include "' in code) and (
-        "int main(" in code or "void " in code or "class " in code or "std::" in code
+        "int main(" in code or "void main(" in code or "void " in code or "class " in code or "std::" in code
     ):
         return "cpp" if "std::" in code or "class " in code else "c"
     if ("public class " in code or "public static void main" in code or "package " in code) and "System.out" in code:
         return "java"
-    if "#include <" in code and ("void main" in code or "int main" in code):
-        return "c"
-    if ("public " in code or "class " in code) and ("using " in code or "namespace " in code or ".cs" in filename):
+    if ("public " in code or "class " in code) and ("namespace " in code and "using " in code):
         return "csharp"
-    if "#!/" in code or (code.startswith("#!/usr/bin/env") or code.startswith("#!/bin/")):
+    first_line = code.splitlines()[0].strip() if code else ""
+    if first_line.startswith("#!") and any(sh in first_line for sh in ("/sh", "/bash", "/zsh", " sh", " bash", " zsh")):
         return "bash"
     if ("function " in code or "const " in code or "=>" in code or "let " in code) and (
         "console." in code or "require(" in code or "export " in code or "{" in code
     ):
         return "javascript"
     return "unknown"
+
+
+def _extract_ts_func_name(node: Any, raw_bytes: bytes) -> str:
+    """Extract function/method name across Python, JS, Go, Rust, Java, C/C++, C#, and Bash."""
+    for child in node.children:
+        ctype = child.type
+        if ctype in ("identifier", "property_identifier", "name", "field_identifier", "word"):
+            return raw_bytes[child.start_byte:child.end_byte].decode("utf-8", errors="replace")
+        if ctype in ("function_declarator", "pointer_declarator", "reference_declarator"):
+            sub = _extract_ts_func_name(child, raw_bytes)
+            if sub != "<anon>":
+                return sub
+    return "<anon>"
 
 
 def _skeletonize_ts_core(
@@ -156,11 +182,10 @@ def _skeletonize_ts_core(
         and len(line_nos) == total_lines
     )
 
-    # Collect ranges to fold: (start_line_1idx, end_line_1idx, indent_str, name)
     fold_ranges = []
     focus_set = set(focus_lines) if focus_lines else None
+    is_python = (lang == "python")
 
-    # Iterative depth-first traversal to avoid recursion limits
     stack = [tree.root_node]
     steps = 0
     while stack:
@@ -177,6 +202,7 @@ def _skeletonize_ts_core(
         if is_func:
             fn_node_s = node.start_point[0] + 1
             fn_node_e = node.end_point[0] + 1
+            skip_this_fold = False
             if focus_set and fn_node_s and fn_node_e:
                 if use_prefixes and line_nos:
                     r_s = line_nos[fn_node_s - 1] if 0 <= fn_node_s - 1 < len(line_nos) else fn_node_s
@@ -184,45 +210,47 @@ def _skeletonize_ts_core(
                 else:
                     r_s, r_e = fn_node_s, fn_node_e
                 if any(r_s <= fl <= r_e for fl in focus_set):
-                    continue
-            body = None
-            for child in node.children:
-                if child.type in (
-                    "block", "statement_block", "compound_statement",
-                    "function_body", "constructor_body", "body"
-                ):
-                    body = child
-                    break
-            if body is not None:
-                stmts = []
-                for c in body.children:
-                    if c.type == "statement_list":
-                        stmts.extend([sc for sc in c.children if sc.type not in ("{", "}", "comment")])
-                    elif c.type not in ("{", "}", "comment"):
-                        stmts.append(c)
-                if stmts:
-                    body_start = stmts[0].start_point[0] + 1
-                    body_end = stmts[-1].end_point[0] + 1
-                    span = body_end - body_start + 1
-                    if span >= min_body_lines:
-                        name = "<anon>"
-                        for child in node.children:
-                            if child.type in ("identifier", "property_identifier", "name", "field_identifier"):
-                                name = raw_bytes[child.start_byte:child.end_byte].decode("utf-8", errors="replace")
-                                break
-                        line_text = lines[body_start - 1] if body_start - 1 < total_lines else ""
-                        indent = len(line_text) - len(line_text.lstrip())
-                        indent_str = " " * indent
-                        fold_ranges.append((body_start, body_end, indent_str, name))
+                    # Skip folding this outer node, but STILL descend into children to fold unfocused inner functions
+                    skip_this_fold = True
 
-        # Push children in reverse order to preserve original document traversal order
+            if not skip_this_fold:
+                body = None
+                for child in node.children:
+                    if child.type in (
+                        "block", "statement_block", "compound_statement",
+                        "function_body", "constructor_body", "body",
+                    ):
+                        body = child
+                        break
+                if body is not None:
+                    stmts = []
+                    for c in body.children:
+                        if c.type == "statement_list":
+                            stmts.extend([sc for sc in c.children if sc.type not in ("{", "}", "comment")])
+                        elif c.type not in ("{", "}", "comment"):
+                            stmts.append(c)
+                    if stmts:
+                        body_start = stmts[0].start_point[0] + 1
+                        body_end = stmts[-1].end_point[0] + 1
+                        # Protect inline opening signature / `{` and closing `}` lines from deletion
+                        if body_start == fn_node_s or (not is_python and body_start == body.start_point[0] + 1):
+                            body_start += 1
+                        if not is_python and body_end == body.end_point[0] + 1:
+                            body_end -= 1
+                        span = body_end - body_start + 1
+                        if span >= min_body_lines:
+                            name = _extract_ts_func_name(node, raw_bytes)
+                            line_text = lines[body_start - 1] if 0 <= body_start - 1 < total_lines else ""
+                            # Preserve original tabs/spaces verbatim (prevents Python TabError)
+                            indent_str = line_text[: len(line_text) - len(line_text.lstrip())]
+                            fold_ranges.append((body_start, body_end, indent_str, name))
+
         for child in reversed(node.children):
             stack.append(child)
 
     if not fold_ranges:
         return code, 0, 0
 
-    # Sort ranges: ascending start line, descending span
     fold_ranges.sort(key=lambda r: (r[0], -(r[1] - r[0])))
     merged = []
     last_end = 0
@@ -235,9 +263,7 @@ def _skeletonize_ts_core(
     if not merged:
         return code, 0, 0
 
-    # Build folded output
     ref_tag = f" {ref}" if ref else ""
-    is_python = (lang == "python")
     out = []
     cur = 1
     for s, e, ind, fn in merged:
@@ -282,22 +308,20 @@ def skeletonize_code_full(
     focus_lines: set[int] | list[int] | None = None,
     deadline: Any | None = None,
 ) -> tuple[str, int, int]:
-    """Full multi-language code skeletonizer with exact line prefixes and line numbers.
-    Returns: (skeleton_text, saved_chars, folded_functions_count)
-    """
+    """Full multi-language code skeletonizer with exact line prefixes and line numbers."""
     if not code or len(code) < 512:
         return code, 0, 0
     lang = detect_language(code, filename)
     if lang == "python":
         try:
             from .pruners import smart_skeletonize_code
-            res, saved, count = smart_skeletonize_code(
+
+            # Clean AST parse succeeded: return directly (don't fall through to tree-sitter on intentional saved==0)
+            return smart_skeletonize_code(
                 code, ref=ref, min_body_lines=min_body_lines,
                 line_prefixes=line_prefixes, line_nos=line_nos,
                 focus_lines=focus_lines, deadline=deadline,
             )
-            if saved > 0 and count > 0:
-                return res, saved, count
         except TimeoutError:
             raise
         except Exception:

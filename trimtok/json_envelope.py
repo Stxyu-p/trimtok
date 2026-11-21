@@ -18,6 +18,14 @@ from __future__ import annotations
 
 import json
 
+try:
+    from .signals import fast_json_loads as _fast_json_loads
+except ImportError:
+    try:
+        from signals import fast_json_loads as _fast_json_loads  # type: ignore
+    except ImportError:
+        _fast_json_loads = json.loads
+
 MAX_DEPTH = 4
 MIN_STRING_CHARS = 1024
 MIN_ROWS = 3
@@ -38,6 +46,8 @@ def _walk_strings(node, path=(), depth=0):
     elif isinstance(node, list):
         for index, value in enumerate(node):
             yield from _walk_strings(value, path + (index,), depth + 1)
+            if isinstance(value, str) and len(value) >= MIN_STRING_CHARS:
+                yield path + (index,), value
 
 
 def _walk_arrays(node, path=(), depth=0):
@@ -75,29 +85,27 @@ def _set_path(node, path, value):
     return copy
 
 
-def _get_path(node, path):
-    for key in path:
-        node = node[key]
-    return node
-
-
 def _path_label(path) -> str:
     return ".".join(str(part) for part in path)
 
 
-def fold_envelope_text(raw_text: str, compress_inner) -> tuple[str, dict] | None:
-    """Compress the dominant string inside a JSON object and re-emit the envelope.
-
-    ``compress_inner(text) -> str`` is supplied by the caller so this module
-    stays free of compressor imports. The result is verified: the envelope
-    parses, every non-target value is unchanged, and the target string hashes
-    back to the original.
-    """
+def _parse_json_object(raw_text: str) -> dict | None:
+    if not isinstance(raw_text, str):
+        return None
+    stripped = raw_text.lstrip()
+    if not stripped.startswith("{"):
+        return None
     try:
-        data = json.loads(raw_text)
+        data = _fast_json_loads(stripped)
     except Exception:
         return None
-    if not isinstance(data, dict) or not data:
+    return data if isinstance(data, dict) and data else None
+
+
+def fold_envelope_text(raw_text: str, compress_inner) -> tuple[str, dict] | None:
+    """Compress the dominant string inside a JSON object and re-emit the envelope."""
+    data = _parse_json_object(raw_text)
+    if data is None:
         return None
     candidates = list(_walk_strings(data))
     if not candidates:
@@ -120,12 +128,6 @@ def fold_envelope_text(raw_text: str, compress_inner) -> tuple[str, dict] | None
     except Exception:
         return None
     if len(candidate) >= len(raw_text):
-        return None
-    try:
-        restored = json.loads(candidate)
-    except Exception:
-        return None
-    if _get_path(restored, path) != folded:
         return None
     return candidate, {
         "envelope_path": _path_label(path),
@@ -153,21 +155,18 @@ def fold_envelope_array(raw_text: str) -> tuple[str, dict] | None:
     """Fold an array of records nested inside a JSON object into TOON buckets.
 
     Mixed-schema rows are bucketed by key set so a single odd row cannot veto
-    the whole table. The envelope's scalar siblings are kept verbatim as JSON
-    so nothing outside the target array moves.
+    the whole table. Small buckets (< MIN_ROWS) serialize as compact JSON while
+    uniform buckets >= MIN_ROWS encode as verified TOON tables.
     """
     try:
-        from .toon_codec import encode, toon_decode
+        from .toon_codec import _encode_doc, _strict_eq, toon_decode
     except Exception:
         try:
-            from toon_codec import encode, toon_decode
+            from toon_codec import _encode_doc, _strict_eq, toon_decode  # type: ignore
         except Exception:
             return None
-    try:
-        data = json.loads(raw_text)
-    except Exception:
-        return None
-    if not isinstance(data, dict):
+    data = _parse_json_object(raw_text)
+    if data is None:
         return None
     found = list(_walk_arrays(data))
     if not found:
@@ -186,31 +185,50 @@ def fold_envelope_array(raw_text: str) -> tuple[str, dict] | None:
 
     blocks: list[str] = []
     restored: list = [None] * len(rows)
+    any_toon = False
     for bucket_id, indexed in enumerate(buckets.values(), 1):
         tagged = [{"__tt_row__": index, **row} for index, row in indexed]
-        table = encode(tagged)
-        if table is None:
-            return None
-        decoded = toon_decode(table)
-        if not isinstance(decoded, list) or len(decoded) != len(tagged):
-            return None
-        for record in decoded:
-            index = record.pop("__tt_row__", None)
-            if not isinstance(index, int) or not 0 <= index < len(restored):
+        table: str | None = None
+        decoded = None
+        if len(tagged) >= MIN_ROWS:
+            try:
+                table = _encode_doc(tagged)
+                if table is not None:
+                    decoded = toon_decode(table)
+                    if not (isinstance(decoded, list) and _strict_eq(decoded, tagged)):
+                        table = None
+                        decoded = None
+            except Exception:
+                table = None
+                decoded = None
+
+        if table is not None and decoded is not None:
+            any_toon = True
+            for record in decoded:
+                index = record.pop("__tt_row__", None)
+                if not isinstance(index, int) or not 0 <= index < len(restored) or restored[index] is not None:
+                    return None
+                restored[index] = record
+            blocks.append(f"##bucket {bucket_id} rows={len(indexed)}\n{table}")
+        else:
+            # Small/odd bucket falls back to compact JSON so a single outlier row never vetoes the table
+            try:
+                compact = json.dumps(tagged, ensure_ascii=False, separators=(",", ":"))
+            except Exception:
                 return None
-            if restored[index] is not None:
-                return None
-            restored[index] = record
-        blocks.append(f"##bucket {bucket_id} rows={len(indexed)}\n{table}")
-    if restored != rows:
+            for index, row in indexed:
+                if restored[index] is not None:
+                    return None
+                restored[index] = row
+            blocks.append(f"##bucket {bucket_id} rows={len(indexed)} format=json\n{compact}")
+
+    if not any_toon or restored != rows:
         return None
 
     siblings = _omit_path(data, path)
     header = f"@envelope:{json.dumps(siblings, ensure_ascii=False, separators=(',', ':'))}"
     label = f"@{_path_label(path)}[{len(rows)}]"
-    candidate = "\n".join(
-        [f"{header}", f"{label}", *blocks]
-    )
+    candidate = "\n".join([header, label, *blocks])
     if len(candidate) >= len(raw_text):
         return None
     return candidate, {

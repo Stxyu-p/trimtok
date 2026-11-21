@@ -8,6 +8,7 @@ Pure Python standard library (cross-platform, fail-open).
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -17,11 +18,25 @@ from typing import Set
 HEADER_SEP_CRLF = b"\r\n\r\n"
 HEADER_SEP_LF = b"\n\n"
 CONTENT_LENGTH_RE = re.compile(rb"(?i)\bcontent-length:\s*(\d+)")
+_HEADER_LINE_RE = re.compile(rb"(?i)^(?:content-length|content-type):\s*")
+_MAX_FRAME_BYTES = 64 * 1024 * 1024
+
+
+def _find_header_sep(raw_bytes: bytes) -> bytes | None:
+    i_crlf = raw_bytes.find(HEADER_SEP_CRLF)
+    i_lf = raw_bytes.find(HEADER_SEP_LF)
+    if i_crlf == -1 and i_lf == -1:
+        return None
+    if i_crlf == -1:
+        return HEADER_SEP_LF
+    if i_lf == -1:
+        return HEADER_SEP_CRLF
+    return HEADER_SEP_CRLF if i_crlf <= i_lf else HEADER_SEP_LF
 
 
 def _split_headers_and_body(raw_bytes: bytes) -> tuple[bool, bytes, bytes]:
     """Detect LSP-style Content-Length framing and split headers from body."""
-    sep = HEADER_SEP_CRLF if HEADER_SEP_CRLF in raw_bytes else (HEADER_SEP_LF if HEADER_SEP_LF in raw_bytes else None)
+    sep = _find_header_sep(raw_bytes)
     if sep is None:
         return False, b"", raw_bytes
     hdr_part, _, body = raw_bytes.partition(sep)
@@ -41,6 +56,7 @@ def filter_mcp_message(
     if not raw_bytes:
         return raw_bytes
 
+    header_sep = _find_header_sep(raw_bytes) or HEADER_SEP_CRLF
     has_header, hdr_part, body_bytes = _split_headers_and_body(raw_bytes)
     trailing_newline = raw_bytes.endswith(b"\n") and not has_header
 
@@ -61,7 +77,7 @@ def filter_mcp_message(
     result = data.get("result")
     if isinstance(result, dict):
         # 1. Filter tools in tools/list response
-        if "tools" in result and isinstance(result["tools"], list):
+        if (allow_tools is not None or deny_tools is not None) and "tools" in result and isinstance(result["tools"], list):
             original_tools = result["tools"]
             filtered_tools = []
             for t in original_tools:
@@ -79,7 +95,7 @@ def filter_mcp_message(
                 modified = True
 
         # 2. Inject or override instructions in initialize response
-        if instructions and ("protocolVersion" in result or "serverInfo" in result):
+        if instructions is not None and ("protocolVersion" in result or "serverInfo" in result):
             result["instructions"] = instructions
             modified = True
 
@@ -105,18 +121,25 @@ def filter_mcp_message(
             hdr_part,
             count=1,
         )
-        return new_hdr + b"\r\n\r\n" + new_body
+        return new_hdr + header_sep + new_body
     if trailing_newline:
         return new_body + b"\n"
     return new_body
 
 
 def _forward_stdin(child_stdin):
-    """Forward parent stdin to child stdin."""
+    """Forward parent stdin to child stdin without blocking for full buffer."""
     try:
         src = sys.stdin.buffer
+        read1 = getattr(src, "read1", None)
         while True:
-            chunk = src.read(4096)
+            if callable(read1):
+                chunk = read1(4096)
+            else:
+                try:
+                    chunk = os.read(src.fileno(), 4096)
+                except Exception:
+                    chunk = src.read(4096)
             if not chunk:
                 break
             child_stdin.write(chunk)
@@ -159,7 +182,7 @@ def run_mcp_proxy(
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=sys.stderr,
-            bufsize=0,
+            bufsize=-1,
         )
     except Exception as exc:
         sys.stderr.write(f"Error: failed to spawn {command[0]}: {exc}\n")
@@ -182,21 +205,34 @@ def run_mcp_proxy(
             if not line:
                 break
 
-            # Handle Content-Length header framing
-            if line.lower().startswith(b"content-length:"):
-                # Read until empty line delimiter
+            # Handle LSP-style Content-Length / Content-Type header framing
+            if _HEADER_LINE_RE.match(line):
                 header_lines = [line]
+                sep_line = b""
                 while True:
                     hdr = child_stdout.readline()
-                    if not hdr or hdr in (b"\r\n", b"\n"):
+                    if not hdr:
+                        break
+                    if hdr in (b"\r\n", b"\n"):
+                        sep_line = hdr
                         break
                     header_lines.append(hdr)
 
-                # Parse length
-                m = re.search(r"\d+", line.decode("ascii", errors="ignore"))
-                length = int(m.group(0)) if m else 0
+                hdr_block = b"".join(header_lines)
+                if not sep_line:
+                    # EOF mid-headers: forward raw bytes untouched without fabricating a separator
+                    parent_stdout.write(hdr_block)
+                    parent_stdout.flush()
+                    break
+
+                m = CONTENT_LENGTH_RE.search(hdr_block)
+                length = int(m.group(1)) if m else -1
+                if length < 0 or length > _MAX_FRAME_BYTES:
+                    parent_stdout.write(hdr_block + sep_line)
+                    parent_stdout.flush()
+                    continue
                 body = _read_exact(child_stdout, length) if length > 0 else b""
-                raw_frame = b"".join(header_lines) + b"\r\n" + body
+                raw_frame = hdr_block + sep_line + body
                 filtered = filter_mcp_message(raw_frame, allow_tools, deny_tools, instructions, kv_lock=kv_lock)
                 parent_stdout.write(filtered)
                 parent_stdout.flush()
@@ -205,12 +241,25 @@ def run_mcp_proxy(
                 filtered = filter_mcp_message(line, allow_tools, deny_tools, instructions, kv_lock=kv_lock)
                 parent_stdout.write(filtered)
                 parent_stdout.flush()
-    except (BrokenPipeError, OSError):
+    except (BrokenPipeError, OSError, KeyboardInterrupt):
         pass
     finally:
+        if proc.stdin is not None:
+            try:
+                proc.stdin.close()
+            except Exception:
+                pass
         try:
-            proc.terminate()
+            proc.wait(timeout=2)
         except Exception:
-            pass
+            try:
+                proc.terminate()
+                proc.wait(timeout=3)
+            except Exception:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=2)
+                except Exception:
+                    pass
 
-    return proc.wait()
+    return proc.returncode if proc.returncode is not None else 0

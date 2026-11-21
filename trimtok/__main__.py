@@ -84,21 +84,27 @@ def _sync_global_skill() -> None:
     _ag_vault = Path.home() / ".agents" / "skills"
     _lg_vault = Path.home() / ".skill-proof" / "skills"
     vault_root = _ag_vault if _ag_vault.is_dir() else _lg_vault
+    seen_roots: set[Path] = set()
     for root in (
         vault_root,
-        Path.home() / ".agents" / "skills",
+        _ag_vault,
         Path.home() / ".gemini" / "config" / "skills",
     ):
         try:
-            if root.is_dir():
-                d = root / "trimtok"
-                d.mkdir(parents=True, exist_ok=True)
-                target = d / "SKILL.md"
-                # The Skill Vault is the canonical copy that Skill Proof indexes and
-                # routes, so it is always refreshed. Client skill directories are
-                # user-editable and keep their existing write-once behavior.
-                if root == vault_root or not target.exists():
-                    target.write_text(skill_md, encoding="utf-8")
+            if not root.is_dir():
+                continue
+            resolved_root = root.resolve()
+            if resolved_root in seen_roots:
+                continue
+            seen_roots.add(resolved_root)
+            d = root / "trimtok"
+            d.mkdir(parents=True, exist_ok=True)
+            target = d / "SKILL.md"
+            # Refresh stub in vault only when missing or not already replaced by a richer guide.
+            if not target.exists() or (
+                root == vault_root and target.stat().st_size <= len(skill_md.encode("utf-8")) + 64
+            ):
+                target.write_text(skill_md, encoding="utf-8")
         except Exception:
             pass
 
@@ -287,16 +293,21 @@ def _dispatch(ns: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
                 print(f"  {f['file']}:{f['line']} [{f['kind']}] {f['marker']}")
         return 0 if res["clean"] else 1
     if ns.cmd == "gain":
-        days = getattr(ns, "days", 0)
+        days = int(getattr(ns, "days", 0) or 0)
+        if days < 0:
+            sys.stderr.write("Error: --days must be >= 0\n")
+            return 2
         print(_handle_ts_command(f"gain {days}" if days else "gain"))
         return 0
     if ns.cmd == "discover":
         print(_handle_ts_command("discover"))
         return 0
     if ns.cmd == "recall":
-        h = getattr(ns, "hash", "")
-        print(_handle_ts_command(f"retrieve {h}" if h else "retrieve"))
-        return 0
+        h = str(getattr(ns, "hash", "") or "").strip()
+        out = _handle_ts_command(f"retrieve {h}" if h else "retrieve")
+        print(out)
+        low = out.lower()
+        return 1 if (not h or "not found" in low or "usage:" in low) else 0
     if ns.cmd == "purge":
         return _run_purge(ns)
     if ns.cmd == "mcp":
@@ -333,10 +344,17 @@ def _dispatch(ns: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
             pass
         return 0
     if ns.cmd == "exec":
-        from .exec_lane import run as _exec_run
+        try:
+            from .exec_lane import run as _exec_run
+        except ImportError:
+            from exec_lane import run as _exec_run  # type: ignore
         code = ns.code or ""
         if ns.file:
-            code = Path(ns.file).read_text(encoding="utf-8", errors="replace")
+            try:
+                code = Path(ns.file).read_text(encoding="utf-8", errors="replace")
+            except OSError as exc:
+                sys.stderr.write(f"Error: cannot read {ns.file}: {exc}\n")
+                return 1
         res = _exec_run(ns.ref, code, timeout=ns.timeout)
         print(json.dumps(res, indent=2, ensure_ascii=False))
         return 0 if res.get("ok") else 1
@@ -344,21 +362,26 @@ def _dispatch(ns: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         if not ccr.fts_ready():
             sys.stderr.write("Error: FTS5 search is unavailable in this SQLite build.\n")
             return 2
-        hits = ccr.search(ns.query, limit=ns.limit)
+        limit = max(1, min(100, int(getattr(ns, "limit", 5) or 5)))
+        hits = ccr.search(ns.query, limit=limit)
         print(json.dumps({"query": ns.query, "count": len(hits), "hits": hits}, indent=2, ensure_ascii=False))
         return 0
     if ns.cmd == "compress":
-        raw = sys.stdin.read() if ns.input == "-" else Path(ns.input).read_text(encoding="utf-8", errors="replace")
+        try:
+            raw = sys.stdin.read() if ns.input == "-" else Path(ns.input).read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            sys.stderr.write(f"Error: cannot read {ns.input}: {exc}\n")
+            return 1
         if ns.tool:
             _src = {"path": ns.input} if ns.input != "-" else None
             compressed, stats = compress_tool_result(ns.tool, raw, args=_src, min_chars=ns.min_chars)
         else:
             compressed, stats = compress_terminal(ns.command, raw, min_chars=ns.min_chars)
-        if stats.get("gate") == "ok":
+        if stats.get("gate") == "ok" and not stats.get("lossless_tier0"):
             ref = ccr.put(raw)
             if ref and stats.get("digest"):
                 compressed = compressed.replace(f"#{stats['digest']}", ref)
-            elif not ref and not stats.get("lossless_tier0"):
+            elif not ref:
                 compressed = raw
         sys.stdout.write(compressed)
         if not compressed.endswith("\n"):
@@ -387,15 +410,24 @@ def _dispatch(ns: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         # Pre-execution command rewriting (e.g. pytest -> pytest -q --tb=short).
         # Operates on argv so the caller's quoting survives.
         cmd_args = rewrite_argv(cmd_args)
-        proc = subprocess.run(cmd_args, capture_output=True, text=True, shell=False)
+        try:
+            proc = subprocess.run(
+                cmd_args, capture_output=True, text=True, encoding="utf-8", errors="replace", shell=False
+            )
+        except FileNotFoundError:
+            sys.stderr.write(f"Error: command not found: {cmd_args[0]}\n")
+            return 127
+        except PermissionError:
+            sys.stderr.write(f"Error: permission denied: {cmd_args[0]}\n")
+            return 126
         combined = (proc.stdout or "") + (proc.stderr or "")
         cmd_name = Path(cmd_args[0]).stem
         compressed, stats = compress_terminal(cmd_name, combined, min_chars=512, exit_code=proc.returncode)
-        if stats.get("gate") == "ok":
+        if stats.get("gate") == "ok" and not stats.get("lossless_tier0"):
             ref = ccr.put(combined)
             if ref and stats.get("digest"):
                 compressed = compressed.replace(f"#{stats['digest']}", ref)
-            elif not ref and not stats.get("lossless_tier0"):
+            elif not ref:
                 compressed = combined
         sys.stdout.write(compressed)
         if not compressed.endswith("\n"):
@@ -438,7 +470,11 @@ def _dispatch(ns: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
             from .kv_lock import stabilize_prompt
         except ImportError:
             from kv_lock import stabilize_prompt  # type: ignore
-        raw = sys.stdin.read() if ns.input == "-" else Path(ns.input).read_text(encoding="utf-8", errors="replace")
+        try:
+            raw = sys.stdin.read() if ns.input == "-" else Path(ns.input).read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            sys.stderr.write(f"Error: cannot read {ns.input}: {exc}\n")
+            return 1
         out = stabilize_prompt(raw)
         sys.stdout.write(out)
         if not out.endswith("\n"):
@@ -449,8 +485,12 @@ def _dispatch(ns: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    for _stream in (sys.stdin, sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            try:
+                _stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
     args_list = list(sys.argv[1:] if argv is None else argv)
     parser = _build_parser()
     ns = parser.parse_args(args_list)

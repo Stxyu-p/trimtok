@@ -15,6 +15,7 @@ Two orthogonal questions, answered without a model and without I/O:
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 
@@ -34,8 +35,7 @@ _SECURITY_PATH_RE = re.compile(
 # Agent/skill instruction documents define workflows and constraints; folding
 # prose in them into `[tt:prose ...]` stubs risks stub write-back corruption.
 _INSTRUCTION_PATH_RE = re.compile(
-    r"(?:^|[/\\])(?:SKILL|AGENTS|CLAUDE|GEMINI|SOUL|CURSORRULES)\.md$"
-    r"|(?:^|[/\\])skills[/\\][^/\\]+(?:[/\\][^/\\]+)?[/\\]SKILL\.md$",
+    r"(?:^|[/\\])(?:SKILL|AGENTS|CLAUDE|GEMINI|SOUL|CURSORRULES)\.md$",
     re.I,
 )
 # Source files are safe to skeletonize even under security/, because the AST
@@ -91,13 +91,20 @@ class Policy:
 def looks_secret(text: str, head_chars: int = 4096) -> str:
     """Return the matching shape name, or '' when nothing looks like a secret.
 
-    Scans both ends. Credentials land at the *tail* of env dumps, long configs
-    and stack traces -- which are exactly the payloads big enough to skip the
-    head scan, and the ones that reach the CCR vault.
+    Scans head, middle (on medium/large payloads), and tail so credentials buried
+    in the middle or end of env dumps/configs cannot leak into the CCR vault.
     """
-    window = text[:head_chars]
-    if len(text) > head_chars:
-        window += "\n" + text[-head_chars:]
+    if not isinstance(text, str) or not text:
+        return ""
+    n = len(text)
+    if n <= head_chars * 2:
+        window = text
+    elif n <= head_chars * 4:
+        window = text
+    else:
+        mid = n // 2
+        half = head_chars // 2
+        window = text[:head_chars] + "\n" + text[mid - half : mid + half] + "\n" + text[-head_chars:]
     for rx in _SECRET_VALUE_RES:
         if rx.search(window):
             return rx.pattern[:24]
@@ -121,8 +128,6 @@ def classify(
     if not isinstance(text, str):
         return Policy(verbatim=True, reason="non_str", level="off")
     if not text:
-        # Empty input is a degenerate case the caller already gates; calling it a
-        # policy hit would rename an existing gate and hide the real reason.
         return Policy(verbatim=False, reason="", level="normal", toon_ok=toon_ok)
 
     p = path or ""
@@ -137,12 +142,13 @@ def classify(
             if ext not in _SOURCE_EXT:
                 return Policy(verbatim=True, reason="security_path", level="off")
 
-    if tool in _EDIT_TOOLS:
+    tool_norm = (tool or "").strip().lower()
+    if tool_norm in _EDIT_TOOLS:
         return Policy(verbatim=True, reason="edit_tool", level="off")
     # A diff from a tool payload *is* the edit instruction. A diff from a terminal
     # command (`git diff`) is a report: the pruner keeps every changed line, so it
-    # can be folded safely. Gate on `tool` so both cases stay distinguishable.
-    if tool and _DIFF_HEAD_RE.search(text[:2048]):
+    # can be folded safely. Exclude `terminal` so tool-routed `git diff` still folds.
+    if tool_norm and tool_norm != "terminal" and _DIFF_HEAD_RE.search(text[:2048]):
         return Policy(verbatim=True, reason="patch_payload", level="off")
 
     if allow_secret_scan:
@@ -155,16 +161,12 @@ def classify(
 
 
 def level_for_pressure(pressure: float) -> str:
-    """Map remaining-context pressure to a compression level.
-
-    Low pressure: the payload still fits, so keep more of it (light) and skip
-    the retrieval round-trip. High pressure: fold harder.
-    """
+    """Map remaining-context pressure to a compression level."""
     try:
         p = float(pressure)
     except Exception:
         return "normal"
-    if p <= 0.0:
+    if not math.isfinite(p) or p <= 0.0:
         return "normal"
     if p < 0.35:
         return "light"
@@ -173,11 +175,7 @@ def level_for_pressure(pressure: float) -> str:
     return "aggressive"
 
 
-# Budget multipliers per level. `light` keeps ~1.6x the lines of `normal`,
-# `aggressive` keeps ~0.55x; off is handled by Policy.compress.
 _LEVEL_BUDGET = {"light": 1.6, "normal": 1.0, "aggressive": 0.55}
-# Folding aggressiveness for the tool lane: aggressive lowers the minimum body
-# size that may be folded, so more functions become stubs.
 _LEVEL_FOLD = {"light": 20, "normal": 8, "aggressive": 4}
 
 
@@ -190,20 +188,32 @@ def fold_min_lines(level: str) -> int:
     return _LEVEL_FOLD.get(level, 8)
 
 
-# Model families whose models handle a columnar table reliably in-context.
-# Not a hard capability claim: TOON is plain text, so every model *can* read it.
-# This list only decides the `auto` default, and `toon_mode: always` overrides it.
-_TOON_FAMILIES = frozenset(
-    "claude anthropic gpt openai o3 o4 gemini google deepseek qwen qwq kimi "
-    "moonshot glm zai zhipu minimax mistral llama grok xai".split()
+# Ordered longest-first for deterministic matching regardless of PYTHONHASHSEED.
+_TOON_FAMILIES_ORDERED: tuple[str, ...] = tuple(
+    sorted(
+        "claude anthropic gpt openai o3 o4 gemini google deepseek qwen qwq kimi "
+        "moonshot glm zai zhipu minimax mistral llama grok xai".split(),
+        key=lambda s: (-len(s), s),
+    )
 )
+_TOON_FAMILIES = frozenset(_TOON_FAMILIES_ORDERED)
+_SHORT_FAMILIES = frozenset({"o3", "o4", "zai", "xai", "gpt", "glm", "qwq"})
+_FAMILY_BOUNDARY_RES = {
+    fam: re.compile(rf"(?<![a-z0-9]){re.escape(fam)}(?![a-z0-9])")
+    for fam in _SHORT_FAMILIES
+}
 
 
 def model_family_of(model_name: str) -> str:
-    """Best-effort family key from a model id ('claude-sonnet-5' -> 'claude')."""
+    """Best-effort deterministic family key from a model id ('claude-sonnet-5' -> 'claude')."""
     n = (model_name or "").strip().lower()
-    for fam in _TOON_FAMILIES:
-        if fam in n:
+    if not n:
+        return ""
+    for fam in _TOON_FAMILIES_ORDERED:
+        if fam in _SHORT_FAMILIES:
+            if _FAMILY_BOUNDARY_RES[fam].search(n):
+                return fam
+        elif fam in n:
             return fam
     return ""
 

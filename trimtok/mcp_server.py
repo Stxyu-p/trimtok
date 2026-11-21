@@ -12,6 +12,7 @@ Speaks newline-delimited JSON-RPC 2.0 on stdin/stdout. Tools:
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 from typing import Any
@@ -26,19 +27,25 @@ except Exception:
 
 try:
     from . import (
-        RETRIEVE_SCHEMA, _audit, _handle_retrieve, _handle_ts_command,
-        _storage_failure_stats, _usage, _usage_exec, _parse_ref, ccr, report,
+        EXEC_SCHEMA, RETRIEVE_SCHEMA, _audit, _handle_retrieve, _handle_ts_command,
+        _storage_failure_stats, _terminal_shape, _tool_shape,
+        _usage, _usage_exec, _parse_ref, ccr, policy, report,
     )
     from .core import VERSION, compress_terminal
     from .dedup import compress_tool_result
     from .signals import Deadline
 except ImportError:
     import ccr
+    import policy  # type: ignore
     import report  # type: ignore
     from core import VERSION, compress_terminal
     from dedup import compress_tool_result
     from signals import Deadline  # type: ignore
-    from __init__ import RETRIEVE_SCHEMA, _audit, _handle_retrieve, _handle_ts_command, _storage_failure_stats, _usage, _usage_exec, _parse_ref
+    from __init__ import (
+        EXEC_SCHEMA, RETRIEVE_SCHEMA, _audit, _handle_retrieve, _handle_ts_command,
+        _storage_failure_stats, _terminal_shape, _tool_shape,
+        _usage, _usage_exec, _parse_ref,
+    )
 
 SERVER_INFO = {"name": "trimtok", "version": VERSION}
 FALLBACK_PROTOCOL = "2024-11-05"
@@ -110,20 +117,9 @@ TOOLS = [
     },
     {
         "name": "trimtok_exec",
-        "description": (
-            "Run code over a stored original (#ref) WITHOUT loading it into context. "
-            "The payload path is in $TRIMTOK_PAYLOAD. Use this for aggregate questions "
-            "over large outputs -- counts, filters, top-N, presence checks -- where "
-            "retrieving the text would cost far more tokens than the answer."
-        ),
+        "description": EXEC_SCHEMA["description"],
         "inputSchema": {
-            "type": "object",
-            "properties": {
-                "hash": {"type": "string", "description": "CCR reference (#c1 or 12-char hex)"},
-                "code": {"type": "string", "description": "Python code; the payload path is in $TRIMTOK_PAYLOAD"},
-                "timeout": {"type": "number", "description": "Seconds before the run is killed (default 10)"},
-            },
-            "required": ["hash", "code"],
+            **EXEC_SCHEMA["parameters"],
             "additionalProperties": False,
         },
     },
@@ -165,36 +161,42 @@ class MethodNotFound(Exception):
     pass
 
 
+_MAX_FILE_BYTES = 50 * 1024 * 1024
+
+
 def _read_file_arg(file_path: Any) -> tuple[str, str]:
-    if not isinstance(file_path, str) or not file_path.strip():
-        raise ValueError("file_path must be a non-empty string")
+    if not isinstance(file_path, str) or not file_path.strip() or "\x00" in file_path:
+        raise ValueError("file_path must be a non-empty valid path string")
     resolved = os.path.abspath(os.path.expanduser(file_path.strip()))
     if not os.path.isfile(resolved):
         raise FileNotFoundError(f"file not found: {resolved}")
+    if os.path.getsize(resolved) > _MAX_FILE_BYTES:
+        raise ValueError(f"file exceeds {_MAX_FILE_BYTES // (1024 * 1024)} MB limit: {resolved}")
     with open(resolved, "r", encoding="utf-8", errors="replace") as fh:
         return fh.read(), resolved
 
 
-def _usage_row(hook: str, name: str, stats: dict[str, Any]) -> dict[str, Any]:
+def _usage_row(hook: str, name: str, stats: dict[str, Any], raw_len: int = 0) -> dict[str, Any]:
     """Log MCP traffic in the schema the savings summaries read.
 
     The summaries aggregate `before`/`after`/`saved`; logging `before_chars`
     from the stats dict made every MCP event invisible to `usage`/`gain`.
     """
     key = "cmd" if hook == "terminal" else "tool"
-    before = int(stats.get("before_chars") or 0)
+    before = int(stats.get("before_chars") or raw_len or 0)
     after_value = stats.get("after_chars")
     after = int(after_value) if stats.get("gate") == "ok" and after_value is not None else before
+    shape = stats.get("kind") or (_terminal_shape(stats) if hook == "terminal" else _tool_shape(stats))
     row: dict[str, Any] = {
         "hook": hook,
         "surface": "mcp",
         key: name,
         "kind": stats.get("kind"),
-        "shape": stats.get("kind") or ("mixed" if hook == "terminal" else "tool"),
+        "shape": shape,
         "gate": stats.get("gate"),
         "before": before,
         "after": after,
-        "saved": before - after,
+        "saved": max(0, before - after),
         "hash": str(stats.get("digest") or ""),
         "reason": stats.get("reason"),
         "toon_saved": int(stats.get("toon_saved") or 0),
@@ -220,6 +222,19 @@ def _tool_compress_terminal(args: dict[str, Any]) -> dict[str, Any]:
         min_chars = max(128, min(1_000_000, int(args.get("min_chars", 2048))))
     except (TypeError, ValueError):
         min_chars = 2048
+    if source_file:
+        pol = policy.classify(output, tool="terminal", path=source_file)
+        if pol.verbatim:
+            stats = {
+                "gate": "passthrough_policy",
+                "reason": pol.reason,
+                "before_chars": len(output),
+                "after_chars": len(output),
+                "saved_chars": 0,
+                "ms": 0.0,
+            }
+            _usage(_usage_row("terminal", command[:120], stats, raw_len=len(output)))
+            return {"compressed": output, "ref": "", "stats": stats, "source_file": source_file}
     compressed, stats = compress_terminal(
         command,
         output,
@@ -245,7 +260,7 @@ def _tool_compress_terminal(args: dict[str, Any]) -> dict[str, Any]:
                 stats = _storage_failure_stats(stats, output)
             else:
                 _audit({"hook": "mcp_terminal", "cmd": command[:120], **stats})
-    _usage(_usage_row("terminal", command[:120], stats))
+    _usage(_usage_row("terminal", command[:120], stats, raw_len=len(output)))
     resp: dict[str, Any] = {
         "compressed": compressed,
         "ref": ref,
@@ -300,7 +315,7 @@ def _tool_compress_tool(args: dict[str, Any]) -> dict[str, Any]:
                 stats = _storage_failure_stats(stats, result)
             else:
                 _audit({"hook": "mcp_tool", "tool": tool_name[:120], **stats})
-    _usage(_usage_row("tool", tool_name[:120], stats))
+    _usage(_usage_row("tool", tool_name[:120], stats, raw_len=len(result)))
     resp: dict[str, Any] = {
         "compressed": compressed,
         "ref": ref,
@@ -320,12 +335,17 @@ def _tool_retrieve(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _tool_exec(args: dict[str, Any]) -> dict[str, Any]:
-    from .exec_lane import run as _exec_run
+    try:
+        from .exec_lane import run as _exec_run
+    except ImportError:
+        from exec_lane import run as _exec_run  # type: ignore
     ref = _parse_ref(args.get("hash"))
     if not ref:
         return {"ok": False, "error": "hash is required (e.g. '#c1')", "output": "hash is required", "exit_code": 2}
     try:
         raw_t = float(args.get("timeout") if args.get("timeout") is not None else 10.0)
+        if not math.isfinite(raw_t):
+            raw_t = 10.0
     except (TypeError, ValueError):
         raw_t = 10.0
     timeout = max(0.1, min(30.0, raw_t))
@@ -339,9 +359,10 @@ def _tool_exec(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _tool_status(args: dict[str, Any]) -> dict[str, Any]:
-    action = str(args.get("action") or "status").strip().lower()
+    raw_action = args.get("action")
+    action = str(raw_action if raw_action is not None else "status").strip().lower() or "status"
     if action not in ("status", "usage", "doctor", "gain", "discover", "purge"):
-        action = "status"
+        return {"version": VERSION, "error": f"unknown action: {action!r}"}
     if action == "doctor":
         scan_path = str(args.get("scan_path") or "").strip()
         scan_list = [scan_path] if scan_path else None
@@ -355,14 +376,15 @@ def _tool_status(args: dict[str, Any]) -> dict[str, Any]:
         text = _handle_ts_command(f"gain {days}" if days else "gain")
         return {"version": VERSION, "action": "gain", "summary": text, "ccr": ccr.stats()}
     if action == "purge":
+        raw_hours = args.get("older_than_hours")
+        raw_max_mb = args.get("max_mb")
         try:
-            hours = max(0.0, float(args.get("older_than_hours") or 0.0))
+            hours = 0.0 if raw_hours is None else float(raw_hours)
+            max_mb = 0.0 if raw_max_mb is None else float(raw_max_mb)
         except (TypeError, ValueError):
-            hours = 0.0
-        try:
-            max_mb = max(0.0, float(args.get("max_mb") or 0.0))
-        except (TypeError, ValueError):
-            max_mb = 0.0
+            return {"version": VERSION, "action": "purge", "error": "older_than_hours and max_mb must be numbers >= 0"}
+        if not math.isfinite(hours) or not math.isfinite(max_mb) or hours < 0.0 or max_mb < 0.0:
+            return {"version": VERSION, "action": "purge", "error": "older_than_hours and max_mb must be finite numbers >= 0"}
         before = ccr.stats()
         purged = 0
         evicted = 0
@@ -414,6 +436,8 @@ def handle(request: dict[str, Any]) -> dict[str, Any]:
         }
     if method == "ping":
         return {}
+    if isinstance(method, str) and method.startswith("notifications/"):
+        return {}
     if method == "tools/list":
         return {"tools": TOOLS}
     if method == "tools/call":
@@ -453,37 +477,43 @@ def main() -> int:
     if hasattr(sys.stdin, "reconfigure"):
         sys.stdin.reconfigure(encoding="utf-8", errors="replace")
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            if _MSGSPEC_AVAILABLE:
-                try:
-                    request = msgspec.json.decode(line.encode("utf-8"))
-                except Exception:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace", newline="\n")
+    try:
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                if _MSGSPEC_AVAILABLE:
+                    try:
+                        request = msgspec.json.decode(line.encode("utf-8"))
+                    except Exception:
+                        request = json.loads(line)
+                else:
                     request = json.loads(line)
-            else:
-                request = json.loads(line)
-        except ValueError:
-            _write({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}})
-            continue
-        if not isinstance(request, dict):
-            continue
-        request_id = request.get("id")
-        try:
-            result = handle(request)
-        except MethodNotFound as exc:
-            if request_id is not None:
-                _write({"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": str(exc)}})
-            continue
-        except Exception as exc:
-            if request_id is not None:
-                _write({"jsonrpc": "2.0", "id": request_id, "error": {"code": -32603, "message": f"internal error: {exc}"}})
-            continue
-        if request_id is not None:
-            _write({"jsonrpc": "2.0", "id": request_id, "result": result})
+            except ValueError:
+                _write({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}})
+                continue
+            if not isinstance(request, dict) or not isinstance(request.get("method"), str):
+                req_id = request.get("id") if isinstance(request, dict) else None
+                _write({"jsonrpc": "2.0", "id": req_id, "error": {"code": -32600, "message": "invalid request"}})
+                continue
+            has_id = "id" in request
+            request_id = request.get("id")
+            try:
+                result = handle(request)
+            except MethodNotFound as exc:
+                if has_id:
+                    _write({"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": str(exc)}})
+                continue
+            except Exception as exc:
+                if has_id:
+                    _write({"jsonrpc": "2.0", "id": request_id, "error": {"code": -32603, "message": f"internal error: {exc}"}})
+                continue
+            if has_id:
+                _write({"jsonrpc": "2.0", "id": request_id, "result": result})
+    except (KeyboardInterrupt, BrokenPipeError):
+        pass
     return 0
 
 

@@ -74,7 +74,7 @@ _SKILL_PRUNED_MARKER_RE = re.compile(
 )
 _MAX_PRUNED_SKILL_MARKERS = 20
 
-_REF_RE = re.compile(r"#c[0-9a-zA-Z]{2,16}")
+_REF_RE = re.compile(r"(?<![0-9A-Za-z])#c[0-9a-zA-Z]{1,16}\b")
 _PATH_RE = re.compile(r"(?:[A-Za-z]:\\|/)?[\w./\\-]+\.(?:py|ts|tsx|js|jsx|json|yaml|yml|md|toml|sql|sh|ps1|rs|go)")
 _BACKTICK_RE = re.compile(r"`([^`\n]{3,64})`")
 _IDENT_RE = re.compile(r"\b(?:[a-z]+_[a-z0-9_]{2,}|[A-Z][a-z]+[A-Z][A-Za-z0-9]*|[A-Z]{2,}_[A-Z0-9_]+)\b")
@@ -236,24 +236,45 @@ def _load_is_important():
     return is_important
 
 
-def _put_ccr(text: str) -> str:
+def _put_ccr(
+    text: str,
+    *,
+    max_entries: int = 1000,
+    max_bytes: int = 52_428_800,
+    ttl_hours: int = 24,
+) -> str:
     """Store payload in CCR fail-open; return '' on any error."""
     try:
         from trimtok import ccr
 
-        return ccr.put(text) or ""
+        return ccr.put(text, max_entries=max_entries, max_bytes=max_bytes, ttl_hours=ttl_hours) or ""
     except Exception:
         return ""
 
 
-def _search_ccr(query: str, limit: int = 5) -> list[dict[str, Any]]:
+def _search_ccr(query: str, limit: int = 5, *, ttl_hours: int = 24) -> list[dict[str, Any]]:
     """Search CCR via SQLite FTS5 fail-open; return [] on any error."""
     try:
         from trimtok import ccr
 
-        return ccr.search(query, limit=limit) or []
+        return ccr.search(query, limit=limit, ttl_hours=ttl_hours) or []
     except Exception:
         return []
+
+
+def _looks_secret_safe(text: str) -> bool:
+    """Check trimtok content policy secret scanner fail-open."""
+    try:
+        from .policy import looks_secret
+    except ImportError:
+        try:
+            from trimtok.policy import looks_secret
+        except Exception:
+            return False
+    try:
+        return bool(looks_secret(text))
+    except Exception:
+        return False
 
 
 def _extract_recall_terms(text: str, max_terms: int = _MAX_RECALL_TERMS) -> list[str]:
@@ -312,6 +333,10 @@ class TrimtokContextEngine(ContextEngine):
         enable_llm_summary: bool = True,
         enable_prepare_ahead: bool = True,
         enable_auto_recall: bool = True,
+        policy_enabled: bool = True,
+        ccr_max_entries: int = 1000,
+        ccr_max_bytes: int = 52_428_800,
+        ccr_ttl_hours: int = 24,
     ) -> None:
         self.context_length = int(context_length)
         self.threshold_percent = float(threshold_percent)
@@ -332,6 +357,11 @@ class TrimtokContextEngine(ContextEngine):
         self.enable_llm_summary = bool(enable_llm_summary)
         self.enable_prepare_ahead = bool(enable_prepare_ahead)
         self.enable_auto_recall = bool(enable_auto_recall)
+        self.policy_enabled = bool(policy_enabled)
+        self.ccr_max_entries = int(ccr_max_entries)
+        self.ccr_max_bytes = int(ccr_max_bytes)
+        self.ccr_ttl_hours = int(ccr_ttl_hours)
+        self.active_model_family: str = ""
         self.model_thresholds: dict[str, float] = {}
 
         # Runtime token & compaction state
@@ -353,6 +383,7 @@ class TrimtokContextEngine(ContextEngine):
 
         # Background prepare-ahead cache & session-scoped CCR recall refs
         self._prepare_lock = threading.Lock()
+        self._session_gen: int = 0
         self._prepared_fingerprint: str = ""
         self._prepared_middle_len: int = 0
         self._prepared_handoff: Optional[dict[str, Any]] = None
@@ -363,32 +394,53 @@ class TrimtokContextEngine(ContextEngine):
     def name(self) -> str:
         return "trimtok"
 
+    @property
+    def live_pressure(self) -> float:
+        """Current context-window pressure (0.0..1.0) for seamless hook adaptation."""
+        if self.context_length <= 0 or self.last_prompt_tokens <= 0:
+            return 0.0
+        return max(0.0, min(1.0, self.last_prompt_tokens / self.context_length))
+
+    def _store_ccr(self, text: str) -> str:
+        return _put_ccr(
+            text,
+            max_entries=self.ccr_max_entries,
+            max_bytes=self.ccr_max_bytes,
+            ttl_hours=self.ccr_ttl_hours,
+        )
+
     def update_from_response(self, usage: dict[str, Any]) -> None:
         if not isinstance(usage, dict):
             return
-        self.last_prompt_tokens = int(usage.get("prompt_tokens") or 0)
-        self.last_completion_tokens = int(usage.get("completion_tokens") or 0)
-        self.last_total_tokens = int(usage.get("total_tokens") or 0)
-
-        if self.last_prompt_tokens > 0:
-            self.last_real_prompt_tokens = self.last_prompt_tokens
-            if self.threshold_tokens > 0 and self.last_prompt_tokens < self.threshold_tokens:
+        prompt_tok = int(usage.get("prompt_tokens") or 0)
+        comp_tok = int(usage.get("completion_tokens") or 0)
+        total_tok = int(usage.get("total_tokens") or 0)
+        if comp_tok > 0:
+            self.last_completion_tokens = comp_tok
+        if total_tok > 0:
+            self.last_total_tokens = total_tok
+        # Ignore usage-less/zero-prompt responses so anti-thrash verification isn't cleared blindly
+        if prompt_tok <= 0:
+            return
+        self.last_prompt_tokens = prompt_tok
+        self.last_real_prompt_tokens = prompt_tok
+        if self.threshold_tokens > 0 and self.last_prompt_tokens < self.threshold_tokens:
+            self._ineffective_compression_count = 0
+            self._anti_thrash_unblock_at = 0.0
+        if self._verify_compaction_cleared_threshold and self.threshold_tokens > 0:
+            if self.last_prompt_tokens >= self.threshold_tokens:
+                self._ineffective_compression_count += 1
+                if self._ineffective_compression_count >= _ANTI_THRASH_STRIKES:
+                    self._anti_thrash_unblock_at = time.monotonic() + _ANTI_THRASH_RECOVERY_S
+                logger.warning(
+                    "Trimtok compaction did not clear threshold: %d >= %d (strikes=%d)",
+                    self.last_prompt_tokens,
+                    self.threshold_tokens,
+                    self._ineffective_compression_count,
+                )
+            else:
                 self._ineffective_compression_count = 0
                 self._anti_thrash_unblock_at = 0.0
-            if self._verify_compaction_cleared_threshold and self.threshold_tokens > 0:
-                if self.last_prompt_tokens >= self.threshold_tokens:
-                    self._ineffective_compression_count += 1
-                    if self._ineffective_compression_count >= _ANTI_THRASH_STRIKES:
-                        self._anti_thrash_unblock_at = time.time() + _ANTI_THRASH_RECOVERY_S
-                    logger.warning(
-                        "Trimtok compaction did not clear threshold: %d >= %d (strikes=%d)",
-                        self.last_prompt_tokens,
-                        self.threshold_tokens,
-                        self._ineffective_compression_count,
-                    )
-                else:
-                    self._ineffective_compression_count = 0
-                    self._anti_thrash_unblock_at = 0.0
 
         self._verify_compaction_cleared_threshold = False
         self.awaiting_real_usage_after_compression = False
@@ -405,8 +457,7 @@ class TrimtokContextEngine(ContextEngine):
             return False, f"structural_backoff:{rem:.0f}"
 
         if self._ineffective_compression_count >= _ANTI_THRASH_STRIKES:
-            now_wall = time.time()
-            if self._anti_thrash_unblock_at and now_wall >= self._anti_thrash_unblock_at:
+            if self._anti_thrash_unblock_at and now_mono >= self._anti_thrash_unblock_at:
                 # Allow one probe after recovery window instead of blocking permanently
                 self._ineffective_compression_count = _ANTI_THRASH_STRIKES - 1
                 self._anti_thrash_unblock_at = 0.0
@@ -445,6 +496,7 @@ class TrimtokContextEngine(ContextEngine):
         self._structural_no_op_msg_count = 0
         self._llm_summary_cooldown_until = 0.0
         with self._prepare_lock:
+            self._session_gen += 1
             self._prepared_fingerprint = ""
             self._prepared_middle_len = 0
             self._prepared_handoff = None
@@ -461,6 +513,12 @@ class TrimtokContextEngine(ContextEngine):
         **kwargs: Any,
     ) -> None:
         self.context_length = int(context_length)
+        if model:
+            try:
+                from .policy import model_family_of
+            except ImportError:
+                from trimtok.policy import model_family_of
+            self.active_model_family = model_family_of(model) or ""
         base_pct = getattr(self, "_config_threshold_percent", self.threshold_percent)
         resolved_pct = base_pct
         try:
@@ -483,20 +541,24 @@ class TrimtokContextEngine(ContextEngine):
     # Per-Request CCR FTS5 Auto-Hinting (`select_context`, cache-safe)
     # ------------------------------------------------------------------
 
-    def _record_session_ref(self, ref: str) -> None:
-        if ref:
-            with self._prepare_lock:
-                self._session_refs.add(ref)
+    def _record_session_ref(self, ref: str, *, gen: Optional[int] = None) -> None:
+        if not ref:
+            return
+        norm = ref if ref.startswith("#") else f"#{ref}"
+        with self._prepare_lock:
+            if gen is not None and gen != self._session_gen:
+                return
+            self._session_refs.add(norm)
 
     def _collect_session_refs(self, request_messages: list[dict[str, Any]]) -> set[str]:
-        """Union of refs stashed by this engine and any stashed/checkpoint refs in the request."""
+        """Union of refs stashed by this engine and any Trimtok CCR refs in the request."""
         with self._prepare_lock:
             refs = set(self._session_refs)
         for msg in request_messages:
             if not isinstance(msg, dict):
                 continue
             content = msg.get("content")
-            if isinstance(content, str) and ("[tt:stashed" in content or "[tt:checkpoint" in content):
+            if isinstance(content, str) and ("[tt:" in content or "[@#c" in content):
                 refs.update(_REF_RE.findall(content))
             for tc in msg.get("tool_calls") or []:
                 if isinstance(tc, dict):
@@ -546,7 +608,7 @@ class TrimtokContextEngine(ContextEngine):
         # Aggregate per-term FTS5 hits (ccr.search ANDs multi-word queries, so per-term avoids 0-hit traps)
         scores: dict[str, list[Any]] = {}
         for term in terms:
-            for hit in _search_ccr(term, limit=4):
+            for hit in _search_ccr(term, limit=4, ttl_hours=self.ccr_ttl_hours):
                 alias = str(hit.get("alias") or "")
                 if not alias or alias not in session_refs or alias in already_cited:
                     continue
@@ -613,19 +675,27 @@ class TrimtokContextEngine(ContextEngine):
             if self._prepare_in_flight or (self._prepared_fingerprint == fp and self._prepared_handoff is not None):
                 return
             self._prepare_in_flight = True
+            worker_gen = self._session_gen
 
         def _worker() -> None:
             try:
                 skill_names = _skill_view_names_by_call_id(snapshot)
-                tier1_mid, _ = self._tier1_stash(middle, 0, len(middle), skill_names=skill_names)
+                tier1_mid, _ = self._tier1_stash(
+                    middle, 0, len(middle), skill_names=skill_names, session_gen=worker_gen
+                )
                 handoff = self._build_handoff_message(
-                    tier1_mid, skill_names=skill_names, focus_topic=None, memory_context=""
+                    tier1_mid,
+                    skill_names=skill_names,
+                    focus_topic=None,
+                    memory_context="",
+                    session_gen=worker_gen,
                 )
                 if handoff is not None:
                     with self._prepare_lock:
-                        self._prepared_fingerprint = fp
-                        self._prepared_middle_len = len(middle)
-                        self._prepared_handoff = handoff
+                        if self._session_gen == worker_gen:
+                            self._prepared_fingerprint = fp
+                            self._prepared_middle_len = len(middle)
+                            self._prepared_handoff = handoff
             except Exception as exc:
                 logger.debug("Trimtok prepare-ahead worker failed: %s", exc)
             finally:
@@ -705,16 +775,15 @@ class TrimtokContextEngine(ContextEngine):
             self._llm_summary_cooldown_until = 0.0
 
         head_boundary, tail_boundary = self._safe_boundaries(messages)
-        if head_boundary >= tail_boundary:
-            self._arm_structural_backoff(len(messages))
-            return messages
-
         skill_names = _skill_view_names_by_call_id(messages)
 
-        # --- Tier 1: Deterministic zero-loss CCR stashing (tools, tool_calls args, user pastes) ---
-        tier1_msgs, tier1_changes = self._tier1_stash(
-            messages, head_boundary, tail_boundary, skill_names=skill_names
-        )
+        # --- Tier 1: Deterministic zero-loss CCR stashing (skip if Tier 1 window is empty; still allow Tier 2!) ---
+        if head_boundary < tail_boundary:
+            tier1_msgs, tier1_changes = self._tier1_stash(
+                messages, head_boundary, tail_boundary, skill_names=skill_names
+            )
+        else:
+            tier1_msgs, tier1_changes = messages, 0
         before_tokens = _estimate_messages_tokens(messages)
         after_tier1_tokens = _estimate_messages_tokens(tier1_msgs) if tier1_changes else before_tokens
 
@@ -865,24 +934,30 @@ class TrimtokContextEngine(ContextEngine):
         tail_boundary: int,
         *,
         skill_names: Optional[dict[str, str]] = None,
+        session_gen: Optional[int] = None,
     ) -> tuple[list[dict[str, Any]], int]:
         """Deterministic CCR stashing for middle tool outputs, oversized tool_calls args, and user pastes."""
         snames = skill_names if skill_names is not None else _skill_view_names_by_call_id(messages)
         out: list[dict[str, Any]] = []
         changes = 0
         for i, msg in enumerate(messages):
+            if not isinstance(msg, dict):
+                out.append(msg)
+                continue
             if head_boundary <= i < tail_boundary:
                 role = msg.get("role")
                 if role == "tool":
                     content = msg.get("content", "")
                     if self._should_stash(content):
-                        stub = self._stash_tool_content(msg, content, skill_names=snames)
-                        if stub is not None:
+                        stub = self._stash_tool_content(
+                            msg, content, skill_names=snames, session_gen=session_gen
+                        )
+                        if stub is not None and len(stub) < len(content):
                             out.append({**msg, "content": stub})
                             changes += 1
                             continue
                 elif role == "assistant" and isinstance(msg.get("tool_calls"), list):
-                    stashed_msg, n_args = self._stash_tool_call_args(msg)
+                    stashed_msg, n_args = self._stash_tool_call_args(msg, session_gen=session_gen)
                     if n_args > 0:
                         out.append(stashed_msg)
                         changes += n_args
@@ -890,8 +965,8 @@ class TrimtokContextEngine(ContextEngine):
                 elif role == "user":
                     content = msg.get("content", "")
                     if self._should_stash_user(content):
-                        stub = self._stash_user_content(content)
-                        if stub is not None:
+                        stub = self._stash_user_content(content, session_gen=session_gen)
+                        if stub is not None and len(stub) < len(content):
                             out.append({**msg, "content": stub})
                             changes += 1
                             continue
@@ -904,11 +979,12 @@ class TrimtokContextEngine(ContextEngine):
         content: str,
         *,
         skill_names: Optional[dict[str, str]] = None,
+        session_gen: Optional[int] = None,
     ) -> Optional[str]:
-        ref = _put_ccr(content)
+        ref = self._store_ccr(content)
         if not ref:
             return None
-        self._record_session_ref(ref)
+        self._record_session_ref(ref, gen=session_gen)
         lines = content.count("\n") + 1
         tool_name = str(msg.get("name") or msg.get("tool_name") or "").strip()
         label = f"{tool_name} result" if tool_name else "tool result"
@@ -922,7 +998,9 @@ class TrimtokContextEngine(ContextEngine):
             stub += f"\n{_skill_pruned_marker(skill_name)}"
         return stub
 
-    def _stash_tool_call_args(self, msg: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    def _stash_tool_call_args(
+        self, msg: dict[str, Any], *, session_gen: Optional[int] = None
+    ) -> tuple[dict[str, Any], int]:
         """Stash oversized JSON tool_calls arguments (e.g. write_file/patch) to CCR as valid JSON stubs."""
         raw_tcs = msg.get("tool_calls") or []
         new_tcs: list[Any] = []
@@ -938,10 +1016,10 @@ class TrimtokContextEngine(ContextEngine):
                     isinstance(args_str, str)
                     and len(args_str) >= self.min_args_stash_chars
                     and '"tt_stashed_ref"' not in args_str
+                    and not (self.policy_enabled and _looks_secret_safe(args_str))
                 ):
-                    ref = _put_ccr(args_str)
+                    ref = self._store_ccr(args_str)
                     if ref:
-                        self._record_session_ref(ref)
                         fn_name = str(fn.get("name") or "tool")
                         stub_args = json.dumps(
                             {
@@ -953,11 +1031,13 @@ class TrimtokContextEngine(ContextEngine):
                             },
                             ensure_ascii=False,
                         )
-                        tc_copy = dict(tc)
-                        tc_copy["function"] = {**fn, "arguments": stub_args}
-                        new_tcs.append(tc_copy)
-                        stashed += 1
-                        continue
+                        if len(stub_args) < len(args_str):
+                            self._record_session_ref(ref, gen=session_gen)
+                            tc_copy = dict(tc)
+                            tc_copy["function"] = {**fn, "arguments": stub_args}
+                            new_tcs.append(tc_copy)
+                            stashed += 1
+                            continue
             new_tcs.append(copy.deepcopy(tc))
         if stashed == 0:
             return msg, 0
@@ -968,13 +1048,17 @@ class TrimtokContextEngine(ContextEngine):
             return False
         if "[tt:stashed" in content or "[tt:checkpoint" in content or content.startswith("[CONTEXT COMPACTION"):
             return False
+        if self.policy_enabled and _looks_secret_safe(content):
+            return False
         return True
 
-    def _stash_user_content(self, content: str) -> Optional[str]:
-        ref = _put_ccr(content)
+    def _stash_user_content(
+        self, content: str, *, session_gen: Optional[int] = None
+    ) -> Optional[str]:
+        ref = self._store_ccr(content)
         if not ref:
             return None
-        self._record_session_ref(ref)
+        self._record_session_ref(ref, gen=session_gen)
         lines = content.count("\n") + 1
         head = content[:360].rstrip()
         tail = content[-180:].lstrip()
@@ -1006,12 +1090,14 @@ class TrimtokContextEngine(ContextEngine):
                 self._prepared_handoff = None
                 return handoff.copy(), []
 
-            # Prefix match: conversation grew by 1-2 turns since prepare-ahead ran
+            # Prefix match: conversation grew by 1-2 turns since prepare-ahead ran (never orphan a leading tool)
             if len(raw_middle) > plen and _messages_fingerprint(raw_middle[:plen]) == fp:
-                self._prepared_fingerprint = ""
-                self._prepared_middle_len = 0
-                self._prepared_handoff = None
-                return handoff.copy(), [m.copy() for m in tier1_middle[plen:]]
+                rem = [m.copy() for m in tier1_middle[plen:] if isinstance(m, dict)]
+                if not rem or rem[0].get("role") != "tool":
+                    self._prepared_fingerprint = ""
+                    self._prepared_middle_len = 0
+                    self._prepared_handoff = None
+                    return handoff.copy(), rem
 
         return None, []
 
@@ -1060,6 +1146,7 @@ class TrimtokContextEngine(ContextEngine):
         skill_names: Optional[dict[str, str]] = None,
         focus_topic: Optional[str] = None,
         memory_context: str = "",
+        session_gen: Optional[int] = None,
     ) -> Optional[dict[str, Any]]:
         """Build the rolling/fresh handoff checkpoint message with CCR archive ref and Ghost-Skill markers."""
         if not middle:
@@ -1076,17 +1163,20 @@ class TrimtokContextEngine(ContextEngine):
                 new_turns.append(msg)
 
         serialized_middle = self._serialize_turns(middle)
-        archive_ref = _put_ccr(serialized_middle)
-        self._record_session_ref(archive_ref)
+        archive_ref = ""
+        if not (self.policy_enabled and _looks_secret_safe(serialized_middle)):
+            archive_ref = self._store_ccr(serialized_middle)
+            self._record_session_ref(archive_ref, gen=session_gen)
 
-        prior_summary = prior_summaries[-1] if prior_summaries else ""
+        prior_summary = "\n\n---\n\n".join(prior_summaries) if prior_summaries else ""
         turns_to_summarize = new_turns if prior_summary else middle
+        serialized_input = self._serialize_turns(turns_to_summarize) if prior_summary else serialized_middle
 
         summary_body = ""
         method = "deterministic"
         if self.enable_llm_summary and time.monotonic() >= self._llm_summary_cooldown_until:
             llm_summary = self._summarize_via_auxiliary_llm(
-                self._serialize_turns(turns_to_summarize),
+                serialized_input,
                 prior_summary=prior_summary,
                 focus_topic=focus_topic,
                 memory_context=memory_context,
@@ -1323,6 +1413,8 @@ class TrimtokContextEngine(ContextEngine):
             return False
         if content.startswith("[tt:stashed"):
             return False
+        if self.policy_enabled and _looks_secret_safe(content):
+            return False
         is_important = _load_is_important()
         for idx, line in enumerate(content.splitlines()):
             if idx >= self.fault_scan_lines:
@@ -1349,8 +1441,13 @@ class TrimtokContextEngine(ContextEngine):
             enable_llm_summary=self.enable_llm_summary,
             enable_prepare_ahead=self.enable_prepare_ahead,
             enable_auto_recall=self.enable_auto_recall,
+            policy_enabled=self.policy_enabled,
+            ccr_max_entries=self.ccr_max_entries,
+            ccr_max_bytes=self.ccr_max_bytes,
+            ccr_ttl_hours=self.ccr_ttl_hours,
         )
         cloned._config_threshold_percent = self._config_threshold_percent
+        cloned.active_model_family = self.active_model_family
         cloned.model_thresholds = dict(self.model_thresholds)
         cloned.threshold_tokens = self.threshold_tokens
         cloned.last_prompt_tokens = self.last_prompt_tokens

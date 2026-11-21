@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import os
+import re
 import shlex
+
+_PYTEST_VERBOSITY_RE = re.compile(r"^-[vq]+$")
+
 
 def rewrite_argv(argv: list[str]) -> list[str]:
     """Append noise-reducing flags to an argv list without re-parsing a string.
@@ -19,17 +24,22 @@ def rewrite_argv(argv: list[str]) -> list[str]:
     head, args = argv[0], argv[1:]
 
     if head == "pytest":
-        # Never alter explicit verbose or custom traceback settings
-        if any(a in ("-v", "--verbose") for a in args) or any(a.startswith("--tb=") for a in args):
+        # Never alter explicit verbose, quiet, custom traceback, or `--` pass-through args
+        if "--" in args:
             return argv
-        if any(a in ("-q", "--quiet") for a in args):
+        if any(
+            _PYTEST_VERBOSITY_RE.match(a)
+            or a in ("--verbose", "--quiet", "--tb")
+            or a.startswith("--tb=")
+            for a in args
+        ):
             return argv
         return [*argv, "-q", "--tb=short"]
 
     if head == "git" and args[:1] == ["log"]:
-        # Only inject on bare git log without user-specified formatting or limit
+        # Insert formatting flags BEFORE non-option path/ref arguments (git rejects trailing flags)
         if not any(a.startswith("-") for a in args[1:]):
-            return [*argv, "--oneline", "-n", "25"]
+            return ["git", "log", "--oneline", "-n", "25", *args[1:]]
 
     if head == "cargo" and args[:1] == ["test"]:
         if "--" not in args:
@@ -41,6 +51,9 @@ def rewrite_argv(argv: list[str]) -> list[str]:
 def rewrite_command(cmd: str) -> str:
     raw = cmd.strip()
     if not raw:
+        return cmd
+    # On Windows, POSIX shlex.split strips backslashes in paths (`C:\foo` -> `C:foo`)
+    if os.name == "nt" and "\\" in raw:
         return cmd
     try:
         parts = shlex.split(raw)

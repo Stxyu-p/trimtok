@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import pathlib
 import sys
 
@@ -12,7 +13,18 @@ _INNER_INIT = _INNER_DIR / "__init__.py"
 _SEARCH_PATHS = [str(_INNER_DIR), str(_OUTER_DIR)]
 __path__ = _SEARCH_PATHS
 
-if "trimtok" not in sys.modules or getattr(sys.modules["trimtok"], "__file__", None) != str(_INNER_INIT):
+
+def _norm_path(p: object) -> str:
+    if not isinstance(p, str) or not p:
+        return ""
+    try:
+        return os.path.normcase(os.path.realpath(p))
+    except OSError:
+        return os.path.normcase(p)
+
+
+_existing_mod = sys.modules.get("trimtok")
+if _existing_mod is None or _norm_path(getattr(_existing_mod, "__file__", None)) != _norm_path(str(_INNER_INIT)):
     _spec = importlib.util.spec_from_file_location(
         "trimtok", _INNER_INIT, submodule_search_locations=_SEARCH_PATHS
     )
@@ -20,7 +32,11 @@ if "trimtok" not in sys.modules or getattr(sys.modules["trimtok"], "__file__", N
         _mod = importlib.util.module_from_spec(_spec)
         _mod.__path__ = _SEARCH_PATHS
         sys.modules["trimtok"] = _mod
-        _spec.loader.exec_module(_mod)
+        try:
+            _spec.loader.exec_module(_mod)
+        except Exception:
+            sys.modules.pop("trimtok", None)
+            raise
     else:
         import trimtok as _mod
 else:

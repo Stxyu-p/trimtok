@@ -44,12 +44,13 @@ def _stats(result: str, final: str, tb: int, ta: int, kind: str, rh: str, t0: fl
 
 
 def _head_and_check(result: str, cand: str, ref: str) -> tuple[str, int, int] | None:
-    """Prefix the CCR header and re-check the token gate on the final text."""
-    tb, ta = _tok_pair(result, cand)
+    """Prefix the CCR header and check the token gate on the final text (single consistent scale)."""
     head = adaptive_tool_head(len(result) - len(cand), ref.lstrip("#"), len(result), is_lossless_only=False)
     final = f"{head}\n{cand}" if head else cand
-    _, final_ta = _tok_pair(result, final)
-    if len(final) < len(result) and final_ta < tb:
+    if len(final) >= len(result):
+        return None
+    tb, final_ta = _tok_pair(result, final)
+    if final_ta < tb:
         return final, tb, final_ta
     return None
 
@@ -385,8 +386,10 @@ def skill_cache(
                     f"[tt:skill_cached name=\"{skill_name}\" #{prev_ref} ({len(result)} chars) "
                     "— identical to prior skill_view in active context -> trimtok_retrieve]"
                 )
-                tb, ta = _tok_pair(result, stub)
-                return stub, _stats(result, stub, tb, ta, "skill_cache_hit", rh, t0)
+                if len(stub) < len(result):
+                    tb, ta = _tok_pair(result, stub)
+                    if ta < tb:
+                        return stub, _stats(result, stub, tb, ta, "skill_cache_hit", rh, t0)
             ref = _ccr_put(result)
             from .dedup import _SEEN_LOCK
             with _SEEN_LOCK:
@@ -446,8 +449,10 @@ def skills_list_cache(tool_name: str, args: Any, result: str, session_id: str, t
             f"[tt:skills_list_cached category=\"{category}\" #{prev_ref} ({len(result)} chars) "
             "— identical to prior skills_list in active context -> trimtok_retrieve]"
         )
-        tb, ta = _tok_pair(result, stub)
-        return stub, _stats(result, stub, tb, ta, "skills_list_cache_hit", rh, t0)
+        if len(stub) < len(result):
+            tb, ta = _tok_pair(result, stub)
+            if ta < tb:
+                return stub, _stats(result, stub, tb, ta, "skills_list_cache_hit", rh, t0)
     ref = _ccr_put(result)
     from .dedup import _SEEN_LOCK
     with _SEEN_LOCK:
@@ -475,7 +480,9 @@ def search_files_prefix(tool_name: str, result: str, t0: float) -> tuple[str, di
     # Group by root signature so mixed Windows (C:/) and MSYS (/c/) paths don't break commonpath.
     buckets: dict[str, list[str]] = {}
     for d in dirs:
-        buckets.setdefault(d[:3].lower(), []).append(d)
+        # Normalize Windows drive-letter case so `C:/...` and `c:/...` share one prefix
+        d_norm = (d[0].upper() + d[1:]) if len(d) >= 2 and d[1] == ":" else d
+        buckets.setdefault(d_norm[:3].lower(), []).append(d_norm)
     majority = max(buckets.values(), key=len)
     if len(majority) < 3:
         return None

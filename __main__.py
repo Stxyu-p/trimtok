@@ -2,7 +2,7 @@
 """trimtok root shim: forwards to trimtok.__main__."""
 from __future__ import annotations
 import sys
-from trimtok.__main__ import *
+from trimtok.__main__ import main
 
 if __name__ == "__main__":
     sys.exit(main())

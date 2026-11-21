@@ -54,6 +54,7 @@ _MAX_FUZZY_CANDIDATES = 250
 _MAX_ADDED = 40
 _MAX_REMOVED = 15
 _MAX_STILL = 25
+_MAX_SESSIONS = 64  # global session cap
 _MAX_COMMANDS = 32  # per session
 _MAX_SNAPSHOT_LINES = 6000  # per command; larger outputs skip delta
 _MAX_SNAPSHOT_CHARS = 400_000  # per command
@@ -179,6 +180,20 @@ class StatefulDeltaEngine:
             if ent is not None:
                 total_lines -= len(ent[1])
                 total_chars -= len(ent[0])
+        # Bound total distinct sessions to prevent unbounded memory growth.
+        seen_sids: list[str] = []
+        seen_set: set[str] = set()
+        for k in self._state:
+            if k[0] not in seen_set:
+                seen_set.add(k[0])
+                seen_sids.append(k[0])
+        while len(seen_sids) > _MAX_SESSIONS:
+            old_sid = seen_sids.pop(0)
+            if old_sid == sid:
+                continue
+            for k in [k for k in self._state if k[0] == old_sid]:
+                self._state.pop(k, None)
+                self._turns.pop(k, None)
 
     def try_delta(
         self,
@@ -239,16 +254,21 @@ class StatefulDeltaEngine:
             if effective_sim < threshold and len(line_skel) <= _MAX_FUZZY_CANDIDATES and len(prev_skel) <= _MAX_FUZZY_CANDIDATES:
                 unmatched_cur = [ln for ln in line_set if ln not in prev_set and _skeleton(ln) not in prev_skel and len(ln.strip()) >= 8]
                 unmatched_prev = [ln for ln in prev_set if ln not in line_set and _skeleton(ln) not in line_skel and len(ln.strip()) >= 8]
-                for cln in unmatched_cur:
-                    c_skel = _skeleton(cln)
-                    for pln in unmatched_prev:
-                        if abs(len(cln) - len(pln)) <= max(16, len(cln) // 4):
-                            if _line_similarity(c_skel, _skeleton(pln)) >= _FUZZY_LINE_SIM_MIN:
-                                fuzzy_matched_cur.add(cln)
-                                fuzzy_matched_prev.add(pln)
-                                break
+                if len(unmatched_cur) <= _MAX_FUZZY_CANDIDATES and len(unmatched_prev) <= _MAX_FUZZY_CANDIDATES:
+                    prev_pairs = [(pln, _skeleton(pln)) for pln in unmatched_prev]
+                    for idx_c, cln in enumerate(unmatched_cur):
+                        if deadline is not None and (idx_c & 31) == 0:
+                            deadline.check()
+                        c_skel = _skeleton(cln)
+                        for pln, p_skel in prev_pairs:
+                            if abs(len(cln) - len(pln)) <= max(16, len(cln) // 4):
+                                if _line_similarity(c_skel, p_skel) >= _FUZZY_LINE_SIM_MIN:
+                                    fuzzy_matched_cur.add(cln)
+                                    fuzzy_matched_prev.add(pln)
+                                    break
                 if fuzzy_matched_cur:
-                    fuzzy_sim = (len(line_skel & prev_skel) + len(fuzzy_matched_cur)) / max(len(line_skel), 1)
+                    matched_skels = {_skeleton(c) for c in fuzzy_matched_cur}
+                    fuzzy_sim = min(1.0, (len(line_skel & prev_skel) + len(matched_skels)) / max(len(line_skel), 1))
                     effective_sim = max(effective_sim, fuzzy_sim)
 
             if effective_sim < threshold:

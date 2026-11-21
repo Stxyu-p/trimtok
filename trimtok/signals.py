@@ -118,8 +118,8 @@ def tok_pair(orig: str, cand: str) -> tuple[int, int]:
 # 2. Polarity & Error Detection
 # ---------------------------------------------------------------------------
 _ERROR_RE = re.compile(
-    r"(?:(?<![A-Za-z0-9_])|[A-Za-z0-9_]+(?:Error|Exception)\b)"
-    r"(?:error(?:s)?|exception|traceback|fail(?:ed|ure|s)?|panic(?:ked)?|fatal|critical|"
+    r"(?<![A-Za-z0-9_])"
+    r"(?:error(?:s)?|exception|traceback|fail(?:ed|ures?|s)?|panic(?:ked)?|fatal|critical|"
     r"warn(?:ing|ings)?|denied|refused|timeout|seg(?:fault|mentation\s+fault)|"
     r"sig(?:segv|abrt|bus|kill|term)|undefined\s+reference|killed|"
     r"assert(?:ion)?(?:error|ion|\s+failed)?|oom(?:killed)?|npm\s+err!|epipe|"
@@ -128,7 +128,8 @@ _ERROR_RE = re.compile(
     r"http[/\d.\s]*5\d{2}(?![0-9])|bad\s+gateway|"
     r"ข้อผิดพลาด|ผิดพลาด|ล้มเหลว|ขัดข้อง)"
     r"(?![A-Za-z0-9_])"
-    r"|\b[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception|Fault|Panic|Alert):"
+    r"|\b[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception)\b"
+    r"|\b[A-Za-z_][A-Za-z0-9_]*(?:Fault|Panic|Alert):"
     r"|(?<![A-Za-z0-9_])(?:CRITICAL|FATAL|ERROR|FAIL|FAILED|FAULT|PANIC)_[A-Za-z0-9_]{2,}:"
     r"|\[(?:CRITICAL|FATAL|ERROR|FAIL|FAILED|FAULT|PANIC)_[A-Za-z0-9_]+\]"
     r"|no such file|cannot stat|unable to locate|cannot (?:open|access)"
@@ -143,10 +144,10 @@ _ERROR_HINTS = (
     "warn", "denied", "refused", "timeout", "segfault", "segmentation", "fault",
     "assert", "oom", "epipe", "exit code", "exit status", "out of memory",
     "oomkilled", "npm err!", "bad gateway", "undefined reference", "killed", "sigsegv", "sigabrt",
-    "sigbus", "sigkill", "sigterm",
+    "sigbus", "sigkill", "sigterm", "alert",
     "no such file", "cannot stat", "unable to locate", "cannot open", "cannot access", "err_",
     "ผิดพลาด", "ล้มเหลว", "ขัดข้อง", "ข้อผิดพลาด",
-    "file ", "  at ", "caused by:",
+    "file ", "caused by:",
 )
 
 # Loose hints ("status", "http", "sig", "memory") sent ~every info log line into
@@ -163,6 +164,9 @@ _WS_COLLAPSE_RE = re.compile(r"\s+")
 
 def looks_suspicious(low: str) -> bool:
     """Cheap reject-before-expensive-regex prefilter (never rejects a real fault)."""
+    # Check JS/Java indented stack frames BEFORE collapsing whitespace
+    if "  at " in low or "\tat " in low:
+        return True
     if "\t" in low or "  " in low:
         low = _WS_COLLAPSE_RE.sub(" ", low)
     for h in _ERROR_HINTS:
@@ -188,8 +192,8 @@ _FAULT_CACHE_SIZE = 16384
 # so the agent reported failures that never happened and re-ran passing tests.
 # A hard failure token on the same line still wins ("PASS ... FAILED to write").
 _PASS_VERDICT_RE = re.compile(
-    r"^(?:PASS|PASSED|\[OK\]|\[PASS\]|✓|✔)\b"
-    r"|^(?:OK|ok)\s*$"
+    r"^\s*(?:(?:PASS|PASSED)\b|\[OK\]|\[PASS\]|[✓✔](?:\s|$))"
+    r"|^\s*(?:OK|ok)\s*$"
     r"|^ok\s+\S+\s+[\d.]+s\s*$"
     r"|\.\.\.\s+(?:ok|PASSED|skipped|SKIPPED)\s*$"
 )
@@ -201,14 +205,14 @@ _HARD_FAIL_RE = re.compile(r"(?:FAILED|FAIL:|ERROR:|Traceback|panic:|AssertionEr
 # defeat compression on ordinary info logs (F1). A real error signal on the
 # same line is untouched, so genuine errors are still detected.
 _BENIGN_RE = re.compile(
-    r"(?:no\s+(?:error|errors|warning|warnings|warn|warns|failure|failures|fail|fails|"
+    r"(?<![A-Za-z0-9_])(?:no\s+(?:error|errors|warning|warnings|warn|warns|failure|failures|fail|fails|"
     r"exception|exceptions|fault|faults|panic|panics|assertion|assertions|"
     r"issue|issues|problem|problems|crash|crashes)"
     r"|(?:0|zero)\s+(?:error|errors|warning|warnings|warn|warns|failure|failures|"
     r"exception|exceptions|issue|issues|problem|problems)"
-    r"|without\s+(?:error|errors|warning|warnings|warn|warns|failure|failures))"
+    r"|without\s+(?:error|errors|warning|warnings|warn|warns|failure|failures)"
     r"|error[- ](?:handling|policy|recovery|detection|reporting|checking|"
-    r"tracking|summary|count|counts|free|bound|bounds|tolerant|correction)",
+    r"tracking|summary|count|counts|free|bound|bounds|tolerant|correction))",
     re.I,
 )
 
@@ -517,26 +521,34 @@ def score_anchor_preservation(original: str, candidate: str) -> float:
     return len(orig_anchors & cand_anchors) / len(orig_anchors)
 
 
-_THRASH_STATE: dict[str, dict[str, Any]] = {}
+import threading as _threading
+from collections import OrderedDict as _OrderedDict
+
+_THRASH_LOCK = _threading.Lock()
+_THRASH_STATE: _OrderedDict[str, dict[str, Any]] = _OrderedDict()
+_MAX_THRASH_SESSIONS = 128
 
 def reset_thrash_tracker() -> None:
-    # Clear session thrash memory between unit tests
-    _THRASH_STATE.clear()
+    with _THRASH_LOCK:
+        _THRASH_STATE.clear()
 
 def check_command_thrash(session_id: str, cmd: str, output: str, exit_code: int) -> str | None:
-    # Detecting unproductive retry loops breaks edit-compile-fail thrashing in-band
-    if exit_code == 0 or not cmd:
-        _THRASH_STATE.pop(session_id, None)
+    with _THRASH_LOCK:
+        if exit_code == 0 or not cmd:
+            _THRASH_STATE.pop(session_id, None)
+            return None
+        state = _THRASH_STATE.get(session_id)
+        if state and state.get("last_cmd") == cmd:
+            state["streak"] = state.get("streak", 1) + 1
+            _THRASH_STATE.move_to_end(session_id)
+        else:
+            state = {"last_cmd": cmd, "streak": 1}
+            _THRASH_STATE[session_id] = state
+            while len(_THRASH_STATE) > _MAX_THRASH_SESSIONS:
+                _THRASH_STATE.popitem(last=False)
+        if state["streak"] >= 3:
+            return f"[tt:loop_warning streak={state['streak']} hint=\"'{cmd}' failed {state['streak']} times; inspect root cause instead of re-running\"]"
         return None
-    state = _THRASH_STATE.get(session_id)
-    if state and state.get("last_cmd") == cmd:
-        state["streak"] = state.get("streak", 1) + 1
-    else:
-        state = {"last_cmd": cmd, "streak": 1}
-        _THRASH_STATE[session_id] = state
-    if state["streak"] >= 3:
-        return f"[tt:loop_warning streak={state['streak']} hint=\"'{cmd}' failed {state['streak']} times; inspect root cause instead of re-running\"]"
-    return None
 
 
 _SOURCE_CODE_EXTS = frozenset({

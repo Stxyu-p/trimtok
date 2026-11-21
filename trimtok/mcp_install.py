@@ -253,6 +253,8 @@ def _edit_json(client: Client, spec: ServerSpec, remove: bool, dry_run: bool) ->
 
 
 _TOML_HEADER = re.compile(r"^\s*\[\[?\s*([^\]]+?)\s*\]\]?\s*(#.*)?$")
+_TOML_BARE_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
+_TOML_HEADER_STRIP = re.compile(r"""[\s"']""")
 
 
 def _toml_str(value: str) -> str:
@@ -260,24 +262,54 @@ def _toml_str(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+def _toml_key(key: str) -> str:
+    return key if _TOML_BARE_KEY.match(key) else _toml_str(key)
+
+
 def _strip_toml_table(text: str, table: str) -> tuple[str, bool]:
     out: list[str] = []
     skipping = False
     found = False
+    in_ml: str | None = None
     for line in text.splitlines(keepends=True):
-        match = _TOML_HEADER.match(line)
-        if match:
-            name = match.group(1).replace(" ", "").replace('"', "")
-            skipping = name == table or name.startswith(table + ".")
-            found = found or skipping
+        if in_ml is None:
+            match = _TOML_HEADER.match(line)
+            if match:
+                name = _TOML_HEADER_STRIP.sub("", match.group(1))
+                skipping = name == table or name.startswith(table + ".")
+                found = found or skipping
         if not skipping:
             out.append(line)
+        # Track triple-quoted multiline strings so [headers] inside strings aren't matched.
+        idx = 0
+        while idx < len(line):
+            if in_ml is None:
+                if line[idx] == "#":
+                    break
+                if line.startswith('"""', idx):
+                    in_ml = '"""'
+                    idx += 3
+                    continue
+                if line.startswith("'''", idx):
+                    in_ml = "'''"
+                    idx += 3
+                    continue
+                idx += 1
+            else:
+                if in_ml == '"""' and line[idx] == "\\":
+                    idx += 2
+                    continue
+                if line.startswith(in_ml, idx):
+                    in_ml = None
+                    idx += 3
+                    continue
+                idx += 1
     return "".join(out), found
 
 
 def _edit_codex(client: Client, spec: ServerSpec, remove: bool, dry_run: bool) -> str:
     path = client.config_path()
-    original = path.read_text(encoding="utf-8") if path.exists() else ""
+    original = path.read_text(encoding="utf-8-sig") if path.exists() else ""
     table = f"mcp_servers.{spec.name}"
     stripped, found = _strip_toml_table(original, table)
     if remove:
@@ -285,13 +317,14 @@ def _edit_codex(client: Client, spec: ServerSpec, remove: bool, dry_run: bool) -
             return "absent"
         # Leave the file as we found it: dropping the appended block must not
         # leave the blank separator line behind, or add/remove stops round-tripping.
-        new_text, status = stripped.rstrip("\n") + "\n", "removed"
+        body = stripped.rstrip("\n")
+        new_text, status = (body + "\n" if body else ""), "removed"
     else:
         block = [f"[{table}]", f"command = {_toml_str(spec.command)}",
                  "args = [" + ", ".join(_toml_str(a) for a in spec.args) + "]"]
         if spec.env:
             block.append(f"\n[{table}.env]")
-            block.extend(f"{k} = {_toml_str(v)}" for k, v in spec.env.items())
+            block.extend(f"{_toml_key(k)} = {_toml_str(v)}" for k, v in spec.env.items())
         body = stripped.rstrip("\n")
         new_text = (body + "\n\n" if body else "") + "\n".join(block) + "\n"
         if new_text == original:
@@ -316,12 +349,20 @@ def _edit_claude_code(client: Client, spec: ServerSpec, remove: bool, dry_run: b
     present = listed.returncode == 0
     if dry_run:
         return ("removed" if present else "absent") if remove else ("updated" if present else "added")
+    old_config = ""
     if present:
-        old_config = listed.stdout.strip() if listed.stdout else ""
-        subprocess.run([exe, "mcp", "remove", "--scope", "user", spec.name],
-                       capture_output=True, text=True, timeout=60)
-    else:
-        old_config = ""
+        try:
+            existing = (_read_json(client.config_path()).get("mcpServers") or {}).get(spec.name)
+            if isinstance(existing, dict):
+                old_config = json.dumps(existing, ensure_ascii=False)
+        except Exception:
+            pass
+        if not old_config and listed.stdout and listed.stdout.strip().startswith("{"):
+            old_config = listed.stdout.strip()
+        removed = subprocess.run([exe, "mcp", "remove", "--scope", "user", spec.name],
+                                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+        if removed.returncode != 0 and remove:
+            raise ConfigError(f"claude mcp remove failed: {(removed.stderr or removed.stdout).strip()}")
     if remove:
         return "removed" if present else "absent"
     payload = json.dumps(_json_entry("claude-code", spec), ensure_ascii=False)
@@ -365,7 +406,7 @@ def registered_in(spec: ServerSpec, client: Client) -> bool | None:
     try:
         path = client.config_path()
         if client.kind == "codex":
-            text = path.read_text(encoding="utf-8") if path.exists() else ""
+            text = path.read_text(encoding="utf-8-sig") if path.exists() else ""
             return _strip_toml_table(text, f"mcp_servers.{spec.name}")[1]
         if client.kind == "claude-code" and shutil.which("claude"):
             return subprocess.run([shutil.which("claude"), "mcp", "get", spec.name],
@@ -430,6 +471,10 @@ def run_clients(spec: ServerSpec, out=print) -> int:
     for client in CLIENTS:
         found = client.key in detected
         reg = registered_in(spec, client) if found else None
-        mark = "registered" if reg else ("not registered" if found else "not detected")
+        mark = (
+            "registered" if reg is True else
+            "not registered" if reg is False else
+            ("unreadable" if found else "not detected")
+        )
         out(f"  {client.key:<16} {client.label.ljust(width)}  {mark:<15} {client.config_path()}")
     return 0
